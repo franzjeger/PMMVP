@@ -41,7 +41,7 @@ pub use item::{Item, ItemKind, ItemSummary, VaultItem};
 pub use password::{generate_password, PasswordOptions};
 pub use secret::{SymmetricKey, KEY_LEN};
 pub use security::{audit, estimate_strength, ItemSecurity, PasswordStrength, SecurityIssue};
-pub use totp::{current_totp, TotpCode};
+pub use totp::{current_totp, parse_otpauth_uri, OtpAuth, TotpCode};
 pub use vault::Vault;
 
 #[cfg(test)]

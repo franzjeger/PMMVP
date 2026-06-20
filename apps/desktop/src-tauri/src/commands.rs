@@ -165,6 +165,22 @@ fn persist(st: &AppState) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// Accept either a raw Base32 secret or a full `otpauth://` URI for the TOTP
+/// field, normalizing to the stored Base32 secret. Empty input -> `None`.
+fn normalize_totp_secret(raw: Option<String>) -> Result<Option<String>, CmdError> {
+    match raw {
+        Some(s) if !s.trim().is_empty() => {
+            let s = s.trim();
+            if s.to_ascii_lowercase().starts_with("otpauth://") {
+                Ok(Some(vault_core::parse_otpauth_uri(s)?.secret))
+            } else {
+                Ok(Some(s.to_string()))
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
 fn secret_field(item: &Item, field: &str) -> Result<String, CmdError> {
     match (&item.data, field) {
         (VaultItem::Login { password, .. }, "password") => Ok(password.clone()),
@@ -462,7 +478,7 @@ fn do_upsert_item(state: &Mutex<AppState>, input: LoginInput) -> Result<String, 
         username: input.username,
         password: input.password,
         url: input.url,
-        totp_secret: input.totp_secret.filter(|s| !s.trim().is_empty()),
+        totp_secret: normalize_totp_secret(input.totp_secret)?,
         notes: input.notes,
     };
 
@@ -762,6 +778,35 @@ mod tests {
                 .as_deref(),
             Some("strong")
         );
+    }
+
+    #[test]
+    fn upsert_accepts_otpauth_uri_and_stores_base32_secret() {
+        let dir = TempDir::new().unwrap();
+        let (state, _) = unlocked(&dir);
+
+        let mut input = sample_input();
+        input.totp_secret = Some(
+            "otpauth://totp/GitHub:frank?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=GitHub"
+                .into(),
+        );
+        let id = do_upsert_item(&state, input).unwrap();
+
+        assert!(do_get_item(&state, &id).unwrap().has_totp);
+        // The stored secret is the extracted Base32, not the raw URI.
+        assert_eq!(
+            do_reveal_field(&state, &id, "totp_secret").unwrap(),
+            "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+        );
+    }
+
+    #[test]
+    fn upsert_rejects_otpauth_with_unsupported_params() {
+        let dir = TempDir::new().unwrap();
+        let (state, _) = unlocked(&dir);
+        let mut input = sample_input();
+        input.totp_secret = Some("otpauth://totp/x?secret=GEZDGNBVGY3TQOJQ&digits=8".into());
+        assert!(matches!(do_upsert_item(&state, input), Err(e) if e.code == "invalid_argument"));
     }
 
     #[test]

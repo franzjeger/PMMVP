@@ -177,7 +177,7 @@ export function EditDialog({
               label="Setup key (TOTP)"
               value={form.totpSecret}
               onChange={(v) => set("totpSecret", v)}
-              placeholder="Base32 secret (optional)"
+              placeholder="Base32 secret or otpauth:// URI (optional)"
               mono
             />
 
