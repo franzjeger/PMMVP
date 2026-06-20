@@ -5,6 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 // ---- types (mirror the Rust DTOs, which serialize camelCase) --------------
 
@@ -50,6 +51,11 @@ export type SecurityTag = "weak" | "reused";
 export interface SecurityIssue {
   id: string;
   issues: SecurityTag[];
+}
+
+export interface ImportSummary {
+  imported: number;
+  skipped: number;
 }
 
 export interface Totp {
@@ -137,10 +143,36 @@ export const api = {
   securityReport: () => invoke<SecurityIssue[]>("security_report"),
   generate: (options: PasswordOptions) => invoke<string>("generate", { options }),
 
+  importLogins: (path: string) => invoke<ImportSummary>("import_logins", { path }),
+
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (settings: Settings) => invoke<void>("set_settings", { settings }),
 
   openExternal: (url: string) => openUrl(url),
+
+  /**
+   * Open a native file picker for a CSV and import it. The file is read in Rust,
+   * so exported plaintext passwords never enter the webview. Returns `null` if
+   * the user cancels the picker.
+   *
+   * The picker blurs the main window, which would otherwise trigger
+   * lock-on-blur and lock the vault mid-import; we suppress that around the
+   * dialog.
+   */
+  pickAndImportCsv: async (): Promise<ImportSummary | null> => {
+    await invoke<void>("set_blur_lock_suppressed", { suppressed: true });
+    try {
+      const path = await openDialog({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "CSV", extensions: ["csv"] }],
+      });
+      if (typeof path !== "string") return null;
+      return await invoke<ImportSummary>("import_logins", { path });
+    } finally {
+      await invoke<void>("set_blur_lock_suppressed", { suppressed: false });
+    }
+  },
 };
 
 // ---- events ---------------------------------------------------------------

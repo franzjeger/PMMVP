@@ -16,6 +16,9 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 # Open the "Website" URL in the user's default browser (not in the webview).
 tauri-plugin-opener = "2"
+# Native file picker for CSV import (the file is read in Rust, so exported
+# plaintext passwords never pass through the webview).
+tauri-plugin-dialog = "2"
 serde.workspace = true
 serde_json.workspace = true
 vault-core.workspace = true
@@ -24,6 +27,8 @@ uuid.workspace = true
 # Cross-platform clipboard, used so secret copies + auto-clear happen in Rust
 # rather than exposing plaintext to the webview's clipboard API.
 arboard = "3"
+# RFC 4180 CSV parsing for importing exports from other password managers.
+csv = "1"
 
 [dev-dependencies]
 tempfile = "3"

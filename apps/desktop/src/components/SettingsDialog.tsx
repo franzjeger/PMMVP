@@ -72,6 +72,24 @@ export function SettingsDialog({
     }
   };
 
+  const importCsv = async () => {
+    setBusy(true);
+    try {
+      const summary = await api.pickAndImportCsv();
+      if (summary) {
+        onToast(
+          `Imported ${summary.imported}` +
+            (summary.skipped ? `, skipped ${summary.skipped}` : ""),
+        );
+        onStatusChanged(); // refreshes the item list
+      }
+    } catch (e) {
+      onToast(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-6 backdrop-blur-sm"
@@ -113,6 +131,19 @@ export function SettingsDialog({
               disabled={busy}
               onChange={() => void toggleQuickUnlock()}
             />
+            <Row
+              label="Import passwords"
+              hint="From a Chrome, Apple Passwords, or Firefox CSV export. Delete the CSV afterward; it holds plaintext passwords."
+            >
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void importCsv()}
+                className="rounded-lg border border-hairline px-3 py-1.5 text-[13px] text-neutral-200 hover:bg-white/5 disabled:opacity-50"
+              >
+                Choose CSV…
+              </button>
+            </Row>
           </div>
         )}
 

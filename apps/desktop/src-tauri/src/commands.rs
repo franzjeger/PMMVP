@@ -83,6 +83,15 @@ pub struct SecurityIssueDto {
     pub issues: Vec<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSummary {
+    /// Logins added to the vault.
+    pub imported: usize,
+    /// Rows skipped (blank, or no username and no password).
+    pub skipped: usize,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoginInput {
@@ -179,6 +188,111 @@ fn normalize_totp_secret(raw: Option<String>) -> Result<Option<String>, CmdError
         }
         _ => Ok(None),
     }
+}
+
+/// A login parsed from one CSV row. `totp` is raw (Base32 or `otpauth://`),
+/// normalized later via [`normalize_totp_secret`].
+struct ParsedLogin {
+    title: String,
+    username: String,
+    password: String,
+    url: String,
+    totp: String,
+    notes: String,
+}
+
+/// Column indices discovered from the CSV header.
+#[derive(Default)]
+struct ColumnMap {
+    title: Option<usize>,
+    url: Option<usize>,
+    username: Option<usize>,
+    password: Option<usize>,
+    totp: Option<usize>,
+    notes: Option<usize>,
+}
+
+/// Derive a title when the export has none: site host, else username, else a
+/// generic label.
+fn title_from(url: &str, username: &str) -> String {
+    let host = url
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .trim();
+    if !host.is_empty() {
+        host.to_string()
+    } else if !username.is_empty() {
+        username.to_string()
+    } else {
+        "Imported".to_string()
+    }
+}
+
+/// Parse a password-export CSV (Chrome/Brave/Edge, Apple Passwords, Firefox, and
+/// common generic layouts) by mapping header names case-insensitively. Returns
+/// the parsed logins plus the count of skipped (blank / credential-less) rows.
+fn parse_logins_csv(text: &str) -> (Vec<ParsedLogin>, usize) {
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .flexible(true)
+        .from_reader(text.as_bytes());
+
+    let headers = match reader.headers() {
+        Ok(h) => h.clone(),
+        Err(_) => return (Vec::new(), 0),
+    };
+
+    let mut map = ColumnMap::default();
+    for (i, h) in headers.iter().enumerate() {
+        match h.trim().to_ascii_lowercase().as_str() {
+            "title" | "name" => _ = map.title.get_or_insert(i),
+            "url" | "urls" | "website" | "login_uri" | "loginuri" => _ = map.url.get_or_insert(i),
+            "username" | "user" | "login" | "email" | "login_username" => {
+                _ = map.username.get_or_insert(i)
+            }
+            "password" | "pwd" | "login_password" => _ = map.password.get_or_insert(i),
+            "notes" | "note" | "comment" | "comments" => _ = map.notes.get_or_insert(i),
+            "otpauth" | "otp" | "totp" | "otp_auth" | "totpauth" | "2fa" => {
+                _ = map.totp.get_or_insert(i)
+            }
+            _ => {}
+        }
+    }
+
+    let mut logins = Vec::new();
+    let mut skipped = 0usize;
+    for record in reader.records().flatten() {
+        let cell = |col: Option<usize>| -> String {
+            col.and_then(|i| record.get(i))
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
+        let username = cell(map.username);
+        let password = cell(map.password);
+        if username.is_empty() && password.is_empty() {
+            skipped += 1;
+            continue;
+        }
+        let url = cell(map.url);
+        let mut title = cell(map.title);
+        if title.is_empty() {
+            title = title_from(&url, &username);
+        }
+        logins.push(ParsedLogin {
+            title,
+            username,
+            password,
+            url,
+            totp: cell(map.totp),
+            notes: cell(map.notes),
+        });
+    }
+    (logins, skipped)
 }
 
 fn secret_field(item: &Item, field: &str) -> Result<String, CmdError> {
@@ -415,6 +529,53 @@ fn do_security_report(state: &Mutex<AppState>) -> Result<Vec<SecurityIssueDto>, 
         .collect())
 }
 
+/// Import logins from a CSV export at `path` (Chrome/Brave/Edge, Apple
+/// Passwords, Firefox, or a generic header-mapped layout). The file is read in
+/// Rust, so the exported plaintext passwords never pass through the webview.
+#[tauri::command]
+pub fn import_logins(state: St<'_>, path: String) -> Result<ImportSummary, CmdError> {
+    do_import_logins(state.inner(), &path)
+}
+
+fn do_import_logins(state: &Mutex<AppState>, path: &str) -> Result<ImportSummary, CmdError> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|_| CmdError::new("io", "Could not read the selected file."))?;
+    let (parsed, skipped) = parse_logins_csv(&text);
+
+    let mut st = guard(state)?;
+    st.touch();
+    let now = now_millis();
+    let mut imported = 0usize;
+    for p in parsed {
+        // A bad/unsupported TOTP value shouldn't drop the whole login: keep the
+        // credentials and just omit the code.
+        let totp_secret = normalize_totp_secret(if p.totp.is_empty() {
+            None
+        } else {
+            Some(p.totp)
+        })
+        .unwrap_or(None);
+
+        let item = Item::new(
+            VaultItem::Login {
+                title: p.title,
+                username: p.username,
+                password: p.password,
+                url: p.url,
+                totp_secret,
+                notes: p.notes,
+            },
+            now,
+        );
+        st.vault_mut()?.upsert_item(item)?;
+        imported += 1;
+    }
+    if imported > 0 {
+        persist(&st)?;
+    }
+    Ok(ImportSummary { imported, skipped })
+}
+
 /// Reveal a single secret field on demand (for display in the UI).
 /// `field` is one of `"password"`, `"totp_secret"`, `"notes"`.
 #[tauri::command]
@@ -593,6 +754,15 @@ pub fn set_settings(state: St<'_>, settings: Settings) -> Result<(), CmdError> {
     // Persist (best-effort; settings are non-secret).
     let _ = crate::state::save_settings(st.store.path(), &st.settings);
     st.touch();
+    Ok(())
+}
+
+/// Temporarily suppress blur-based auto-lock. The frontend sets this around its
+/// own native dialogs (e.g. the import file picker), which blur the main window
+/// without the user actually leaving the app.
+#[tauri::command]
+pub fn set_blur_lock_suppressed(state: St<'_>, suppressed: bool) -> Result<(), CmdError> {
+    guard(state.inner())?.suppress_blur_lock = suppressed;
     Ok(())
 }
 
@@ -835,5 +1005,56 @@ mod tests {
         assert_eq!(report.len(), 3);
         let a_issues = &report.iter().find(|r| r.id == a_id).unwrap().issues;
         assert!(a_issues.contains(&"reused".to_string()));
+    }
+
+    #[test]
+    fn parse_chrome_csv() {
+        let csv = "name,url,username,password,note\n\
+                   GitHub,https://github.com,frank-lia,p4ss,my note\n\
+                   ,https://x.com/login,user2,pw2,\n";
+        let (logins, skipped) = parse_logins_csv(csv);
+        assert_eq!(skipped, 0);
+        assert_eq!(logins.len(), 2);
+        assert_eq!(logins[0].title, "GitHub");
+        assert_eq!(logins[0].username, "frank-lia");
+        assert_eq!(logins[0].notes, "my note");
+        // No title column value -> derived from the URL host.
+        assert_eq!(logins[1].title, "x.com");
+    }
+
+    #[test]
+    fn parse_apple_csv_keeps_otpauth_and_skips_blank_rows() {
+        let csv = "Title,URL,Username,Password,Notes,OTPAuth\n\
+                   Bank,https://bank.com,me,secret,\"a, b\",otpauth://totp/Bank?secret=GEZDGNBVGY3TQOJQ\n\
+                   ,,,,,\n";
+        let (logins, skipped) = parse_logins_csv(csv);
+        assert_eq!(logins.len(), 1);
+        assert_eq!(skipped, 1); // the empty row
+        assert_eq!(logins[0].notes, "a, b"); // quoted comma preserved
+        assert!(logins[0].totp.starts_with("otpauth://"));
+    }
+
+    #[test]
+    fn do_import_logins_adds_items_and_normalizes_totp() {
+        let dir = TempDir::new().unwrap();
+        let (state, _) = unlocked(&dir);
+        let csv_path = dir.path().join("export.csv");
+        std::fs::write(
+            &csv_path,
+            "Title,URL,Username,Password,OTPAuth\n\
+             Bank,https://bank.com,me,secret,otpauth://totp/Bank?secret=GEZDGNBVGY3TQOJQ\n\
+             Mail,https://mail.com,you,hunter2,\n\
+             ,,,,\n",
+        )
+        .unwrap();
+
+        let summary = do_import_logins(&state, csv_path.to_str().unwrap()).unwrap();
+        assert_eq!(summary.imported, 2);
+        assert_eq!(summary.skipped, 1);
+
+        let list = do_list_items(&state, false).unwrap();
+        assert_eq!(list.len(), 2);
+        let bank = list.iter().find(|i| i.title == "Bank").unwrap();
+        assert!(bank.has_totp); // otpauth normalized to a stored secret
     }
 }

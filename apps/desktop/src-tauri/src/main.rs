@@ -22,6 +22,7 @@ const KEYCHAIN_ACCOUNT: &str = "default-vault";
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Resolve a per-user data directory for the single vault file.
             let data_dir = app.path().app_data_dir()?;
@@ -57,7 +58,9 @@ fn main() {
                 let app = window.app_handle();
                 if let Some(state) = app.try_state::<Mutex<AppState>>() {
                     if let Ok(mut st) = state.lock() {
-                        let lock_on_blur = st.settings.lock_on_blur;
+                        // Don't lock when our own native dialog (e.g. the import
+                        // file picker) stole focus — the user hasn't left the app.
+                        let lock_on_blur = st.settings.lock_on_blur && !st.suppress_blur_lock;
                         let mut locked = false;
                         if lock_on_blur {
                             if let Some(v) = st.vault.as_mut() {
@@ -94,9 +97,11 @@ fn main() {
             commands::purge_item,
             commands::current_totp,
             commands::security_report,
+            commands::import_logins,
             commands::generate,
             commands::get_settings,
             commands::set_settings,
+            commands::set_blur_lock_suppressed,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the SYBR Passwords application");

@@ -65,6 +65,10 @@ pub struct AppState {
     pub last_activity: Instant,
     /// Long-lived clipboard owner (keeps Linux selection ownership alive).
     pub clipboard: ClipboardManager,
+    /// When true, ignore window-blur auto-lock. Set while one of our own native
+    /// dialogs (e.g. the CSV import file picker) is open, since that blurs the
+    /// main window without the user actually leaving the app.
+    pub suppress_blur_lock: bool,
 }
 
 impl AppState {
@@ -75,6 +79,7 @@ impl AppState {
             settings: Settings::default(),
             last_activity: Instant::now(),
             clipboard,
+            suppress_blur_lock: false,
         }
     }
 
