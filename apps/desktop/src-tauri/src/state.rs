@@ -16,7 +16,10 @@ use crate::clipboard::ClipboardManager;
 pub struct Settings {
     /// Auto-lock after this many seconds of inactivity. `0` disables.
     pub auto_lock_secs: u64,
-    /// Lock immediately when the window loses focus.
+    /// Lock immediately when the window loses focus. Off by default: locking on
+    /// every focus change makes cross-app use (e.g. autofill into a browser)
+    /// impossible, since reaching the browser necessarily blurs this window.
+    /// Idle auto-lock carries the security instead.
     pub lock_on_blur: bool,
     /// Clear copied secrets from the clipboard after this many seconds. `0`
     /// disables auto-clear.
@@ -27,7 +30,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             auto_lock_secs: 300,
-            lock_on_blur: true,
+            lock_on_blur: false,
             clipboard_clear_secs: 30,
         }
     }
