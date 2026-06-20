@@ -132,6 +132,17 @@ export const RefreshIcon = ({ className }: P) => (
   </svg>
 );
 
+export const TouchIdIcon = ({ className }: P) => (
+  <svg {...base(className)}>
+    <path d="M12 10a2 2 0 0 0-2 2c0 2.5.3 4 1 5.5" />
+    <path d="M8.2 7.8A6 6 0 0 1 18 12c0 1.2.1 2.3.4 3.4" />
+    <path d="M6 11a6 6 0 0 1 .7-2.8" />
+    <path d="M7 16.5c-.5-1.4-.7-2.9-.7-4.5" />
+    <path d="M12 12c0 3 .4 5 1.4 7" />
+    <path d="M15.6 12a3.6 3.6 0 0 0-5.6-3" />
+  </svg>
+);
+
 export const GearIcon = ({ className }: P) => (
   <svg {...base(className)}>
     <circle cx="12" cy="12" r="3" />

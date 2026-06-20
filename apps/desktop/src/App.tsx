@@ -66,7 +66,14 @@ export default function App() {
 
   useEffect(() => {
     if (isTauri()) void refreshStatus();
-    else setStatus({ exists: false, unlocked: false, hasQuickUnlock: false, quickUnlockAvailable: false });
+    else
+      setStatus({
+        exists: false,
+        unlocked: false,
+        hasQuickUnlock: false,
+        quickUnlockAvailable: false,
+        biometricAvailable: false,
+      });
   }, [refreshStatus]);
 
   // Backend-driven auto-lock + clipboard events.

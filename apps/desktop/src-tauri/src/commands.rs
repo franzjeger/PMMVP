@@ -39,6 +39,9 @@ pub struct VaultStatus {
     pub has_quick_unlock: bool,
     /// A device key is available in the OS keychain right now.
     pub quick_unlock_available: bool,
+    /// Biometric (Touch ID) authentication is wired on this platform, so quick
+    /// unlock can be gated behind it.
+    pub biometric_available: bool,
 }
 
 #[derive(Serialize)]
@@ -323,6 +326,7 @@ pub fn vault_status(state: St<'_>) -> Result<VaultStatus, CmdError> {
             .map(Vault::has_device_unlock)
             .unwrap_or(false),
         quick_unlock_available: st.store.quick_unlock_available(),
+        biometric_available: crate::biometric::available(),
     })
 }
 
@@ -360,9 +364,16 @@ fn do_unlock(state: &Mutex<AppState>, master_password: &str) -> Result<(), CmdEr
     Ok(())
 }
 
-/// Unlock using the OS keychain device key (no master password).
+/// Unlock using the OS keychain device key (no master password), gated behind a
+/// biometric (Touch ID) prompt where available.
 #[tauri::command]
 pub fn quick_unlock(state: St<'_>) -> Result<(), CmdError> {
+    // Prompt for Touch ID *before* taking the state lock — the prompt blocks on
+    // user interaction, and we must not freeze other commands meanwhile. On
+    // platforms without biometrics this is a no-op and quick unlock proceeds.
+    crate::biometric::authenticate("unlock your password vault")
+        .map_err(|m| CmdError::new("biometric_failed", &m))?;
+
     let mut st = guard(state.inner())?;
     if st.vault.is_none() && st.store.exists() {
         st.vault = Some(st.store.load()?);

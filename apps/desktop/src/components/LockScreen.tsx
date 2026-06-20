@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api, errorMessage, type VaultStatus } from "../lib/api";
-import { LockIcon } from "./icons";
+import { LockIcon, TouchIdIcon } from "./icons";
 
 export function LockScreen({
   status,
@@ -113,9 +113,12 @@ export function LockScreen({
           <button
             onClick={quick}
             disabled={busy}
-            className="mt-2.5 w-full rounded-lg border border-hairline py-2.5 text-[13px] text-neutral-200 hover:bg-white/5 disabled:opacity-60"
+            className="mt-2.5 flex w-full items-center justify-center gap-2 rounded-lg border border-hairline py-2.5 text-[13px] text-neutral-200 hover:bg-white/5 disabled:opacity-60"
           >
-            Quick Unlock
+            {status.biometricAvailable && (
+              <TouchIdIcon className="h-4 w-4 text-accent" />
+            )}
+            {status.biometricAvailable ? "Unlock with Touch ID" : "Quick Unlock"}
           </button>
         )}
       </div>

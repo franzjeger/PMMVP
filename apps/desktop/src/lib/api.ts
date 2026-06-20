@@ -14,6 +14,7 @@ export interface VaultStatus {
   unlocked: boolean;
   hasQuickUnlock: boolean;
   quickUnlockAvailable: boolean;
+  biometricAvailable: boolean;
 }
 
 export type ItemKind = "login" | "passkey" | "secureNote";
