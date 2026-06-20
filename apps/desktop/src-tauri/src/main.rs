@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![forbid(unsafe_code)]
 
+mod bridge;
 mod clipboard;
 mod commands;
 mod state;
@@ -45,6 +46,13 @@ fn main() {
             // Restore persisted (non-secret) settings, if any.
             app_state.settings = state::load_settings(app_state.store.path());
             app.manage(Mutex::new(app_state));
+
+            // Local autofill bridge for the browser extension (loopback + token;
+            // gated on unlock + origin match). Best-effort: failure to bind just
+            // means autofill is unavailable this session.
+            if let Err(e) = bridge::start(app.handle().clone(), &data_dir) {
+                eprintln!("autofill bridge unavailable: {e}");
+            }
 
             // Background idle-timeout auto-lock.
             let handle = app.handle().clone();

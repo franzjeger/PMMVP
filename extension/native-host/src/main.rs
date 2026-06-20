@@ -16,7 +16,9 @@
 
 #![forbid(unsafe_code)]
 
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +42,8 @@ enum Request {
     Ping,
     /// Ask for logins whose site matches `url` (the active tab's URL).
     ListMatchingLogins { url: String },
+    /// Fetch the credential for a chosen login id, to fill into `url`.
+    Fill { id: String, url: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -60,6 +64,12 @@ enum Response {
         items: Vec<LoginMatch>,
         #[serde(skip_serializing_if = "Option::is_none")]
         note: Option<String>,
+    },
+    /// The credential for a `fill` request. Only emitted after the desktop app
+    /// authorized it (unlocked + origin match).
+    Credentials {
+        username: String,
+        password: String,
     },
     Error {
         message: String,
@@ -95,28 +105,98 @@ fn handle(request: Request) -> Response {
                 url,
                 app_connected: false,
                 items: Vec::new(),
-                // TODO(phase-2): connect to the desktop app's local IPC endpoint.
                 note: Some(
-                    "Desktop app bridge not implemented yet (phase 1 scaffold).".to_string(),
+                    "The SYBR Passwords desktop app isn't running or is locked.".to_string(),
                 ),
+            },
+        },
+        Request::Fill { id, url } => match fill_credential(&id, &url) {
+            Some((username, password)) => Response::Credentials { username, password },
+            None => Response::Error {
+                message: "Could not fill (app locked, origin mismatch, or not found).".to_string(),
             },
         },
     }
 }
 
-/// TODO(phase-2): probe the desktop app's local IPC endpoint (an OS-auth'd
-/// loopback socket / named pipe with a per-install token). Returns false in
-/// the Phase-1 scaffold.
-fn desktop_app_available() -> bool {
-    false
+/// Path to the bridge connection-info file the desktop app writes. Uses the
+/// same per-user data dir Tauri's `app_data_dir()` resolves to.
+fn bridge_info_path() -> Option<std::path::PathBuf> {
+    Some(dirs::data_dir()?.join(HOST_NAME).join("native-bridge.json"))
 }
 
-/// TODO(phase-2): ask the running, unlocked desktop app for logins matching
-/// `url` via its local IPC endpoint. The app owns the vault key and decides
-/// what (metadata) to return; it never sends passwords through this channel.
-/// Returns `None` (app not connected) in the Phase-1 scaffold.
-fn query_desktop_app(_url: &str) -> Option<Vec<LoginMatch>> {
-    None
+/// Open an authenticated connection to the desktop app's loopback bridge and
+/// send one request, returning the parsed JSON response.
+fn bridge_request(payload: serde_json::Value) -> Option<serde_json::Value> {
+    let info: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(bridge_info_path()?).ok()?).ok()?;
+    let port = info.get("port")?.as_u64()? as u16;
+    let token = info.get("token")?.as_str()?;
+
+    let stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(3))).ok()?;
+    let mut writer = stream.try_clone().ok()?;
+    let mut reader = BufReader::new(stream);
+
+    // Authenticate.
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({ "type": "hello", "token": token })
+    )
+    .ok()?;
+    let mut line = String::new();
+    reader.read_line(&mut line).ok()?;
+    let hello: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    if hello.get("type").and_then(|v| v.as_str()) != Some("ok") {
+        return None;
+    }
+
+    // Send the actual request and read its response.
+    writeln!(writer, "{payload}").ok()?;
+    line.clear();
+    reader.read_line(&mut line).ok()?;
+    serde_json::from_str(line.trim()).ok()
+}
+
+/// Whether the desktop app's bridge is reachable + authenticates.
+fn desktop_app_available() -> bool {
+    bridge_request(serde_json::json!({ "type": "match", "url": "" })).is_some()
+}
+
+/// Ask the app for logins matching `url` (metadata only, no passwords).
+fn query_desktop_app(url: &str) -> Option<Vec<LoginMatch>> {
+    let resp = bridge_request(serde_json::json!({ "type": "match", "url": url }))?;
+    if resp.get("type").and_then(|v| v.as_str()) != Some("logins") {
+        return None;
+    }
+    let items = resp.get("items")?.as_array()?;
+    Some(
+        items
+            .iter()
+            .filter_map(|i| {
+                Some(LoginMatch {
+                    id: i.get("id")?.as_str()?.to_string(),
+                    title: i.get("title")?.as_str()?.to_string(),
+                    username: i.get("username")?.as_str()?.to_string(),
+                    url: url.to_string(),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Ask the app for the credential of `id` to fill into `url`. The app enforces
+/// unlock + origin matching before returning anything.
+fn fill_credential(id: &str, url: &str) -> Option<(String, String)> {
+    let resp = bridge_request(serde_json::json!({ "type": "fill", "id": id, "url": url }))?;
+    if resp.get("type").and_then(|v| v.as_str()) != Some("credentials") {
+        return None;
+    }
+    Some((
+        resp.get("username")?.as_str()?.to_string(),
+        resp.get("password")?.as_str()?.to_string(),
+    ))
 }
 
 /// Read one framed message. Returns `Ok(None)` on clean EOF (browser closed
@@ -231,21 +311,28 @@ mod tests {
     }
 
     #[test]
-    fn list_matching_logins_is_empty_without_app_bridge() {
+    fn list_matching_logins_returns_a_logins_response() {
+        // The connected/items result depends on whether the desktop app is
+        // running locally, so assert only the response shape (dispatch), not
+        // environment-dependent connectivity.
         let resp = handle(Request::ListMatchingLogins {
             url: "https://github.com/login".to_string(),
         });
-        match resp {
-            Response::Logins {
-                items,
-                app_connected,
-                ..
-            } => {
-                assert!(items.is_empty());
-                assert!(!app_connected);
-            }
-            _ => panic!("expected logins response"),
-        }
+        assert!(matches!(resp, Response::Logins { .. }));
+    }
+
+    #[test]
+    fn fill_request_is_dispatched() {
+        // Without a reachable, unlocked app this resolves to an error; the point
+        // is that Fill is parsed and routed.
+        let resp = handle(Request::Fill {
+            id: "00000000-0000-0000-0000-000000000000".to_string(),
+            url: "https://github.com".to_string(),
+        });
+        assert!(matches!(
+            resp,
+            Response::Credentials { .. } | Response::Error { .. }
+        ));
     }
 
     #[test]

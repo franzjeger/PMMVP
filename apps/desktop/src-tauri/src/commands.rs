@@ -630,7 +630,10 @@ pub fn upsert_item(state: St<'_>, input: LoginInput) -> Result<String, CmdError>
     do_upsert_item(state.inner(), input)
 }
 
-fn do_upsert_item(state: &Mutex<AppState>, input: LoginInput) -> Result<String, CmdError> {
+pub(crate) fn do_upsert_item(
+    state: &Mutex<AppState>,
+    input: LoginInput,
+) -> Result<String, CmdError> {
     let mut st = guard(state)?;
     st.touch();
     let now = now_millis();

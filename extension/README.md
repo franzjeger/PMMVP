@@ -1,15 +1,20 @@
-# SYBR Passwords — Browser Extension (scaffold)
+# SYBR Passwords — Browser Extension
 
 A Manifest V3 extension (Chrome / Brave / Edge, plus a Firefox build target)
-that detects login forms and offers autofill, talking to the desktop app
+that detects login forms and autofills credentials from the desktop app,
 through a small Rust **native messaging host**.
 
-> **Phase 1 status:** form detection, the autofill UI, the extension↔host
-> request/response round-trip, and the host handshake all work. The
-> host↔desktop-app bridge is **stubbed**, so the picker shows a "desktop app not
-> connected" note instead of real credentials. The desktop app keeps exclusive
-> ownership of the unlocked vault — the extension and host only ever handle
-> login *metadata*, never passwords.
+> **Status:** working end-to-end. The extension detects login forms, the host
+> connects to the desktop app's local **autofill bridge**, and the app fills
+> real credentials — but only while the vault is **unlocked** and only when the
+> page's host **matches** the stored login (origin binding). `match` returns
+> metadata only; the password crosses solely on an explicit `fill` for a
+> matched entry. The bridge is loopback-only (127.0.0.1) and authenticated with
+> a per-run token from a `0600` file. See `../THREAT_MODEL.md`.
+>
+> Verified at the bridge level (host binary ↔ live app). The browser-side
+> injection is straightforward content-script JS; load the extension + register
+> the host manifest (below) to use it in Chrome.
 
 ## Layout
 

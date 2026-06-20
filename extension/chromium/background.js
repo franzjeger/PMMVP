@@ -2,8 +2,9 @@
 //
 // It is the only context allowed to talk to the native-messaging host. Content
 // scripts and the popup send it messages; it relays them to the Rust host and
-// returns the response. The vault itself stays owned by the desktop app — this
-// worker only ever sees login *metadata*, never passwords.
+// returns the response. The vault stays owned by the desktop app, which only
+// releases a credential on an explicit "fill" for a matching origin while
+// unlocked; "listLogins" only ever returns metadata.
 
 const api = globalThis.browser ?? globalThis.chrome;
 
@@ -43,6 +44,12 @@ api.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       sendNative({ type: "list_matching_logins", url: msg.url }).then(
         sendResponse,
       );
+      return true;
+
+    case "fill":
+      // Returns { ok, response: { type: "credentials", username, password } }
+      // only if the desktop app authorized it (unlocked + origin match).
+      sendNative({ type: "fill", id: msg.id, url: msg.url }).then(sendResponse);
       return true;
 
     default:

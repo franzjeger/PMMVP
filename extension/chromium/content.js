@@ -123,12 +123,31 @@
       row.querySelector(".sybr-title").textContent = item.title || item.url;
       row.querySelector(".sybr-user").textContent = item.username || "";
       row.addEventListener("click", async () => {
-        const username = findUsernameField(pw);
-        if (username && item.username) setNativeValue(username, item.username);
-        // NOTE(phase-2): the password is NOT in `item`. A dedicated, app-
-        // authorized "fill" request will return the secret to inject here.
-        if (item.password) setNativeValue(pw, item.password);
-        closePanel();
+        // Request the actual credential. The desktop app only releases it for a
+        // matching origin while unlocked; the password is never in `item`.
+        let fill;
+        try {
+          fill = await api.runtime.sendMessage({
+            cmd: "fill",
+            id: item.id,
+            url: location.href,
+          });
+        } catch (e) {
+          openPanel(pw, note(`Could not fill: ${String(e)}`));
+          return;
+        }
+        const cred = fill && fill.ok ? fill.response : null;
+        if (cred && cred.type === "credentials") {
+          const username = findUsernameField(pw);
+          if (username && cred.username) setNativeValue(username, cred.username);
+          if (cred.password) setNativeValue(pw, cred.password);
+          closePanel();
+        } else {
+          openPanel(
+            pw,
+            note((cred && cred.message) || "Couldn't retrieve the password."),
+          );
+        }
       });
       list.appendChild(row);
     }
