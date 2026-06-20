@@ -110,19 +110,21 @@ for build and per-browser install instructions.
   (frontend type-check + bundle), `cargo fmt --check`, `cargo clippy -D warnings`,
   and `cargo test --workspace` (all crates, incl. the desktop command + in-memory
   clipboard tests).
-- **`linux-smoke`** — runs the `#[ignore]`d real-OS smoke tests on an actual X11
-  session (Xvfb) so the `arboard` clipboard path executes on Linux, plus a
-  best-effort keychain test against gnome-keyring.
+- **`linux-smoke`** — runs the `#[ignore]`d real-OS smoke tests so the `arboard`
+  clipboard path actually executes on Linux: on **X11** (Xvfb) and best-effort on
+  **Wayland** (headless `sway`), plus a best-effort keychain test against
+  gnome-keyring.
 
-CI cannot drive interactive cross-app paste on **Wayland** (no compositor on the
-runners); that single check stays a manual, one-time run on a real X11 *and*
-Wayland desktop before shipping to Linux users (see [`SECURITY.md`](./SECURITY.md)).
+The one thing CI cannot do is an **interactive cross-application paste** (no human
+at a real desktop); that stays a manual, one-time acceptance check on real X11
+*and* Wayland before shipping to Linux users (see [`THREAT_MODEL.md`](./THREAT_MODEL.md)).
 
 ## Security
 
-Zero-knowledge, local-only, no telemetry. Read [`SECURITY.md`](./SECURITY.md) —
-it states plainly that an **independent audit and a formal threat model are
-required before real-world use**, and lists the current limitations.
+Zero-knowledge, local-only, no telemetry. Read [`SECURITY.md`](./SECURITY.md) and
+the [`THREAT_MODEL.md`](./THREAT_MODEL.md) — they state plainly that an
+**independent third-party audit is required before real-world use** (the threat
+model is its input, not a substitute), and list the accepted residual risks.
 
 ## License
 

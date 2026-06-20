@@ -6,9 +6,14 @@
 before this software is used to protect real-world secrets.** The design below
 follows established practice and composes only well-reviewed cryptographic
 crates, but "uses good building blocks" is not the same as "is secure." Until a
-qualified third party has reviewed the implementation and a threat model has
-been written and signed off, treat this as a demonstration/foundation, not a
-product.
+qualified third party has reviewed the implementation, treat this as a
+demonstration/foundation, not a product.
+
+A first-draft **threat model** now exists at [`THREAT_MODEL.md`](./THREAT_MODEL.md)
+(assets, trust boundaries, adversaries, per-threat mitigations, and accepted
+residual risks). It is the *input* to an audit, not a replacement for one: the
+independent third-party audit remains **outstanding** and cannot be self-closed
+by this project.
 
 ## Design goals
 

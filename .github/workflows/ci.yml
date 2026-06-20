@@ -89,7 +89,7 @@ jobs:
             libayatana-appindicator3-dev libxdo-dev libssl-dev \
             libdbus-1-dev build-essential file \
             libxcb1 libxcb-render0 libxcb-shape0 libxcb-xfixes0 \
-            xvfb dbus-x11 gnome-keyring libsecret-1-0
+            xvfb dbus-x11 gnome-keyring libsecret-1-0 sway
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -110,6 +110,24 @@ jobs:
       # fake). This is the bulk of the Linux clipboard verification.
       - name: Real clipboard smoke (X11 via Xvfb)
         run: xvfb-run --auto-servernum cargo test -p vault-desktop -- --ignored real_clipboard
+
+      # Exercises the SAME smoke against a real Wayland compositor (headless
+      # sway, a wlroots compositor that implements wlr-data-control, which
+      # arboard's Wayland backend uses). Best-effort: headless Wayland in CI is
+      # environment-sensitive, and it still cannot model an interactive
+      # cross-application paste (that stays a manual acceptance test). A failure
+      # here is informational, not a gate. See THREAT_MODEL.md.
+      - name: Real clipboard smoke (Wayland via headless sway)
+        continue-on-error: true
+        run: |
+          export XDG_RUNTIME_DIR="$(mktemp -d)"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1
+          printf 'exec sleep infinity\n' > "$XDG_RUNTIME_DIR/sway.cfg"
+          sway -c "$XDG_RUNTIME_DIR/sway.cfg" >/dev/null 2>&1 &
+          sleep 6
+          export WAYLAND_DISPLAY=wayland-1
+          cargo test -p vault-desktop -- --ignored real_clipboard
 
       # Exercises vault-store's keychain quick-unlock against a real Secret
       # Service (gnome-keyring on the session bus). Best-effort: CI keyring
