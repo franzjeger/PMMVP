@@ -85,7 +85,9 @@ export function LockScreen({
           <p className="text-center text-[12px] leading-relaxed text-neutral-500">
             {creating
               ? "Your master password encrypts everything locally. It is never stored or sent anywhere. If you forget it, the vault cannot be recovered."
-              : "Enter your master password to continue."}
+              : canBiometric
+                ? "Use Touch ID, or enter your master password."
+                : "Enter your master password to continue."}
           </p>
         </div>
 
@@ -101,6 +103,11 @@ export function LockScreen({
             autoFocus
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            // Tapping the (empty) field re-invokes Touch ID, so there's no
+            // separate button: the prompt also fires automatically on mount.
+            onClick={() => {
+              if (canBiometric && !busy && password === "") void quick(true);
+            }}
             placeholder="Master password"
             className="w-full rounded-lg bg-white/5 px-3 py-2.5 text-[14px] text-neutral-100 outline-none ring-1 ring-white/10 focus:ring-accent/60"
           />
@@ -125,17 +132,11 @@ export function LockScreen({
           </button>
         </form>
 
-        {!creating && status.quickUnlockAvailable && (
-          <button
-            onClick={() => void quick(false)}
-            disabled={busy}
-            className="mt-3 flex w-full items-center justify-center gap-1.5 text-[12px] text-neutral-400 hover:text-neutral-200 disabled:opacity-60"
-          >
-            {status.biometricAvailable && (
-              <TouchIdIcon className="h-3.5 w-3.5" />
-            )}
-            {status.biometricAvailable ? "Use Touch ID" : "Quick Unlock"}
-          </button>
+        {canBiometric && (
+          <p className="mt-3 flex items-center justify-center gap-1.5 text-[11px] text-neutral-600">
+            <TouchIdIcon className="h-3.5 w-3.5" />
+            Touch ID
+          </p>
         )}
       </div>
     </div>
