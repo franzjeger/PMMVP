@@ -32,46 +32,44 @@ native-host/         Rust native-messaging host (see ../../crates + workspace)
   no.sybr.vault.firefox.json  Firefox host manifest template
 ```
 
-## 1. Build the native host
+The extension id is **pinned** by the public `key` in `chromium/manifest.json`
+(always `joeolbejbmnhmgajgmidpnpnjahdiobc`), so the host registration can be
+fully scripted — no id-copying or file-editing.
+
+## Install (macOS) — one command + one click
 
 ```bash
-cargo build -p vault-native-host --release
-# binary at: target/release/vault-native-host
+./extension/install-macos.sh
 ```
 
-Quick smoke test of the handshake (length-prefixed JSON on stdin):
+This builds the host (release) and registers the native-messaging manifest for
+every installed Chromium browser (Chrome/Brave/Edge), pre-filled with the pinned
+id and the built binary's path.
+
+Then the **one step Chrome won't let any tool automate** (Google blocks
+programmatic unpacked installs, by design):
+
+1. `chrome://extensions` → enable **Developer mode**
+2. **Load unpacked** → select `extension/chromium/`
+
+Keep the desktop app open and unlocked; autofill then works. (Undo: delete the
+`no.sybr.vault.json` files the script printed.)
+
+Handshake smoke test of the host alone:
 
 ```bash
 printf '\x10\x00\x00\x00{"type":"hello"}' | ./target/release/vault-native-host | xxd | head
 ```
 
-## 2. Load the extension (unpacked)
+### Other platforms / Firefox
 
-- **Chrome / Brave / Edge:** go to `chrome://extensions`, enable *Developer
-  mode*, *Load unpacked*, select `extension/chromium/`. Copy the generated
-  **extension ID**.
-- **Firefox:** rename/копy `manifest.firefox.json` to `manifest.json` (or use a
-  build step), then `about:debugging` → *This Firefox* → *Load Temporary
-  Add-on* → pick the `manifest.json`.
+The Chromium native-messaging dirs differ by OS (Linux:
+`~/.config/google-chrome/NativeMessagingHosts/`; Windows: a registry key under
+`HKCU\Software\Google\Chrome\NativeMessagingHosts\no.sybr.vault`). Firefox uses
+`no.sybr.vault.firefox.json` (`allowed_extensions`) in
+`~/Library/Application Support/Mozilla/NativeMessagingHosts/` (macOS) or
+`~/.mozilla/native-messaging-hosts/` (Linux). Linux/Windows installer scripts
+are a TODO; the templates in `native-host/` show the exact shape.
 
-## 3. Install the native messaging host manifest
-
-Edit the template: set `path` to the absolute path of the built
-`vault-native-host`, and (Chromium) set `allowed_origins` to
-`chrome-extension://<your-extension-id>/`. Then place it where the browser
-looks:
-
-**Chrome (macOS):**
-`~/Library/Application Support/Google/Chrome/NativeMessagingHosts/no.sybr.vault.json`
-**Chrome (Linux):** `~/.config/google-chrome/NativeMessagingHosts/no.sybr.vault.json`
-**Chrome (Windows):** create registry key
-`HKCU\Software\Google\Chrome\NativeMessagingHosts\no.sybr.vault` pointing at the
-manifest file.
-
-**Firefox (macOS):**
-`~/Library/Application Support/Mozilla/NativeMessagingHosts/no.sybr.vault.json`
-(use the `*.firefox.json` template with `allowed_extensions`).
-**Firefox (Linux):** `~/.mozilla/native-messaging-hosts/no.sybr.vault.json`.
-
-Open the extension popup; it should report the host version. See the repo
-`README.md` and `SECURITY.md` for the full picture and security caveats.
+See the repo `README.md`, `SECURITY.md`, and `THREAT_MODEL.md` for the security
+model.

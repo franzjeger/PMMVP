@@ -3,8 +3,16 @@
   "name": "SYBR Passwords",
   "version": "0.1.0",
   "description": "Detects login forms and autofills credentials from your SYBR Passwords desktop vault.",
-  "permissions": ["activeTab", "scripting", "nativeMessaging", "storage"],
-  "host_permissions": ["http://*/*", "https://*/*"],
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "nativeMessaging",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
@@ -24,11 +32,19 @@
   },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["content.js"],
-      "css": ["content.css"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
       "run_at": "document_idle",
       "all_frames": false
     }
-  ]
+  ],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2nFJ813WwtcSqGddgBLd7q68hF/eUFO65Psi6mTiKqCbYSjs0VZe14ECYdsileMv0/KrSWArxY0LYJGK/eUKQL5JkNKxTHQDeB+wO2684iCW/9uV287iJGkyGx8wJZkFjyT1a6RyjVdKkhn/AUPQxzDQDBLfOSpqLagS8tO1bJKmWyZ+gU+9jSAE69hoztuLp7rUfnRn+zqn1WHgHNZ05RNZeUd78samMa+CCLV76d74q/UFACDpwpv01SRdw2rB1XhA1O9shv1hZBLuGCOatXcTXYDkN5RNSoMXE9c4rvNPzB93MuFwyuikGx3S+gwC4wV7KYKZSYCZyjTYvIuiBwIDAQAB"
 }

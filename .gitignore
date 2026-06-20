@@ -18,3 +18,9 @@ apps/desktop/src-tauri/gen/
 *.swp
 .idea/
 .vscode/
+
+# Pinned-extension keypair (public key lives in manifest.json; private key is
+# only needed to pack a .crx and must never be committed)
+extension/.ext-private-key.pem
+extension/.ext-public-key.b64
+extension/.ext-id.txt
