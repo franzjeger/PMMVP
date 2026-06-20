@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "SYBR Passwords",
+  "version": "0.1.0",
+  "description": "Detects login forms and autofills credentials from your SYBR Passwords desktop vault.",
+  "permissions": ["activeTab", "scripting", "nativeMessaging", "storage"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "SYBR Passwords",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "sybr-passwords@sybr.no",
+      "strict_min_version": "115.0"
+    }
+  }
+}

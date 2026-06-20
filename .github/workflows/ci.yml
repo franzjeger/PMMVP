@@ -1,0 +1,124 @@
+name: CI
+
+# Cross-platform verification for the SYBR Passwords workspace.
+#
+# `test` builds and runs the full suite on Linux, Windows, and macOS — this is
+# what closes the "compiles/runs on the target platform" gap, including the
+# Tauri desktop crate's deterministic clipboard + command tests.
+#
+# `linux-smoke` runs the #[ignore]d real-OS smoke tests on an actual X11 session
+# (Xvfb) and D-Bus + gnome-keyring, so the arboard clipboard code path executes
+# on Linux — the platform the clipboard fix targets, which the in-memory tests
+# can't model.
+#
+# NOTE: CI cannot cover interactive cross-application paste on Wayland (there is
+# no Wayland compositor on the runners). That single check remains a manual,
+# one-time run on a real X11 *and* Wayland desktop before shipping to Linux
+# users — see SECURITY.md.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: build & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tauri system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libayatana-appindicator3-dev libxdo-dev libssl-dev \
+            libdbus-1-dev build-essential file \
+            libxcb1 libxcb-render0 libxcb-shape0 libxcb-xfixes0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Build frontend (tsc type-check + Vite bundle)
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npm run build
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: test (all crates)
+        run: cargo test --workspace
+
+  linux-smoke:
+    name: linux real-clipboard & keychain smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libayatana-appindicator3-dev libxdo-dev libssl-dev \
+            libdbus-1-dev build-essential file \
+            libxcb1 libxcb-render0 libxcb-shape0 libxcb-xfixes0 \
+            xvfb dbus-x11 gnome-keyring libsecret-1-0
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Build frontend
+        working-directory: apps/desktop
+        run: npm ci && npm run build
+
+      # Exercises clipboard::tests::real_clipboard_round_trips against the real
+      # X11 clipboard provided by Xvfb (the matrix job only runs the in-memory
+      # fake). This is the bulk of the Linux clipboard verification.
+      - name: Real clipboard smoke (X11 via Xvfb)
+        run: xvfb-run --auto-servernum cargo test -p vault-desktop -- --ignored real_clipboard
+
+      # Exercises vault-store's keychain quick-unlock against a real Secret
+      # Service (gnome-keyring on the session bus). Best-effort: CI keyring
+      # setup is environment-sensitive, so a failure here is informational, not
+      # a gate.
+      - name: Keychain smoke (Secret Service via gnome-keyring)
+        continue-on-error: true
+        run: |
+          dbus-run-session -- bash -c '
+            eval "$(printf "\n" | gnome-keyring-daemon --unlock --components=secrets)"
+            cargo test -p vault-store -- --ignored quick_unlock_round_trip
+          '

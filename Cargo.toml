@@ -1,0 +1,57 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vault-core",
+    "crates/vault-store",
+    "apps/desktop/src-tauri",
+    "extension/native-host",
+]
+
+# Keep the heavy Tauri desktop build out of the default `cargo build`/`test` at
+# the workspace root; build it explicitly with `-p vault-desktop` (or via the
+# Tauri CLI). The other crates are fast and fully testable here.
+default-members = [
+    "crates/vault-core",
+    "crates/vault-store",
+    "extension/native-host",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT OR Apache-2.0"
+authors = ["SYBR AS <support@sybr.no>"]
+repository = "https://example.invalid/vault"
+
+[workspace.dependencies]
+# --- internal ---
+vault-core = { path = "crates/vault-core" }
+vault-store = { path = "crates/vault-store" }
+
+# --- crypto (audited RustCrypto crates only; no custom primitives) ---
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
+subtle = "2.6"
+hmac = "0.12"
+sha1 = "0.10"
+getrandom = "0.2"
+data-encoding = "2.6"
+
+# --- serde / data ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# bincode: simple positional framing for the outer container only.
+bincode = "1.3"
+# ciborium (CBOR): self-describing, name-tagged encoding for the at-rest item
+# payload, so the VaultItem schema can evolve (variant reorder/append) safely.
+ciborium = "0.2"
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+
+# Release profile: keep symbols light, no debug info leaking secrets via panics.
+[profile.release]
+panic = "abort"
+strip = true
+lto = true

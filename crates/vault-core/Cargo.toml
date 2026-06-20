@@ -1,0 +1,27 @@
+[package]
+name = "vault-core"
+description = "Security-critical, I/O-free core for the SYBR password manager (crypto, data model, TOTP, password generation)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+argon2.workspace = true
+chacha20poly1305.workspace = true
+zeroize.workspace = true
+subtle.workspace = true
+hmac.workspace = true
+sha1.workspace = true
+getrandom.workspace = true
+data-encoding.workspace = true
+serde.workspace = true
+bincode.workspace = true
+ciborium.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -1,0 +1,20 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Node / frontend
+node_modules/
+apps/desktop/dist/
+
+# Tauri generated
+apps/desktop/src-tauri/gen/
+
+# Local vault data / secrets (never commit)
+*.vault
+*.vault.tmp.*
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
