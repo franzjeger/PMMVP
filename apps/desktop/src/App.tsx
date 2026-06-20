@@ -25,6 +25,7 @@ import { EntryList } from "./components/EntryList";
 import { DetailPane } from "./components/DetailPane";
 import { LockScreen } from "./components/LockScreen";
 import { EditDialog } from "./components/EditDialog";
+import { SettingsDialog } from "./components/SettingsDialog";
 import { Toast } from "./components/Toast";
 import { KeyIcon } from "./components/icons";
 
@@ -37,6 +38,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<ItemDetail | null>(null);
   const [editing, setEditing] = useState<{ id: string | null } | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
   const loadItems = useCallback(async () => {
@@ -227,6 +229,7 @@ export default function App() {
           search={search}
           onSearch={setSearch}
           onLock={handleLock}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
         <EntryList
           title={categoryLabel}
@@ -249,6 +252,14 @@ export default function App() {
         )}
       </div>
 
+      {settingsOpen && (
+        <SettingsDialog
+          status={status}
+          onClose={() => setSettingsOpen(false)}
+          onStatusChanged={refreshStatus}
+          onToast={setToast}
+        />
+      )}
       {editing && (
         <EditDialog
           itemId={editing.id}

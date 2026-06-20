@@ -574,6 +574,8 @@ pub fn get_settings(state: St<'_>) -> Result<Settings, CmdError> {
 pub fn set_settings(state: St<'_>, settings: Settings) -> Result<(), CmdError> {
     let mut st = guard(state.inner())?;
     st.settings = settings;
+    // Persist (best-effort; settings are non-secret).
+    let _ = crate::state::save_settings(st.store.path(), &st.settings);
     st.touch();
     Ok(())
 }

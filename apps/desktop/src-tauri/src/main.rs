@@ -40,7 +40,10 @@ fn main() {
             // Linux and auto-clears it on all platforms).
             let clipboard = ClipboardManager::spawn(app.handle().clone());
 
-            app.manage(Mutex::new(AppState::new(store, vault, clipboard)));
+            let mut app_state = AppState::new(store, vault, clipboard);
+            // Restore persisted (non-secret) settings, if any.
+            app_state.settings = state::load_settings(app_state.store.path());
+            app.manage(Mutex::new(app_state));
 
             // Background idle-timeout auto-lock.
             let handle = app.handle().clone();

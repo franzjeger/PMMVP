@@ -2,6 +2,7 @@ import type { ComponentType } from "react";
 import { CATEGORIES, type CategoryId } from "../lib/categories";
 import {
   ClockIcon,
+  GearIcon,
   KeyIcon,
   LockOpenIcon,
   PasskeyIcon,
@@ -27,6 +28,7 @@ export function Sidebar({
   search,
   onSearch,
   onLock,
+  onOpenSettings,
 }: {
   counts: Record<CategoryId, number>;
   active: CategoryId;
@@ -34,6 +36,7 @@ export function Sidebar({
   search: string;
   onSearch: (s: string) => void;
   onLock: () => void;
+  onOpenSettings: () => void;
 }) {
   return (
     <div className="flex w-60 shrink-0 flex-col border-r border-hairline bg-sidebar">
@@ -87,14 +90,23 @@ export function Sidebar({
       </nav>
 
       <div className="space-y-2 border-t border-hairline p-3">
-        <button
-          onClick={onLock}
-          className="no-drag flex items-center gap-2 text-[12px] font-medium text-green-400 hover:text-green-300"
-          title="Lock vault"
-        >
-          <LockOpenIcon className="h-4 w-4" />
-          Unlocked
-        </button>
+        <div className="flex items-center justify-between">
+          <button
+            onClick={onLock}
+            className="no-drag flex items-center gap-2 text-[12px] font-medium text-green-400 hover:text-green-300"
+            title="Lock vault"
+          >
+            <LockOpenIcon className="h-4 w-4" />
+            Unlocked
+          </button>
+          <button
+            onClick={onOpenSettings}
+            className="no-drag rounded-md p-1 text-neutral-400 hover:bg-white/5 hover:text-neutral-200"
+            title="Settings"
+          >
+            <GearIcon className="h-4 w-4" />
+          </button>
+        </div>
         <div className="flex flex-wrap gap-1.5">
           {["macOS", "Windows", "Linux"].map((p) => (
             <span

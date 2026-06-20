@@ -1,5 +1,6 @@
 //! Shared application state and the error type returned to the frontend.
 
+use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -10,7 +11,7 @@ use vault_core::Vault;
 use crate::clipboard::ClipboardManager;
 
 /// User-configurable security timings. Defaults are conservative.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     /// Auto-lock after this many seconds of inactivity. `0` disables.
@@ -30,6 +31,28 @@ impl Default for Settings {
             clipboard_clear_secs: 30,
         }
     }
+}
+
+/// Path to the (non-secret) settings file, kept alongside the vault file.
+fn settings_file(vault_path: &Path) -> PathBuf {
+    vault_path.with_file_name("settings.json")
+}
+
+/// Load persisted settings next to `vault_path`, falling back to defaults if
+/// the file is missing or unreadable. Settings contain no secrets, so they are
+/// stored in plaintext JSON.
+pub fn load_settings(vault_path: &Path) -> Settings {
+    std::fs::read(settings_file(vault_path))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Persist settings next to `vault_path`. Best-effort; non-secret.
+pub fn save_settings(vault_path: &Path, settings: &Settings) -> std::io::Result<()> {
+    let json = serde_json::to_vec_pretty(settings)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(settings_file(vault_path), json)
 }
 
 /// The whole app's mutable state, guarded by a `Mutex` in Tauri's managed state.
@@ -155,5 +178,32 @@ impl From<vault_store::Error> for CmdError {
             // future variant rather than leaking detail.
             _ => CmdError::new("error", "The operation failed."),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_round_trip_to_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("v.vault");
+        let s = Settings {
+            auto_lock_secs: 120,
+            lock_on_blur: false,
+            clipboard_clear_secs: 15,
+        };
+        save_settings(&vault, &s).unwrap();
+        assert_eq!(load_settings(&vault), s);
+    }
+
+    #[test]
+    fn load_settings_falls_back_to_defaults_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            load_settings(&dir.path().join("missing.vault")),
+            Settings::default()
+        );
     }
 }
