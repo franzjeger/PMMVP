@@ -74,48 +74,61 @@
     return div;
   }
 
-  async function onBadgeClick(pw) {
-    const loading = note("Searching your vault…");
-    openPanel(pw, loading);
+  // Avoid overlapping queries (each spawns the native host once).
+  let querying = false;
+  // Only nag once per page that the app is locked, on automatic triggers.
+  let lockedHintShown = false;
 
-    let result;
+  // Show matching logins. `auto` = triggered by focus (stay quiet when there's
+  // nothing useful); manual (badge click) always gives feedback.
+  async function showMatches(pw, auto) {
+    if (querying) return;
+    querying = true;
     try {
-      result = await api.runtime.sendMessage({
-        cmd: "listLogins",
-        url: location.href,
-      });
-    } catch (e) {
-      openPanel(pw, note(`Extension error: ${String(e)}`));
-      return;
-    }
+      if (!auto) openPanel(pw, note("Searching your vault…"));
 
-    if (!result || !result.ok) {
-      openPanel(
-        pw,
-        note(
-          "Can't reach the native host. Is the SYBR Passwords desktop app and native messaging host installed?",
-        ),
-      );
-      return;
-    }
+      let result;
+      try {
+        result = await api.runtime.sendMessage({
+          cmd: "listLogins",
+          url: location.href,
+        });
+      } catch (e) {
+        if (!auto) openPanel(pw, note(`Extension error: ${String(e)}`));
+        return;
+      }
 
-    const resp = result.response || {};
-    const items = Array.isArray(resp.items) ? resp.items : [];
+      if (!result || !result.ok) {
+        if (!auto) {
+          openPanel(
+            pw,
+            note(
+              "Can't reach SYBR Passwords. Is the desktop app installed and the extension's native host registered?",
+            ),
+          );
+        }
+        return;
+      }
 
-    if (items.length === 0) {
-      openPanel(
-        pw,
-        note(
-          resp.note ||
-            (resp.app_connected
-              ? "No matching logins for this site."
-              : "Desktop app is locked or not running."),
-        ),
-      );
-      return;
-    }
+      const resp = result.response || {};
+      const items = Array.isArray(resp.items) ? resp.items : [];
 
-    const list = document.createElement("div");
+      if (items.length === 0) {
+        if (!resp.app_connected) {
+          // Locked or not running: a clear, actionable hint (once on auto).
+          if (!auto || !lockedHintShown) {
+            lockedHintShown = true;
+            openPanel(pw, note("Open and unlock SYBR Passwords to autofill."));
+          }
+        } else if (!auto) {
+          openPanel(pw, note("No matching logins for this site."));
+        } else {
+          closePanel();
+        }
+        return;
+      }
+
+      const list = document.createElement("div");
     for (const item of items) {
       const row = document.createElement("button");
       row.className = "sybr-row";
@@ -149,9 +162,12 @@
           );
         }
       });
-      list.appendChild(row);
+        list.appendChild(row);
+      }
+      openPanel(pw, list);
+    } finally {
+      querying = false;
     }
-    openPanel(pw, list);
   }
 
   function attachBadge(pw) {
@@ -179,13 +195,22 @@
     badge.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      onBadgeClick(pw);
+      showMatches(pw, false); // manual: always give feedback
     });
 
     document.body.appendChild(badge);
     place();
     window.addEventListener("scroll", place, { passive: true });
     window.addEventListener("resize", place, { passive: true });
+
+    // Suggest automatically when the user focuses the password field (and its
+    // username field, if found) — like a native autofill prompt.
+    pw.addEventListener("focus", () => showMatches(pw, true));
+    const userField = findUsernameField(pw);
+    if (userField && !userField.dataset.sybrUserBound) {
+      userField.dataset.sybrUserBound = "1";
+      userField.addEventListener("focus", () => showMatches(pw, true));
+    }
   }
 
   function scan() {
