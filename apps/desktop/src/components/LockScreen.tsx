@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, errorMessage, type VaultStatus } from "../lib/api";
 import { LockIcon, TouchIdIcon } from "./icons";
 
@@ -43,18 +43,34 @@ export function LockScreen({
     }
   };
 
-  const quick = async () => {
+  const quick = async (auto = false) => {
     setBusy(true);
-    setError(null);
+    if (!auto) setError(null);
     try {
       await api.quickUnlock();
       onUnlocked();
     } catch (e) {
-      setError(errorMessage(e));
+      // If the user dismisses the automatic Touch ID prompt, fall back quietly
+      // to the password field instead of showing an error. Manual retries still
+      // surface the reason.
+      if (!auto) setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
   };
+
+  // Prompt for Touch ID automatically as soon as the lock screen appears (once),
+  // like the system lock screen. The password field stays available as a
+  // fallback if the user cancels or prefers to type.
+  const autoTried = useRef(false);
+  const canBiometric =
+    !creating && status.quickUnlockAvailable && status.biometricAvailable;
+  useEffect(() => {
+    if (autoTried.current || !canBiometric) return;
+    autoTried.current = true;
+    void quick(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canBiometric]);
 
   return (
     <div className="flex flex-1 items-center justify-center bg-canvas">
@@ -111,14 +127,14 @@ export function LockScreen({
 
         {!creating && status.quickUnlockAvailable && (
           <button
-            onClick={quick}
+            onClick={() => void quick(false)}
             disabled={busy}
-            className="mt-2.5 flex w-full items-center justify-center gap-2 rounded-lg border border-hairline py-2.5 text-[13px] text-neutral-200 hover:bg-white/5 disabled:opacity-60"
+            className="mt-3 flex w-full items-center justify-center gap-1.5 text-[12px] text-neutral-400 hover:text-neutral-200 disabled:opacity-60"
           >
             {status.biometricAvailable && (
-              <TouchIdIcon className="h-4 w-4 text-accent" />
+              <TouchIdIcon className="h-3.5 w-3.5" />
             )}
-            {status.biometricAvailable ? "Unlock with Touch ID" : "Quick Unlock"}
+            {status.biometricAvailable ? "Use Touch ID" : "Quick Unlock"}
           </button>
         )}
       </div>
