@@ -37,9 +37,19 @@ export interface ItemDetail {
   notes: string;
   hasPassword: boolean;
   hasTotp: boolean;
+  passwordStrength: PasswordStrength | null;
   isDeleted: boolean;
   createdAt: number;
   modifiedAt: number;
+}
+
+export type PasswordStrength = "weak" | "fair" | "strong";
+
+export type SecurityTag = "weak" | "reused";
+
+export interface SecurityIssue {
+  id: string;
+  issues: SecurityTag[];
 }
 
 export interface Totp {
@@ -124,6 +134,7 @@ export const api = {
   purgeItem: (id: string) => invoke<void>("purge_item", { id }),
 
   currentTotp: (id: string) => invoke<Totp>("current_totp", { id }),
+  securityReport: () => invoke<SecurityIssue[]>("security_report"),
   generate: (options: PasswordOptions) => invoke<string>("generate", { options }),
 
   getSettings: () => invoke<Settings>("get_settings"),

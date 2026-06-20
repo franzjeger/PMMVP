@@ -9,6 +9,8 @@ import {
   onVaultLocked,
   type ItemDetail,
   type ItemSummary,
+  type SecurityIssue,
+  type SecurityTag,
   type VaultStatus,
 } from "./lib/api";
 import {
@@ -29,6 +31,7 @@ import { KeyIcon } from "./components/icons";
 export default function App() {
   const [status, setStatus] = useState<VaultStatus | null>(null);
   const [items, setItems] = useState<ItemSummary[]>([]);
+  const [security, setSecurity] = useState<SecurityIssue[]>([]);
   const [category, setCategory] = useState<CategoryId>("all");
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -38,7 +41,12 @@ export default function App() {
 
   const loadItems = useCallback(async () => {
     try {
-      setItems(await api.listItems(true));
+      const [list, report] = await Promise.all([
+        api.listItems(true),
+        api.securityReport(),
+      ]);
+      setItems(list);
+      setSecurity(report);
     } catch (e) {
       setToast(errorMessage(e));
     }
@@ -66,6 +74,7 @@ export default function App() {
         setSelectedId(null);
         setDetail(null);
         setItems([]);
+        setSecurity([]);
         void refreshStatus();
       }),
       onClipboardCleared(() => setToast("Clipboard cleared")),
@@ -96,16 +105,38 @@ export default function App() {
     };
   }, [status?.unlocked]);
 
+  // Map of item id -> security issue tags, for the Security view + badges.
+  const issuesById = useMemo(() => {
+    const m = new Map<string, SecurityTag[]>();
+    for (const s of security) m.set(s.id, s.issues);
+    return m;
+  }, [security]);
+
+  // Per-category counts shown in the sidebar.
+  const counts = useMemo(() => {
+    const c = {} as Record<CategoryId, number>;
+    for (const cat of CATEGORIES) {
+      c[cat.id] =
+        cat.id === "security"
+          ? security.length
+          : filterByCategory(items, cat.id).length;
+    }
+    return c;
+  }, [items, security]);
+
   const visible = useMemo(() => {
-    const byCat = filterByCategory(items, category);
+    const base =
+      category === "security"
+        ? items.filter((i) => !i.isDeleted && issuesById.has(i.id))
+        : filterByCategory(items, category);
     const q = search.trim().toLowerCase();
-    if (!q) return byCat;
-    return byCat.filter(
+    if (!q) return base;
+    return base.filter(
       (i) =>
         i.title.toLowerCase().includes(q) ||
         i.subtitle.toLowerCase().includes(q),
     );
-  }, [items, category, search]);
+  }, [items, category, search, issuesById]);
 
   // Keep a sensible selection as the visible list changes.
   useEffect(() => {
@@ -175,17 +206,19 @@ export default function App() {
   const categoryLabel =
     CATEGORIES.find((c) => c.id === category)?.label ?? "All";
   const emptyHint =
-    category === "wifi" || category === "security"
+    category === "wifi"
       ? "Coming in a later phase."
-      : category === "deleted"
-        ? "Trash is empty."
-        : "No items yet — click + to add one.";
+      : category === "security"
+        ? "No weak or reused passwords. Nice."
+        : category === "deleted"
+          ? "Trash is empty."
+          : "No items yet — click + to add one.";
 
   return (
     <Shell>
       <div className="flex flex-1 overflow-hidden">
         <Sidebar
-          items={items}
+          counts={counts}
           active={category}
           onSelect={(c) => {
             setCategory(c);
@@ -202,6 +235,7 @@ export default function App() {
           onSelect={setSelectedId}
           onAdd={() => setEditing({ id: null })}
           emptyHint={emptyHint}
+          issuesById={category === "security" ? issuesById : undefined}
         />
         {detail ? (
           <DetailPane

@@ -1,10 +1,5 @@
 import type { ComponentType } from "react";
-import {
-  CATEGORIES,
-  categoryCount,
-  type CategoryId,
-} from "../lib/categories";
-import type { ItemSummary } from "../lib/api";
+import { CATEGORIES, type CategoryId } from "../lib/categories";
 import {
   ClockIcon,
   KeyIcon,
@@ -26,14 +21,14 @@ const ICONS: Record<CategoryId, ComponentType<{ className?: string }>> = {
 };
 
 export function Sidebar({
-  items,
+  counts,
   active,
   onSelect,
   search,
   onSearch,
   onLock,
 }: {
-  items: ItemSummary[];
+  counts: Record<CategoryId, number>;
   active: CategoryId;
   onSelect: (c: CategoryId) => void;
   search: string;
@@ -58,7 +53,7 @@ export function Sidebar({
       <nav className="mt-3 flex-1 space-y-0.5 overflow-y-auto px-2">
         {CATEGORIES.map((c) => {
           const Icon = ICONS[c.id];
-          const count = categoryCount(items, c.id);
+          const count = counts[c.id] ?? 0;
           const isActive = c.id === active;
           const showCount = c.id !== "deleted" && count > 0;
           return (

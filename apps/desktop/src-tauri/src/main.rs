@@ -90,6 +90,7 @@ fn main() {
             commands::restore_item,
             commands::purge_item,
             commands::current_totp,
+            commands::security_report,
             commands::generate,
             commands::get_settings,
             commands::set_settings,

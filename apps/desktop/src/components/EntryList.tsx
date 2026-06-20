@@ -1,6 +1,11 @@
-import type { ItemSummary } from "../lib/api";
+import type { ItemSummary, SecurityTag } from "../lib/api";
 import { ClockIcon, PasskeyIcon, PlusIcon } from "./icons";
 import { Tile } from "./Tile";
+
+const ISSUE_LABEL: Record<SecurityTag, string> = {
+  weak: "Weak",
+  reused: "Reused",
+};
 
 export function EntryList({
   title,
@@ -9,6 +14,7 @@ export function EntryList({
   onSelect,
   onAdd,
   emptyHint,
+  issuesById,
 }: {
   title: string;
   items: ItemSummary[];
@@ -16,6 +22,8 @@ export function EntryList({
   onSelect: (id: string) => void;
   onAdd: () => void;
   emptyHint?: string;
+  /** When present (Security view), renders issue badges per item. */
+  issuesById?: Map<string, SecurityTag[]>;
 }) {
   return (
     <div className="flex w-[340px] shrink-0 flex-col border-r border-hairline bg-panel">
@@ -62,6 +70,22 @@ export function EntryList({
                       }`}
                     >
                       {item.subtitle}
+                    </div>
+                  )}
+                  {issuesById && issuesById.get(item.id) && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {issuesById.get(item.id)!.map((tag) => (
+                        <span
+                          key={tag}
+                          className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                            isSel
+                              ? "bg-white/20 text-white"
+                              : "bg-amber-500/15 text-amber-400"
+                          }`}
+                        >
+                          {ISSUE_LABEL[tag]}
+                        </span>
+                      ))}
                     </div>
                   )}
                 </div>

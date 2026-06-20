@@ -31,6 +31,7 @@ pub mod header;
 pub mod item;
 pub mod password;
 pub mod secret;
+pub mod security;
 pub mod totp;
 pub mod vault;
 
@@ -39,6 +40,7 @@ pub use header::{KdfAlgorithm, KdfParams, VaultHeader};
 pub use item::{Item, ItemKind, ItemSummary, VaultItem};
 pub use password::{generate_password, PasswordOptions};
 pub use secret::{SymmetricKey, KEY_LEN};
+pub use security::{audit, estimate_strength, ItemSecurity, PasswordStrength, SecurityIssue};
 pub use totp::{current_totp, TotpCode};
 pub use vault::Vault;
 

@@ -1,5 +1,10 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { api, errorMessage, type ItemDetail } from "../lib/api";
+import {
+  api,
+  errorMessage,
+  type ItemDetail,
+  type PasswordStrength,
+} from "../lib/api";
 import { hostFromUrl, relativeTime } from "../lib/format";
 import {
   CopyIcon,
@@ -27,6 +32,24 @@ function Row({
         {children}
       </div>
     </div>
+  );
+}
+
+const STRENGTH_STYLE: Record<PasswordStrength, { label: string; cls: string }> = {
+  weak: { label: "Weak", cls: "bg-red-500/15 text-red-400" },
+  fair: { label: "Fair", cls: "bg-amber-500/15 text-amber-400" },
+  strong: { label: "Strong", cls: "bg-green-500/15 text-green-400" },
+};
+
+function StrengthPill({ strength }: { strength: PasswordStrength }) {
+  const s = STRENGTH_STYLE[strength];
+  return (
+    <span
+      className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${s.cls}`}
+      title="Estimated password strength"
+    >
+      {s.label}
+    </span>
   );
 }
 
@@ -143,12 +166,17 @@ export function DetailPane({
 
             <Row label="Password">
               <div className="flex items-center justify-between gap-2">
-                <span className="truncate font-mono">
-                  {!detail.hasPassword
-                    ? "—"
-                    : revealed !== null
-                      ? revealed
-                      : "••••••••••••••"}
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="truncate font-mono">
+                    {!detail.hasPassword
+                      ? "—"
+                      : revealed !== null
+                        ? revealed
+                        : "••••••••••••••"}
+                  </span>
+                  {detail.passwordStrength && (
+                    <StrengthPill strength={detail.passwordStrength} />
+                  )}
                 </span>
                 {detail.hasPassword && (
                   <div className="flex items-center gap-1">

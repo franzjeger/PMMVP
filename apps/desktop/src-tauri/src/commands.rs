@@ -20,7 +20,10 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
 
-use vault_core::{generate_password, Item, ItemKind, KdfParams, PasswordOptions, Vault, VaultItem};
+use vault_core::{
+    estimate_strength, generate_password, Item, ItemKind, KdfParams, PasswordOptions,
+    PasswordStrength, SecurityIssue, Vault, VaultItem,
+};
 
 use crate::state::{now_millis, now_secs, AppState, CmdError, Settings};
 
@@ -64,9 +67,20 @@ pub struct ItemDetailDto {
     /// Whether a password is set (the value itself is fetched on demand).
     pub has_password: bool,
     pub has_totp: bool,
+    /// Coarse strength bucket of the stored password: "weak" | "fair" | "strong"
+    /// (None when there is no password). Derived metadata, not the secret.
+    pub password_strength: Option<String>,
     pub is_deleted: bool,
     pub created_at: i64,
     pub modified_at: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecurityIssueDto {
+    pub id: String,
+    /// Issue tags: "weak" and/or "reused".
+    pub issues: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -115,6 +129,21 @@ fn kind_str(kind: ItemKind) -> &'static str {
         ItemKind::Login => "login",
         ItemKind::Passkey => "passkey",
         ItemKind::SecureNote => "secureNote",
+    }
+}
+
+fn strength_str(s: PasswordStrength) -> &'static str {
+    match s {
+        PasswordStrength::Weak => "weak",
+        PasswordStrength::Fair => "fair",
+        PasswordStrength::Strong => "strong",
+    }
+}
+
+fn issue_str(issue: SecurityIssue) -> &'static str {
+    match issue {
+        SecurityIssue::WeakPassword => "weak",
+        SecurityIssue::ReusedPassword => "reused",
     }
 }
 
@@ -295,7 +324,8 @@ fn do_get_item(state: &Mutex<AppState>, id: &str) -> Result<ItemDetailDto, CmdEr
     let mut st = guard(state)?;
     st.touch();
     let item = st.vault()?.get_item(parse_id(id)?)?;
-    let (title, username, url, notes, has_password, has_totp) = match &item.data {
+    let (title, username, url, notes, has_password, has_totp, password_strength) = match &item.data
+    {
         VaultItem::Login {
             title,
             username,
@@ -313,6 +343,11 @@ fn do_get_item(state: &Mutex<AppState>, id: &str) -> Result<ItemDetailDto, CmdEr
                 .as_deref()
                 .map(|s| !s.is_empty())
                 .unwrap_or(false),
+            if password.is_empty() {
+                None
+            } else {
+                Some(strength_str(estimate_strength(password)).to_string())
+            },
         ),
         // Stub kinds expose only their title for now.
         other => (
@@ -322,6 +357,7 @@ fn do_get_item(state: &Mutex<AppState>, id: &str) -> Result<ItemDetailDto, CmdEr
             String::new(),
             false,
             false,
+            None,
         ),
     };
     Ok(ItemDetailDto {
@@ -333,10 +369,34 @@ fn do_get_item(state: &Mutex<AppState>, id: &str) -> Result<ItemDetailDto, CmdEr
         notes,
         has_password,
         has_totp,
+        password_strength,
         is_deleted: item.is_deleted(),
         created_at: item.created_at,
         modified_at: item.modified_at,
     })
+}
+
+/// Password-health audit (weak/reused) over the active login items.
+#[tauri::command]
+pub fn security_report(state: St<'_>) -> Result<Vec<SecurityIssueDto>, CmdError> {
+    do_security_report(state.inner())
+}
+
+fn do_security_report(state: &Mutex<AppState>) -> Result<Vec<SecurityIssueDto>, CmdError> {
+    let mut st = guard(state)?;
+    st.touch();
+    let report = st.vault()?.security_report()?;
+    Ok(report
+        .into_iter()
+        .map(|r| SecurityIssueDto {
+            id: r.id.to_string(),
+            issues: r
+                .issues
+                .into_iter()
+                .map(|i| issue_str(i).to_string())
+                .collect(),
+        })
+        .collect())
 }
 
 /// Reveal a single secret field on demand (for display in the UI).
@@ -674,5 +734,59 @@ mod tests {
         do_unlock(&reloaded, "pw").unwrap();
 
         assert_eq!(do_get_item(&reloaded, &id).unwrap().title, "GitHub");
+    }
+
+    #[test]
+    fn get_item_reports_password_strength() {
+        let dir = TempDir::new().unwrap();
+        let (state, _) = unlocked(&dir);
+
+        let weak_id = do_upsert_item(&state, sample_input()).unwrap(); // "p4ss"
+        assert_eq!(
+            do_get_item(&state, &weak_id)
+                .unwrap()
+                .password_strength
+                .as_deref(),
+            Some("weak")
+        );
+
+        let mut strong = sample_input();
+        strong.password = "wf*QB(=0QIc0.Z^RI,A6".into();
+        let strong_id = do_upsert_item(&state, strong).unwrap();
+        assert_eq!(
+            do_get_item(&state, &strong_id)
+                .unwrap()
+                .password_strength
+                .as_deref(),
+            Some("strong")
+        );
+    }
+
+    #[test]
+    fn security_report_flags_weak_and_reused() {
+        let dir = TempDir::new().unwrap();
+        let (state, _) = unlocked(&dir);
+
+        // Two items share a strong password (reused), one item is weak.
+        let mut a = sample_input();
+        a.title = "A".into();
+        a.password = "Sh4red&Strong!2024xyz".into();
+        let a_id = do_upsert_item(&state, a).unwrap();
+
+        let mut b = sample_input();
+        b.title = "B".into();
+        b.password = "Sh4red&Strong!2024xyz".into();
+        do_upsert_item(&state, b).unwrap();
+
+        let mut c = sample_input();
+        c.title = "C".into();
+        c.password = "abc".into();
+        do_upsert_item(&state, c).unwrap();
+
+        let report = do_security_report(&state).unwrap();
+        // A + B flagged reused; C flagged weak. (sample_input's TOTP doesn't matter.)
+        assert_eq!(report.len(), 3);
+        let a_issues = &report.iter().find(|r| r.id == a_id).unwrap().issues;
+        assert!(a_issues.contains(&"reused".to_string()));
     }
 }

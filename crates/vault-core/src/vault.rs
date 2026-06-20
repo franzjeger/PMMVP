@@ -188,6 +188,12 @@ impl Vault {
             .collect())
     }
 
+    /// Password-health audit (weak/reused) over the active login items.
+    /// Requires the vault to be unlocked.
+    pub fn security_report(&self) -> Result<Vec<crate::security::ItemSecurity>> {
+        Ok(crate::security::audit(self.unlocked_items()?))
+    }
+
     /// Fetch a full (decrypted) item by id. The returned clone carries
     /// plaintext secrets and zeroizes on drop.
     pub fn get_item(&self, id: Uuid) -> Result<Item> {
