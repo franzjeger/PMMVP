@@ -89,16 +89,29 @@ fn info_path(app_data_dir: &Path) -> PathBuf {
 }
 
 /// Bare host of a URL: scheme/path/port/userinfo stripped and a leading "www."
-/// removed. Empty when there's no host.
-fn host_of(url: &str) -> String {
+/// removed. Empty when there's no host. Shared with the item list (site
+/// grouping) so the UI groups by exactly the hosts autofill matches on.
+pub(crate) fn host_of(url: &str) -> String {
     let after_scheme = match url.find("://") {
         Some(i) => &url[i + 3..],
         None => url.trim(),
     };
     let authority = after_scheme.split('/').next().unwrap_or("");
     let no_userinfo = authority.rsplit('@').next().unwrap_or(authority);
-    let host = no_userinfo.split(':').next().unwrap_or(no_userinfo);
-    host.trim().trim_start_matches("www.").to_ascii_lowercase()
+    // Strip the port bracket-aware: an IPv6 literal ("[fd00::a1]:8080") must
+    // not be truncated at the first colon inside the address.
+    let host = if no_userinfo.starts_with('[') {
+        match no_userinfo.find(']') {
+            Some(end) => &no_userinfo[..=end],
+            None => no_userinfo, // malformed literal; keep as-is
+        }
+    } else {
+        no_userinfo.split(':').next().unwrap_or(no_userinfo)
+    };
+    // Lowercase BEFORE stripping "www." so "WWW.GitHub.com" == "github.com";
+    // full Unicode lowercase so IDN hosts compare equal too.
+    let host = host.trim().to_lowercase();
+    host.strip_prefix("www.").unwrap_or(&host).to_string()
 }
 
 /// Whether a stored login's URL should autofill on the requested page: exact
@@ -432,6 +445,19 @@ mod tests {
             host_of("http://user@accounts.google.com:443/"),
             "accounts.google.com"
         );
+        // Case-insensitive: lowercase happens BEFORE the "www." strip.
+        assert_eq!(host_of("https://WWW.GitHub.com/login"), "github.com");
+        // IDN hosts need full Unicode lowercasing to compare equal.
+        assert_eq!(host_of("https://MÜNCHEN.DE"), "münchen.de");
+        // Bracketed IPv6 literals keep their identity (not cut at ':').
+        assert_eq!(host_of("https://[fd00::a1]/admin"), "[fd00::a1]");
+        assert_eq!(host_of("https://[::1]:8080/x"), "[::1]");
+        // ...so two DIFFERENT IPv6 hosts must neither group nor autofill-match.
+        assert!(!domain_matches("https://[fd00::a1]", "https://[fd00::b2]"));
+        assert!(domain_matches(
+            "https://[fd00::a1]",
+            "https://[fd00::a1]:8443"
+        ));
         assert!(domain_matches(
             "https://github.com",
             "https://www.github.com/login"

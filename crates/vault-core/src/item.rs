@@ -81,6 +81,15 @@ impl VaultItem {
     pub fn has_totp(&self) -> bool {
         matches!(self, VaultItem::Login { totp_secret: Some(s), .. } if !s.is_empty())
     }
+
+    /// The website URL, for kinds that have one (empty otherwise). Non-secret
+    /// metadata, used e.g. to group entries for the same site in the list.
+    pub fn url(&self) -> &str {
+        match self {
+            VaultItem::Login { url, .. } => url,
+            VaultItem::Passkey { .. } | VaultItem::SecureNote { .. } => "",
+        }
+    }
 }
 
 /// A stored vault entry: secret payload plus non-secret metadata.
@@ -120,6 +129,7 @@ impl Item {
             kind: self.data.kind(),
             title: self.data.title().to_owned(),
             subtitle: self.data.subtitle().to_owned(),
+            url: self.data.url().to_owned(),
             has_totp: self.data.has_totp(),
             is_deleted: self.is_deleted(),
             modified_at: self.modified_at,
@@ -138,6 +148,8 @@ pub struct ItemSummary {
     pub kind: ItemKind,
     pub title: String,
     pub subtitle: String,
+    /// Website URL (empty for kinds without one). Non-secret metadata.
+    pub url: String,
     pub has_totp: bool,
     pub is_deleted: bool,
     pub modified_at: i64,

@@ -53,6 +53,10 @@ pub struct ItemSummaryDto {
     pub subtitle: String,
     /// First letter of the title, for the colored list tile.
     pub letter: String,
+    /// Normalized website host ("github.com"; empty when the item has no URL),
+    /// using the same normalization as autofill matching. The list groups
+    /// entries that share a host.
+    pub host: String,
     pub has_totp: bool,
     pub is_deleted: bool,
     pub modified_at: i64,
@@ -454,6 +458,7 @@ fn do_list_items(
             id: s.id.to_string(),
             kind: kind_str(s.kind).to_string(),
             letter: first_letter(&s.title),
+            host: crate::bridge::host_of(&s.url),
             title: s.title,
             subtitle: s.subtitle,
             has_totp: s.has_totp,
@@ -863,6 +868,37 @@ mod tests {
         assert!(detail.has_password);
         assert!(detail.has_totp);
         // The detail DTO has no field that could carry the password/secret.
+    }
+
+    #[test]
+    fn list_items_reports_the_normalized_host_for_grouping() {
+        let dir = TempDir::new().unwrap();
+        let (state, _) = unlocked(&dir);
+
+        // Messy-but-equivalent URLs normalize to the same host; no URL -> "".
+        let mut a = sample_input();
+        a.title = "GitHub (work)".into();
+        a.url = "https://www.github.com/login?next=/".into();
+        do_upsert_item(&state, a).unwrap();
+        let mut b = sample_input();
+        b.title = "GitHub (privat)".into();
+        b.url = "github.com".into();
+        do_upsert_item(&state, b).unwrap();
+        let mut c = sample_input();
+        c.title = "Uten nettsted".into();
+        c.url = String::new();
+        do_upsert_item(&state, c).unwrap();
+
+        let list = do_list_items(&state, false).unwrap();
+        let host_by_title = |t: &str| {
+            list.iter()
+                .find(|i| i.title == t)
+                .map(|i| i.host.clone())
+                .unwrap()
+        };
+        assert_eq!(host_by_title("GitHub (work)"), "github.com");
+        assert_eq!(host_by_title("GitHub (privat)"), "github.com");
+        assert_eq!(host_by_title("Uten nettsted"), "");
     }
 
     #[test]

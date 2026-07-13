@@ -25,6 +25,8 @@ export interface ItemSummary {
   title: string;
   subtitle: string;
   letter: string;
+  /** Normalized website host ("github.com"; empty when no URL). */
+  host: string;
   hasTotp: boolean;
   isDeleted: boolean;
   modifiedAt: number;

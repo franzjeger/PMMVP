@@ -21,6 +21,7 @@ import {
   filterByCategory,
   type CategoryId,
 } from "./lib/categories";
+import { displayOrder } from "./lib/grouping";
 
 import { TitleBar } from "./components/TitleBar";
 import { Sidebar } from "./components/Sidebar";
@@ -155,14 +156,15 @@ export default function App() {
     );
   }, [items, category, search, issuesById]);
 
-  // Keep a sensible selection as the visible list changes.
+  // Keep a sensible selection as the visible list changes. Pick the item the
+  // list actually renders first (grouped + sorted order), not backend order.
   useEffect(() => {
     if (visible.length === 0) {
       setSelectedId(null);
       return;
     }
     if (!selectedId || !visible.some((i) => i.id === selectedId)) {
-      setSelectedId(visible[0].id);
+      setSelectedId(displayOrder(visible)[0].id);
     }
   }, [visible, selectedId]);
 
