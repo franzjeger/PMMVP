@@ -136,7 +136,9 @@ fn bridge_request(payload: serde_json::Value) -> Option<serde_json::Value> {
     let stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     // Long enough to outlast an in-app autofill-consent prompt (the app blocks
     // the reply until the user answers, up to ~30s) without hanging forever.
-    stream.set_read_timeout(Some(Duration::from_secs(45))).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(45)))
+        .ok()?;
     let mut writer = stream.try_clone().ok()?;
     let mut reader = BufReader::new(stream);
 
