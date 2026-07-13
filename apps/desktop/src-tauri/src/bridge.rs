@@ -16,13 +16,17 @@
 //!     never pull another site's password.
 //!   * **Least exposure** — `match` returns metadata only (id/title/username);
 //!     the password crosses solely on an explicit `fill` for a matched id.
-//!
-//! TODO(hardening): a per-fill user-consent prompt in the app.
+//!   * **Optional per-fill consent** — with the `confirm_autofill` setting on,
+//!     a `fill` blocks on an in-app Allow/Deny prompt, making the desktop app
+//!     the final approver (defence in depth if the extension is compromised).
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Sender;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -30,6 +34,24 @@ use uuid::Uuid;
 use vault_core::VaultItem;
 
 use crate::state::AppState;
+
+/// How long a blocked `fill` waits for the user's Allow/Deny before defaulting
+/// to deny.
+const CONSENT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Pending autofill-consent requests, keyed by a per-request id. When
+/// `confirm_autofill` is on, the bridge thread parks on the receiver while the
+/// frontend shows an Allow/Deny prompt; `resolve_autofill_consent` sends the
+/// decision. Managed by Tauri so the command and the bridge share it.
+#[derive(Default)]
+pub struct PendingConsents(pub Mutex<HashMap<String, Sender<bool>>>);
+
+/// What the user is being asked to approve for a single fill.
+pub struct ConsentContext {
+    pub site: String,
+    pub account: String,
+    pub title: String,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -99,6 +121,7 @@ fn handle_request(
     token: &str,
     authed: &mut bool,
     app: Option<&AppHandle>,
+    consent: &mut dyn FnMut(&ConsentContext) -> bool,
 ) -> Response {
     match req {
         Request::Hello { token: presented } => {
@@ -153,54 +176,122 @@ fn handle_request(
             Response::Logins { items }
         }
         Request::Fill { id, url } => {
-            let st = match state.lock() {
-                Ok(s) => s,
-                Err(_) => {
-                    return Response::Error {
-                        message: "internal".into(),
-                    }
-                }
-            };
-            let Some(vault) = st.vault.as_ref().filter(|v| v.is_unlocked()) else {
-                return Response::Error {
-                    message: "locked".into(),
-                };
-            };
-            let Ok(uuid) = Uuid::parse_str(&id) else {
-                return Response::Error {
-                    message: "not_found".into(),
-                };
-            };
-            let Ok(item) = vault.get_item(uuid) else {
-                return Response::Error {
-                    message: "not_found".into(),
-                };
-            };
-            if let VaultItem::Login {
-                url: u,
-                username,
-                password,
-                title,
-                ..
-            } = &item.data
+            // Resolve + validate under the lock, then extract just what we need
+            // and release it before any (possibly slow) user consent prompt.
+            let confirm;
+            let username;
+            let password;
+            let title;
             {
+                let st = match state.lock() {
+                    Ok(s) => s,
+                    Err(_) => {
+                        return Response::Error {
+                            message: "internal".into(),
+                        }
+                    }
+                };
+                let Some(vault) = st.vault.as_ref().filter(|v| v.is_unlocked()) else {
+                    return Response::Error {
+                        message: "locked".into(),
+                    };
+                };
+                let Ok(uuid) = Uuid::parse_str(&id) else {
+                    return Response::Error {
+                        message: "not_found".into(),
+                    };
+                };
+                let Ok(item) = vault.get_item(uuid) else {
+                    return Response::Error {
+                        message: "not_found".into(),
+                    };
+                };
+                let VaultItem::Login {
+                    url: u,
+                    username: un,
+                    password: pw,
+                    title: t,
+                    ..
+                } = &item.data
+                else {
+                    return Response::Error {
+                        message: "not_found".into(),
+                    };
+                };
                 // Origin binding: never hand a credential to a non-matching host.
                 if !domain_matches(u, &url) {
                     return Response::Error {
                         message: "origin_mismatch".into(),
                     };
                 }
-                if let Some(app) = app {
-                    let _ = app.emit("autofilled", format!("{title} ({})", host_of(&url)));
-                }
-                return Response::Credentials {
-                    username: username.clone(),
-                    password: password.clone(),
+                confirm = st.settings.confirm_autofill;
+                username = un.clone();
+                password = pw.clone();
+                title = t.clone();
+            }
+
+            // Optional per-fill consent: the app is the final approver.
+            if confirm {
+                let ctx = ConsentContext {
+                    site: host_of(&url),
+                    account: username.clone(),
+                    title: title.clone(),
                 };
+                if !consent(&ctx) {
+                    return Response::Error {
+                        message: "denied".into(),
+                    };
+                }
             }
-            Response::Error {
-                message: "not_found".into(),
+
+            if let Some(app) = app {
+                let _ = app.emit("autofilled", format!("{title} ({})", host_of(&url)));
             }
+            Response::Credentials { username, password }
+        }
+    }
+}
+
+/// Production consent: emit the request to the frontend, bring the window
+/// forward, and block this bridge thread until the user answers (or times out,
+/// which denies). Returns `true` only on an explicit Allow.
+fn request_consent(app: &AppHandle, ctx: &ConsentContext) -> bool {
+    let consent_id = Uuid::new_v4().simple().to_string();
+    let (tx, rx) = std::sync::mpsc::channel::<bool>();
+    {
+        let pending = app.state::<PendingConsents>();
+        let Ok(mut map) = pending.0.lock() else {
+            return false;
+        };
+        map.insert(consent_id.clone(), tx);
+    }
+    let _ = app.emit(
+        "fill-consent-request",
+        serde_json::json!({
+            "id": consent_id,
+            "site": ctx.site,
+            "account": ctx.account,
+            "title": ctx.title,
+        }),
+    );
+    // Surface the prompt over the browser the user is filling into.
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+    let approved = rx.recv_timeout(CONSENT_TIMEOUT).unwrap_or(false);
+    // Drop the sender if it's still registered (timeout path).
+    if let Ok(mut map) = app.state::<PendingConsents>().0.lock() {
+        map.remove(&consent_id);
+    }
+    approved
+}
+
+/// Deliver a user's Allow/Deny decision to the parked bridge thread.
+pub fn resolve_consent(app: &AppHandle, id: &str, approved: bool) {
+    if let Ok(mut map) = app.state::<PendingConsents>().0.lock() {
+        if let Some(tx) = map.remove(id) {
+            let _ = tx.send(approved);
         }
     }
 }
@@ -258,13 +349,21 @@ fn serve(stream: TcpStream, app: &AppHandle, token: &str) -> std::io::Result<()>
     let reader = BufReader::new(stream);
     let state = app.state::<Mutex<AppState>>();
     let mut authed = false;
+    let mut consent = |ctx: &ConsentContext| request_consent(app, ctx);
     for line in reader.lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
         let resp = match serde_json::from_str::<Request>(&line) {
-            Ok(req) => handle_request(req, state.inner(), token, &mut authed, Some(app)),
+            Ok(req) => handle_request(
+                req,
+                state.inner(),
+                token,
+                &mut authed,
+                Some(app),
+                &mut consent,
+            ),
             Err(_) => Response::Error {
                 message: "bad_request".into(),
             },
@@ -286,6 +385,12 @@ mod tests {
     use tempfile::TempDir;
     use vault_core::{KdfAlgorithm, KdfParams, Vault};
     use vault_store::VaultStore;
+
+    /// A consent closure that always approves (autofill confirmation off is the
+    /// default, so this is only exercised when a test flips the setting on).
+    fn allow() -> impl FnMut(&ConsentContext) -> bool {
+        |_| true
+    }
 
     fn cheap_params() -> KdfParams {
         KdfParams {
@@ -361,6 +466,7 @@ mod tests {
             "secret",
             &mut authed,
             None,
+            &mut allow(),
         );
         assert!(matches!(r, Response::Error { message } if message == "unauthorized"));
         // Wrong token -> unauthorized, stays unauthed.
@@ -372,6 +478,7 @@ mod tests {
             "secret",
             &mut authed,
             None,
+            &mut allow(),
         );
         assert!(matches!(r, Response::Error { .. }));
         assert!(!authed);
@@ -384,6 +491,7 @@ mod tests {
             "secret",
             &mut authed,
             None,
+            &mut allow(),
         );
         assert_eq!(r, Response::Ok);
         assert!(authed);
@@ -407,6 +515,7 @@ mod tests {
             "t",
             &mut authed,
             None,
+            &mut allow(),
         );
         match r {
             Response::Logins { items } => {
@@ -427,6 +536,7 @@ mod tests {
             "t",
             &mut authed,
             None,
+            &mut allow(),
         );
         assert_eq!(
             r,
@@ -446,6 +556,7 @@ mod tests {
             "t",
             &mut authed,
             None,
+            &mut allow(),
         );
         assert!(matches!(r, Response::Error { message } if message == "origin_mismatch"));
 
@@ -460,7 +571,58 @@ mod tests {
             "t",
             &mut authed,
             None,
+            &mut allow(),
         );
         assert!(matches!(r, Response::Error { message } if message == "locked"));
+    }
+
+    #[test]
+    fn fill_requires_consent_when_confirm_is_enabled() {
+        let dir = TempDir::new().unwrap();
+        let state = unlocked_state(&dir);
+        let gh = add(&state, "GitHub", "frank", "gh-pw", "https://github.com");
+        state.lock().unwrap().settings.confirm_autofill = true;
+        let mut authed = true;
+
+        // Denied consent -> no credential.
+        let mut deny = |_: &ConsentContext| false;
+        let r = handle_request(
+            Request::Fill {
+                id: gh.clone(),
+                url: "https://github.com".into(),
+            },
+            &state,
+            "t",
+            &mut authed,
+            None,
+            &mut deny,
+        );
+        assert!(matches!(r, Response::Error { message } if message == "denied"));
+
+        // The consent prompt must carry the real site + account being approved.
+        let mut seen: Option<(String, String)> = None;
+        let mut capture = |ctx: &ConsentContext| {
+            seen = Some((ctx.site.clone(), ctx.account.clone()));
+            true
+        };
+        let r = handle_request(
+            Request::Fill {
+                id: gh,
+                url: "https://github.com/login".into(),
+            },
+            &state,
+            "t",
+            &mut authed,
+            None,
+            &mut capture,
+        );
+        assert_eq!(
+            r,
+            Response::Credentials {
+                username: "frank".into(),
+                password: "gh-pw".into()
+            }
+        );
+        assert_eq!(seen, Some(("github.com".into(), "frank".into())));
     }
 }

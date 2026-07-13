@@ -131,6 +131,12 @@ export function SettingsDialog({
               disabled={busy}
               onChange={() => void toggleQuickUnlock()}
             />
+            <ToggleRow
+              label="Confirm before autofill"
+              hint="Ask for an explicit Allow/Deny in this app before a password is filled into the browser. Off by default; autofill is already limited to the matching site while unlocked."
+              checked={settings.confirmAutofill}
+              onChange={(v) => apply({ confirmAutofill: v })}
+            />
             <Row
               label="Import passwords"
               hint="From a Chrome, Apple Passwords, or Firefox CSV export. Delete the CSV afterward; it holds plaintext passwords."

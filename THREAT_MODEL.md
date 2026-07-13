@@ -66,7 +66,7 @@ disk at rest, the browser/extension context.
 | T8 | Secret exposure via the webview heap | A3/A4 | **Partial** | Secrets sent to the UI only on explicit reveal; copy stays in Rust. Revealed values and live TOTP codes transit the JS heap; CSP restricts the webview. |
 | T9 | Same-user malware reading memory/keychain/file | A3 | **Out of scope** | No local password manager defends against code running as the same user; documented, not claimed. |
 | T10 | Theft of the keychain device key (quick unlock) | A3/A4 | **Inherited** | Protected by the OS keychain/secure enclave; deleting the entry disables quick unlock. Master password is never stored. On macOS, quick unlock is additionally gated behind a Touch ID (device-owner) prompt — a *presence* check in front of the keychain read. Residual: the key is not yet stored in a `SecAccessControl`-protected item that the OS refuses to release without biometrics, so a same-user process (T9) could still read it directly without the prompt. |
-| T11 | Autofill into a phishing origin | A5 | **Mitigated (no consent yet)** | The autofill bridge enforces origin binding: a credential is released only when the page host matches the stored login's host, and only while unlocked. The bridge is loopback-only + token-authed. Residual: no per-fill user-consent prompt yet, and a same-user process (A3/T9) could read the token file. |
+| T11 | Autofill into a phishing origin | A5 | **Mitigated (optional consent)** | The autofill bridge enforces origin binding: a credential is released only when the page host matches the stored login's host, and only while unlocked. The bridge is loopback-only + token-authed. An **optional** per-fill in-app Allow/Deny prompt (`confirm_autofill` setting) makes the desktop app the final approver, defending even a compromised extension. Residual: a same-user process (A3/T9) could read the token file. |
 | T12 | Telemetry / data exfiltration | A2 | **Mitigated** | No network code, no analytics. |
 | T13 | Secrets leaked through logs/errors | A3 | **Mitigated** | Error types carry no secret material; nothing logs plaintext. |
 | T14 | Metadata/length leakage from the file | A1 | **Accepted** | Items encrypted individually; CBOR is self-describing (field names present inside the AEAD); sizes are not padded. See SECURITY.md. |
@@ -95,7 +95,8 @@ disk at rest, the browser/extension context.
 1. **Independent cryptographic and implementation audit** — outstanding, and not
    self-closable by this project. This document is its input, not its substitute.
 2. Land `mlock`/`VirtualLock` for secret memory (T5/T6).
-3. A per-fill user-consent prompt for autofill (origin binding + unlock gating are done; T11).
+3. Consider making the per-fill consent prompt (now available as the opt-in
+   `confirm_autofill` setting; T11) the default, once its UX is validated.
 4. Tighten the production CSP (remove dev `'unsafe-inline'`).
 5. Complete the manual interactive paste check on real X11 and Wayland sessions.
 6. Store the quick-unlock device key in a biometry-gated keychain item

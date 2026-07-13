@@ -47,6 +47,9 @@ fn main() {
             // Restore persisted (non-secret) settings, if any.
             app_state.settings = state::load_settings(app_state.store.path());
             app.manage(Mutex::new(app_state));
+            // Shared map of in-flight autofill-consent prompts (used only when
+            // the confirm-autofill setting is on).
+            app.manage(bridge::PendingConsents::default());
 
             // Local autofill bridge for the browser extension (loopback + token;
             // gated on unlock + origin match). Best-effort: failure to bind just
@@ -93,6 +96,7 @@ fn main() {
             commands::quick_unlock,
             commands::enable_quick_unlock,
             commands::disable_quick_unlock,
+            commands::resolve_autofill_consent,
             commands::lock,
             commands::touch,
             commands::list_items,

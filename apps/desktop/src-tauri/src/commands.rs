@@ -385,6 +385,13 @@ pub fn quick_unlock(state: St<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// Deliver the user's Allow/Deny decision for a pending autofill-consent prompt
+/// to the parked bridge thread (see `bridge::PendingConsents`).
+#[tauri::command]
+pub fn resolve_autofill_consent(app: tauri::AppHandle, id: String, approved: bool) {
+    crate::bridge::resolve_consent(&app, &id, approved);
+}
+
 #[tauri::command]
 pub fn enable_quick_unlock(state: St<'_>) -> Result<(), CmdError> {
     let mut st = guard(state.inner())?;

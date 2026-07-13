@@ -24,6 +24,10 @@ pub struct Settings {
     /// Clear copied secrets from the clipboard after this many seconds. `0`
     /// disables auto-clear.
     pub clipboard_clear_secs: u64,
+    /// Require an explicit in-app Allow/Deny prompt before releasing a
+    /// credential to the browser extension. Off by default (origin binding +
+    /// unlock already gate autofill); on makes the app the final approver.
+    pub confirm_autofill: bool,
 }
 
 impl Default for Settings {
@@ -32,6 +36,7 @@ impl Default for Settings {
             auto_lock_secs: 300,
             lock_on_blur: false,
             clipboard_clear_secs: 30,
+            confirm_autofill: false,
         }
     }
 }
@@ -201,6 +206,7 @@ mod tests {
             auto_lock_secs: 120,
             lock_on_blur: false,
             clipboard_clear_secs: 15,
+            confirm_autofill: true,
         };
         save_settings(&vault, &s).unwrap();
         assert_eq!(load_settings(&vault), s);

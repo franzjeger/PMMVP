@@ -5,8 +5,11 @@ import {
   api,
   errorMessage,
   isTauri,
+  onAutofilled,
   onClipboardCleared,
+  onFillConsentRequest,
   onVaultLocked,
+  type FillConsent,
   type ItemDetail,
   type ItemSummary,
   type SecurityIssue,
@@ -26,6 +29,7 @@ import { DetailPane } from "./components/DetailPane";
 import { LockScreen } from "./components/LockScreen";
 import { EditDialog } from "./components/EditDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { ConsentDialog } from "./components/ConsentDialog";
 import { Toast } from "./components/Toast";
 import { KeyIcon } from "./components/icons";
 
@@ -39,6 +43,7 @@ export default function App() {
   const [detail, setDetail] = useState<ItemDetail | null>(null);
   const [editing, setEditing] = useState<{ id: string | null } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [consent, setConsent] = useState<FillConsent | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   const loadItems = useCallback(async () => {
@@ -87,6 +92,8 @@ export default function App() {
         void refreshStatus();
       }),
       onClipboardCleared(() => setToast("Clipboard cleared")),
+      onAutofilled((what) => setToast(`Autofilled ${what}`)),
+      onFillConsentRequest((req) => setConsent(req)),
     ];
     return () => {
       pending.forEach((p) => p.then((u) => u()).catch(() => {}));
@@ -272,6 +279,13 @@ export default function App() {
           itemId={editing.id}
           onClose={() => setEditing(null)}
           onSaved={handleSaved}
+        />
+      )}
+      {consent && (
+        <ConsentDialog
+          request={consent}
+          onResolved={() => setConsent(null)}
+          onToast={setToast}
         />
       )}
       <Toast message={toast} onDone={() => setToast(null)} />

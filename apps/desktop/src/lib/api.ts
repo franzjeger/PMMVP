@@ -69,6 +69,15 @@ export interface Settings {
   autoLockSecs: number;
   lockOnBlur: boolean;
   clipboardClearSecs: number;
+  confirmAutofill: boolean;
+}
+
+/** Payload of a `fill-consent-request` event: what the app is asking to fill. */
+export interface FillConsent {
+  id: string;
+  site: string;
+  account: string;
+  title: string;
 }
 
 export interface LoginInput {
@@ -149,6 +158,9 @@ export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (settings: Settings) => invoke<void>("set_settings", { settings }),
 
+  resolveAutofillConsent: (id: string, approved: boolean) =>
+    invoke<void>("resolve_autofill_consent", { id, approved }),
+
   openExternal: (url: string) => openUrl(url),
 
   /**
@@ -186,4 +198,19 @@ export function onVaultLocked(cb: (reason: string) => void): Promise<UnlistenFn>
 /** Fired after a copied secret is auto-cleared from the clipboard. */
 export function onClipboardCleared(cb: () => void): Promise<UnlistenFn> {
   return listen("clipboard-cleared", () => cb());
+}
+
+/** Fired after a credential is autofilled into the browser (for visibility). */
+export function onAutofilled(cb: (what: string) => void): Promise<UnlistenFn> {
+  return listen<string>("autofilled", (e) => cb(e.payload));
+}
+
+/**
+ * Fired when a fill needs the user's explicit approval (confirm-autofill on).
+ * Answer with `api.resolveAutofillConsent(id, approved)`.
+ */
+export function onFillConsentRequest(
+  cb: (req: FillConsent) => void,
+): Promise<UnlistenFn> {
+  return listen<FillConsent>("fill-consent-request", (e) => cb(e.payload));
 }
