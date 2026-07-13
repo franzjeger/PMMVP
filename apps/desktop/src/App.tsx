@@ -30,6 +30,7 @@ import { LockScreen } from "./components/LockScreen";
 import { EditDialog } from "./components/EditDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { ConsentDialog } from "./components/ConsentDialog";
+import { TouchIdBanner } from "./components/TouchIdBanner";
 import { Toast } from "./components/Toast";
 import { KeyIcon } from "./components/icons";
 
@@ -232,6 +233,9 @@ export default function App() {
 
   return (
     <Shell>
+      {status.biometricAvailable && !status.hasQuickUnlock && (
+        <TouchIdBanner onEnabled={refreshStatus} onToast={setToast} />
+      )}
       <div className="flex flex-1 overflow-hidden">
         <Sidebar
           counts={counts}
