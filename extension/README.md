@@ -61,15 +61,34 @@ Handshake smoke test of the host alone:
 printf '\x10\x00\x00\x00{"type":"hello"}' | ./target/release/vault-native-host | xxd | head
 ```
 
-### Other platforms / Firefox
+### Linux
 
-The Chromium native-messaging dirs differ by OS (Linux:
-`~/.config/google-chrome/NativeMessagingHosts/`; Windows: a registry key under
-`HKCU\Software\Google\Chrome\NativeMessagingHosts\no.sybr.vault`). Firefox uses
-`no.sybr.vault.firefox.json` (`allowed_extensions`) in
+```bash
+./extension/install-linux.sh
+```
+
+Registers the host in the `NativeMessagingHosts/` dir of every installed
+Chromium-family browser under `~/.config/…` (Chrome/Chromium/Brave/Edge/Vivaldi),
+plus Firefox (`~/.mozilla/native-messaging-hosts/`) using the
+`no.sybr.vault.firefox.json` template. Then the same one Chrome click as above.
+
+### Windows
+
+```powershell
+./extension/install-windows.ps1
+```
+
+Windows registers native-messaging hosts via the registry rather than a
+directory: the script writes the host manifest next to the built `.exe` and sets
+the per-user key (e.g. `HKCU\Software\Google\Chrome\NativeMessagingHosts\no.sybr.vault`)
+to point at it, for Chrome/Chromium/Edge/Brave. Then the same one Chrome click.
+
+### Firefox
+
+Firefox uses `no.sybr.vault.firefox.json` (`allowed_extensions`, gecko id) in
 `~/Library/Application Support/Mozilla/NativeMessagingHosts/` (macOS) or
-`~/.mozilla/native-messaging-hosts/` (Linux). Linux/Windows installer scripts
-are a TODO; the templates in `native-host/` show the exact shape.
+`~/.mozilla/native-messaging-hosts/` (Linux); the Linux installer handles it
+automatically.
 
 See the repo `README.md`, `SECURITY.md`, and `THREAT_MODEL.md` for the security
 model.
