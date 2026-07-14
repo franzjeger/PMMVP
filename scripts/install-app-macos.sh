@@ -14,8 +14,19 @@ APP_DST="/Applications/SYBR Passwords.app"
 echo "==> Building release bundle…"
 (cd "$REPO/apps/desktop" && npm run tauri build -- --bundles app)
 
-echo "==> Ad-hoc signing…"
-codesign --force --deep -s - "$APP_SRC"
+# Prefer a stable signing identity (Developer ID / Apple Development): the
+# macOS keychain grants quick-unlock access per code signature, so a stable
+# identity means "Always Allow" sticks across rebuilds. Ad-hoc signatures
+# change every build and would re-prompt for the login password each time.
+IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+  | grep -Eo '"(Developer ID Application|Apple Development)[^"]*"' | head -1 | tr -d '"')"
+if [ -n "$IDENTITY" ]; then
+  echo "==> Signing with: $IDENTITY"
+  codesign --force --deep -s "$IDENTITY" "$APP_SRC"
+else
+  echo "==> No signing identity found; ad-hoc signing (keychain will re-prompt after rebuilds)"
+  codesign --force --deep -s - "$APP_SRC"
+fi
 codesign --verify --deep --strict "$APP_SRC"
 
 echo "==> Installing to /Applications…"
