@@ -18,8 +18,13 @@ echo "==> Building release bundle…"
 # macOS keychain grants quick-unlock access per code signature, so a stable
 # identity means "Always Allow" sticks across rebuilds. Ad-hoc signatures
 # change every build and would re-prompt for the login password each time.
+# Prefer Developer ID (long-lived, distribution-grade) over Apple Development
+# (expires yearly) — and keep using ONE identity consistently: the keychain
+# item is ACL-bound to the signing identity, so switching identity re-prompts.
 IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
-  | grep -Eo '"(Developer ID Application|Apple Development)[^"]*"' | head -1 | tr -d '"')"
+  | grep -Eo '"Developer ID Application[^"]*"' | head -1 | tr -d '"')"
+[ -n "$IDENTITY" ] || IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+  | grep -Eo '"Apple Development[^"]*"' | head -1 | tr -d '"')"
 if [ -n "$IDENTITY" ]; then
   echo "==> Signing with: $IDENTITY"
   codesign --force --deep -s "$IDENTITY" "$APP_SRC"
