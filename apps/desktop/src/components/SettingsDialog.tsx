@@ -6,6 +6,7 @@ import {
   type VaultStatus,
 } from "../lib/api";
 import { GearIcon } from "./icons";
+import { ImportDialog } from "./ImportDialog";
 
 const AUTO_LOCK_OPTIONS = [
   { label: "Never", value: 0 },
@@ -36,6 +37,7 @@ export function SettingsDialog({
   const [settings, setSettings] = useState<Settings | null>(null);
   const [quickUnlock, setQuickUnlock] = useState(status.hasQuickUnlock);
   const [busy, setBusy] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   useEffect(() => {
     api
@@ -65,24 +67,6 @@ export function SettingsDialog({
         onToast("Quick unlock enabled");
       }
       onStatusChanged();
-    } catch (e) {
-      onToast(errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const importCsv = async () => {
-    setBusy(true);
-    try {
-      const summary = await api.pickAndImportCsv();
-      if (summary) {
-        onToast(
-          `Imported ${summary.imported}` +
-            (summary.skipped ? `, skipped ${summary.skipped}` : ""),
-        );
-        onStatusChanged(); // refreshes the item list
-      }
     } catch (e) {
       onToast(errorMessage(e));
     } finally {
@@ -139,15 +123,15 @@ export function SettingsDialog({
             />
             <Row
               label="Import passwords"
-              hint="From a Chrome, Apple Passwords, or Firefox CSV export. Delete the CSV afterward; it holds plaintext passwords."
+              hint="From Safari/Apple Passwords, Chrome, Brave, Edge, Firefox, or any CSV export. Safe to re-import: duplicates are skipped."
             >
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => void importCsv()}
+                onClick={() => setImportOpen(true)}
                 className="rounded-lg border border-hairline px-3 py-1.5 text-[13px] text-neutral-200 hover:bg-white/5 disabled:opacity-50"
               >
-                Choose CSV…
+                Import…
               </button>
             </Row>
           </div>
@@ -162,6 +146,14 @@ export function SettingsDialog({
           </button>
         </div>
       </div>
+
+      {importOpen && (
+        <ImportDialog
+          onClose={() => setImportOpen(false)}
+          onImported={onStatusChanged}
+          onToast={onToast}
+        />
+      )}
     </div>
   );
 }

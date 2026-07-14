@@ -111,6 +111,7 @@ fn main() {
             commands::current_totp,
             commands::security_report,
             commands::import_logins,
+            commands::open_passwords_app,
             commands::generate,
             commands::get_settings,
             commands::set_settings,

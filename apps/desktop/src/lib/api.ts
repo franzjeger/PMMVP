@@ -58,6 +58,10 @@ export interface SecurityIssue {
 
 export interface ImportSummary {
   imported: number;
+  /** Existing logins whose password changed and was updated in place. */
+  updated: number;
+  /** Rows identical to an existing login, skipped (safe to re-import). */
+  duplicates: number;
   skipped: number;
 }
 
@@ -156,6 +160,7 @@ export const api = {
   generate: (options: PasswordOptions) => invoke<string>("generate", { options }),
 
   importLogins: (path: string) => invoke<ImportSummary>("import_logins", { path }),
+  openPasswordsApp: () => invoke<void>("open_passwords_app"),
 
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (settings: Settings) => invoke<void>("set_settings", { settings }),

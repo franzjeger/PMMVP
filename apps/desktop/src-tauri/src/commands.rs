@@ -95,6 +95,12 @@ pub struct SecurityIssueDto {
 pub struct ImportSummary {
     /// Logins added to the vault.
     pub imported: usize,
+    /// Existing logins (same site + username) whose password changed and was
+    /// updated in place.
+    pub updated: usize,
+    /// Rows identical to an existing login (same site + username + password),
+    /// skipped so re-importing an export never creates copies.
+    pub duplicates: usize,
     /// Rows skipped (blank, or no username and no password).
     pub skipped: usize,
 }
@@ -568,7 +574,24 @@ fn do_import_logins(state: &Mutex<AppState>, path: &str) -> Result<ImportSummary
     let mut st = guard(state)?;
     st.touch();
     let now = now_millis();
+
+    // Index existing active logins by (normalized host, lowercased username) so
+    // re-importing an export updates/skips instead of duplicating. Entries
+    // without a URL are never merged (a bare username is too weak an identity).
+    let mut by_key: std::collections::HashMap<(String, String), Uuid> = st
+        .vault()?
+        .list_items(false)?
+        .into_iter()
+        .filter(|s| !crate::bridge::host_of(&s.url).is_empty())
+        .map(|s| {
+            let key = (crate::bridge::host_of(&s.url), s.subtitle.to_lowercase());
+            (key, s.id)
+        })
+        .collect();
+
     let mut imported = 0usize;
+    let mut updated = 0usize;
+    let mut duplicates = 0usize;
     for p in parsed {
         // A bad/unsupported TOTP value shouldn't drop the whole login: keep the
         // credentials and just omit the code.
@@ -578,6 +601,96 @@ fn do_import_logins(state: &Mutex<AppState>, path: &str) -> Result<ImportSummary
             Some(p.totp)
         })
         .unwrap_or(None);
+
+        let host = crate::bridge::host_of(&p.url);
+        let key = (host.clone(), p.username.to_lowercase());
+        let existing = if host.is_empty() {
+            None
+        } else {
+            by_key.get(&key).copied()
+        };
+
+        if let Some(id) = existing {
+            let current = st.vault()?.get_item(id)?;
+            let (cur_title, cur_username, cur_url, cur_password, cur_totp, cur_notes) =
+                match &current.data {
+                    VaultItem::Login {
+                        title,
+                        username,
+                        url,
+                        password,
+                        totp_secret,
+                        notes,
+                    } => (
+                        title.clone(),
+                        username.clone(),
+                        url.clone(),
+                        password.clone(),
+                        totp_secret.clone(),
+                        notes.clone(),
+                    ),
+                    // The merge key comes from a Login summary, so a non-Login
+                    // hit is impossible; treat it as "not found" defensively.
+                    _ => {
+                        let item = Item::new(
+                            VaultItem::Login {
+                                title: p.title,
+                                username: p.username,
+                                password: p.password,
+                                url: p.url,
+                                totp_secret,
+                                notes: p.notes,
+                            },
+                            now,
+                        );
+                        st.vault_mut()?.upsert_item(item)?;
+                        imported += 1;
+                        continue;
+                    }
+                };
+
+            // Merge, never destroy: an empty CSV column keeps the existing
+            // value (so a username-only row can't wipe a stored password, and a
+            // browser export without TOTP/notes doesn't erase them). Title/URL/
+            // username are the user's to own — imports refresh secrets, they
+            // don't overwrite labels the user may have customized.
+            let new_password = if p.password.is_empty() {
+                cur_password.clone()
+            } else {
+                p.password
+            };
+            let new_totp = totp_secret.or_else(|| cur_totp.clone());
+            let new_notes = if p.notes.is_empty() {
+                cur_notes.clone()
+            } else {
+                p.notes
+            };
+
+            let changed =
+                new_password != cur_password || new_totp != cur_totp || new_notes != cur_notes;
+            if !changed {
+                duplicates += 1;
+                continue;
+            }
+
+            let item = Item {
+                id: current.id,
+                created_at: current.created_at,
+                modified_at: now,
+                deleted_at: None,
+                data: VaultItem::Login {
+                    title: cur_title,
+                    username: cur_username,
+                    url: cur_url,
+                    password: new_password,
+                    totp_secret: new_totp,
+                    notes: new_notes,
+                },
+            };
+            st.vault_mut()?.upsert_item(item)?;
+            updated += 1;
+            continue;
+        }
 
         let item = Item::new(
             VaultItem::Login {
@@ -590,13 +703,44 @@ fn do_import_logins(state: &Mutex<AppState>, path: &str) -> Result<ImportSummary
             },
             now,
         );
+        // Register the new item so a second row for the same site + username
+        // within this file dedupes against it instead of importing twice.
+        if !host.is_empty() {
+            by_key.insert(key, item.id);
+        }
         st.vault_mut()?.upsert_item(item)?;
         imported += 1;
     }
-    if imported > 0 {
+    if imported > 0 || updated > 0 {
         persist(&st)?;
     }
-    Ok(ImportSummary { imported, skipped })
+    Ok(ImportSummary {
+        imported,
+        updated,
+        duplicates,
+        skipped,
+    })
+}
+
+/// Open the system password manager app (macOS "Passwords"), as a convenience
+/// next to the Safari/Apple import instructions. No-op elsewhere.
+#[tauri::command]
+pub fn open_passwords_app() -> Result<(), CmdError> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-a", "Passwords"])
+            .spawn()
+            .map_err(|_| CmdError::new("io", "Could not open the Passwords app."))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(CmdError::new(
+            "unsupported",
+            "Opening the system password manager is only wired up on macOS.",
+        ))
+    }
 }
 
 /// Reveal a single secret field on demand (for display in the UI).
@@ -1113,5 +1257,129 @@ mod tests {
         assert_eq!(list.len(), 2);
         let bank = list.iter().find(|i| i.title == "Bank").unwrap();
         assert!(bank.has_totp); // otpauth normalized to a stored secret
+    }
+
+    #[test]
+    fn reimport_dedupes_and_updates_instead_of_duplicating() {
+        let dir = TempDir::new().unwrap();
+        let (state, _) = unlocked(&dir);
+        let write = |name: &str, body: &str| {
+            let p = dir.path().join(name);
+            std::fs::write(&p, body).unwrap();
+            p
+        };
+
+        let first = write(
+            "a.csv",
+            "name,url,username,password,otpauth,notes\n\
+             Bank,https://www.bank.com/login,Me@Bank.com,old-secret,otpauth://totp/Bank?secret=GEZDGNBVGY3TQOJQ,viktig notat\n\
+             NoUrl,,someone,pw1,,\n",
+        );
+        let s1 = do_import_logins(&state, first.to_str().unwrap()).unwrap();
+        assert_eq!((s1.imported, s1.updated, s1.duplicates), (2, 0, 0));
+        let bank_id = do_list_items(&state, false)
+            .unwrap()
+            .into_iter()
+            .find(|i| i.title == "Bank")
+            .unwrap()
+            .id;
+
+        // Re-import: same login (messier URL + different username case) with an
+        // unchanged password is a duplicate; a changed password updates the
+        // EXISTING item; a URL-less row never merges.
+        let second = write(
+            "b.csv",
+            "name,url,username,password\n\
+             Bank,bank.com,me@bank.com,old-secret\n\
+             NoUrl,,someone,pw1\n",
+        );
+        let s2 = do_import_logins(&state, second.to_str().unwrap()).unwrap();
+        assert_eq!((s2.imported, s2.updated, s2.duplicates), (1, 0, 1));
+
+        let third = write(
+            "c.csv",
+            "name,url,username,password\n\
+             Bank,https://bank.com,me@bank.com,NEW-secret\n",
+        );
+        let s3 = do_import_logins(&state, third.to_str().unwrap()).unwrap();
+        assert_eq!((s3.imported, s3.updated, s3.duplicates), (0, 1, 0));
+
+        // Still one Bank item, same id, with the new password — and the TOTP +
+        // notes from the first import survive (the update CSV had neither).
+        let list = do_list_items(&state, false).unwrap();
+        assert_eq!(list.iter().filter(|i| i.title == "Bank").count(), 1);
+        let bank = list.iter().find(|i| i.title == "Bank").unwrap();
+        assert_eq!(bank.id, bank_id);
+        assert_eq!(
+            do_reveal_field(&state, &bank.id, "password").unwrap(),
+            "NEW-secret"
+        );
+        assert!(bank.has_totp);
+        assert_eq!(
+            do_reveal_field(&state, &bank.id, "notes").unwrap(),
+            "viktig notat"
+        );
+
+        // The user's title + full URL are preserved on update — not clobbered
+        // by the export's synthesized/bare values.
+        let detail = do_get_item(&state, &bank.id).unwrap();
+        assert_eq!(detail.title, "Bank");
+        assert_eq!(detail.url, "https://www.bank.com/login");
+
+        // Two same-key rows within ONE file: first imports, second dedupes.
+        let fourth = write(
+            "d.csv",
+            "name,url,username,password\n\
+             Shop,https://shop.no,kunde,pw\n\
+             Shop,https://www.shop.no,KUNDE,pw\n",
+        );
+        let s4 = do_import_logins(&state, fourth.to_str().unwrap()).unwrap();
+        assert_eq!((s4.imported, s4.updated, s4.duplicates), (1, 0, 1));
+
+        // A row with a BLANK password must never wipe the stored password: it's
+        // a no-op (duplicate), not a destructive update.
+        let blank = write(
+            "e.csv",
+            "name,url,username,password\n\
+             Bank,https://bank.com,me@bank.com,\n",
+        );
+        let s5 = do_import_logins(&state, blank.to_str().unwrap()).unwrap();
+        assert_eq!((s5.imported, s5.updated, s5.duplicates), (0, 0, 1));
+        assert_eq!(
+            do_reveal_field(&state, &bank.id, "password").unwrap(),
+            "NEW-secret" // untouched
+        );
+
+        // Same password but a NEWLY populated TOTP column must MERGE into the
+        // existing entry (Shop had none), not be dropped as a "duplicate".
+        let shop_id = do_list_items(&state, false)
+            .unwrap()
+            .into_iter()
+            .find(|i| i.title == "Shop")
+            .unwrap()
+            .id;
+        assert!(
+            !do_list_items(&state, false)
+                .unwrap()
+                .iter()
+                .find(|i| i.id == shop_id)
+                .unwrap()
+                .has_totp
+        );
+        let shop_totp = write(
+            "g.csv",
+            "name,url,username,password,otpauth\n\
+             Shop,https://shop.no,kunde,pw,otpauth://totp/Shop?secret=GEZDGNBVGY3TQOJQ\n",
+        );
+        let s6 = do_import_logins(&state, shop_totp.to_str().unwrap()).unwrap();
+        assert_eq!((s6.imported, s6.updated, s6.duplicates), (0, 1, 0));
+        assert!(
+            do_list_items(&state, false)
+                .unwrap()
+                .iter()
+                .find(|i| i.id == shop_id)
+                .unwrap()
+                .has_totp
+        );
     }
 }
