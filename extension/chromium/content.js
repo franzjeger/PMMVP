@@ -98,7 +98,9 @@
   // badged during the identifier step still does a full fill once the password
   // step appears.
   async function showMatches(anchor, auto, isIdentifier = false) {
-    if (querying) return;
+    // Coalesce automatic (focus) triggers, but never drop a manual badge click:
+    // "manual always gives feedback".
+    if (querying && auto) return;
     querying = true;
     try {
       if (!auto) openPanel(anchor, note("Searching your vault…"));
@@ -252,7 +254,9 @@
 
     // For password fields, also suggest from the associated username field —
     // unless that field already carries its own (identifier) badge, which would
-    // double-bind the focus handler.
+    // double-bind the focus handler. Anchor the picker to the username field
+    // itself (so it appears under the focused field) and let the click-time
+    // full-fill path fill both, since a visible password field exists here.
     const userField = findUsernameField(field);
     if (
       userField &&
@@ -260,7 +264,7 @@
       !userField.dataset.sybrAttached
     ) {
       userField.dataset.sybrUserBound = "1";
-      userField.addEventListener("focus", () => showMatches(field, true));
+      userField.addEventListener("focus", () => showMatches(userField, true, true));
     }
   }
 
