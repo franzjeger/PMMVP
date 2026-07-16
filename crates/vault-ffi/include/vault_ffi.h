@@ -9,6 +9,7 @@
 #ifndef VAULT_FFI_H
 #define VAULT_FFI_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -23,7 +24,7 @@ void vault_ffi_free(uint8_t *ptr, size_t len);
 /* Create a passkey for rp_id. Out-pairs (freed by the caller):
  *   credential_id, private_key (SEC1 P-256, 32 bytes — store encrypted!),
  *   attestation_object (CBOR, fmt "none"). */
-int32_t vault_ffi_passkey_create(const char *rp_id,
+int32_t vault_ffi_passkey_create(const char *rp_id, bool user_verified,
                                  uint8_t **out_credential_id,
                                  size_t *out_credential_id_len,
                                  uint8_t **out_private_key,
@@ -36,6 +37,7 @@ int32_t vault_ffi_passkey_create(const char *rp_id,
  * (synced credential), so there is nothing to persist. */
 int32_t vault_ffi_passkey_assert(const uint8_t *private_key,
                                  size_t private_key_len, const char *rp_id,
+                                 bool user_verified,
                                  const uint8_t *client_data_hash,
                                  size_t client_data_hash_len,
                                  uint8_t **out_authenticator_data,

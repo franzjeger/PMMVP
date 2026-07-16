@@ -24,6 +24,8 @@ serde_json.workspace = true
 vault-core.workspace = true
 vault-store.workspace = true
 uuid.workspace = true
+# Public Suffix List for passkey RP-ID validation (reject eTLD-scoped rp_ids).
+psl.workspace = true
 # Cross-platform clipboard, used so secret copies + auto-clear happen in Rust
 # rather than exposing plaintext to the webview's clipboard API.
 arboard = "3"

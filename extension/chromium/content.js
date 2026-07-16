@@ -384,4 +384,7 @@
     childList: true,
     subtree: true,
   });
+
+  // (Passkey relay lives in passkey-relay.js, injected at document_start so it's
+  // listening before the main-world shim can post an early WebAuthn request.)
 })();

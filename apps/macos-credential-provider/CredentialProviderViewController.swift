@@ -40,8 +40,10 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
         var att: UnsafeMutablePointer<UInt8>? = nil
         var attLen = 0
 
+        // The OS performs user verification (Touch ID) as part of this flow, so
+        // user_verified = true.
         let rc = rpId.withCString {
-            vault_ffi_passkey_create($0,
+            vault_ffi_passkey_create($0, true,
                                      &credId, &credIdLen,
                                      &privKey, &privKeyLen,
                                      &att, &attLen)
@@ -109,6 +111,7 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
                         keyBuf.bindMemory(to: UInt8.self).baseAddress,
                         keyBuf.count,
                         rpPtr,
+                        true, // OS verified the user (Touch ID) for this flow
                         hashBuf.bindMemory(to: UInt8.self).baseAddress,
                         hashBuf.count,
                         &authData, &authDataLen,

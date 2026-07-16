@@ -80,14 +80,24 @@ fn cose_ec2_public_key(vk: &VerifyingKey) -> Vec<u8> {
 /// Assemble authenticatorData (WebAuthn §6.1). With `attested`, the
 /// attestedCredentialData block (aaguid + credential id + COSE key) is appended,
 /// as required for registration.
+///
+/// UP (user present) is ALWAYS set — the caller must not invoke this without a
+/// genuine user approval, so presence is real. UV (user verified) is set only
+/// when `user_verified` (a real biometric/PIN check happened); asserting UV
+/// without verification would be a false "the user was just verified" claim
+/// that relying parties rely on for step-up defenses.
 fn authenticator_data(
     rp_id: &str,
     sign_count: u32,
     attested: Option<(&[u8], &[u8])>, // (credential_id, cose_public_key)
+    user_verified: bool,
 ) -> Vec<u8> {
     let mut data = Vec::with_capacity(37);
     data.extend_from_slice(&sha256(rp_id.as_bytes())); // rpIdHash (32)
-    let mut flags = FLAG_UP | FLAG_UV | FLAG_BE | FLAG_BS;
+    let mut flags = FLAG_UP | FLAG_BE | FLAG_BS;
+    if user_verified {
+        flags |= FLAG_UV;
+    }
     if attested.is_some() {
         flags |= FLAG_AT;
     }
@@ -102,8 +112,9 @@ fn authenticator_data(
     data
 }
 
-/// Create a new passkey for `rp_id`. The sign counter starts at 0.
-pub fn create(rp_id: &str) -> Result<NewPasskey> {
+/// Create a new passkey for `rp_id`. The sign counter starts at 0. `user_verified`
+/// records whether a biometric/PIN verification gated this registration.
+pub fn create(rp_id: &str, user_verified: bool) -> Result<NewPasskey> {
     let signing = SigningKey::random(&mut rand_core::OsRng);
     let verifying = VerifyingKey::from(&signing);
     let cose = cose_ec2_public_key(&verifying);
@@ -111,7 +122,7 @@ pub fn create(rp_id: &str) -> Result<NewPasskey> {
     let mut credential_id = vec![0u8; CREDENTIAL_ID_LEN];
     getrandom::getrandom(&mut credential_id).map_err(|_| Error::Random)?;
 
-    let auth_data = authenticator_data(rp_id, 0, Some((&credential_id, &cose)));
+    let auth_data = authenticator_data(rp_id, 0, Some((&credential_id, &cose)), user_verified);
 
     // attestationObject = { fmt: "none", attStmt: {}, authData }.
     let att = Cbor::Map(vec![
@@ -138,13 +149,18 @@ pub fn create(rp_id: &str) -> Result<NewPasskey> {
 /// (synced with the vault), and WebAuthn L3 §6.1.1 recommends a constant 0 for
 /// credentials that cannot guarantee a single monotonic counter across devices
 /// — a non-monotonic counter would trip a relying party's clone detection.
+///
+/// `user_verified` must reflect whether a real biometric/PIN check gated this
+/// assertion; the caller MUST require a genuine user approval before calling
+/// this (user presence is otherwise a false claim).
 pub fn assert(
     private_key: &[u8],
     rp_id: &str,
     client_data_hash: &[u8],
+    user_verified: bool,
 ) -> Result<(Vec<u8>, Vec<u8>)> {
     let signing = SigningKey::from_slice(private_key).map_err(|_| Error::Passkey)?;
-    let auth_data = authenticator_data(rp_id, 0, None);
+    let auth_data = authenticator_data(rp_id, 0, None, user_verified);
 
     let mut signed = auth_data.clone();
     signed.extend_from_slice(client_data_hash);
@@ -171,7 +187,7 @@ mod tests {
 
     #[test]
     fn create_produces_a_valid_attestation_and_usable_key() {
-        let pk = create("github.com").unwrap();
+        let pk = create("github.com", true).unwrap();
         assert_eq!(pk.credential_id.len(), CREDENTIAL_ID_LEN);
         assert_eq!(pk.private_key.len(), 32);
 
@@ -191,19 +207,36 @@ mod tests {
             Some(Cbor::Bytes(b)) => b,
             _ => panic!("authData missing"),
         };
-        // rpIdHash is SHA-256("github.com"); the AT flag is set at registration.
+        // rpIdHash is SHA-256("github.com"); AT + UP + UV set at a verified
+        // registration.
         assert_eq!(&auth_data[..32], &sha256(b"github.com"));
         assert_eq!(auth_data[32] & FLAG_AT, FLAG_AT);
+        assert_eq!(auth_data[32] & FLAG_UP, FLAG_UP);
+        assert_eq!(auth_data[32] & FLAG_UV, FLAG_UV);
         assert_eq!(&auth_data[33..37], &0u32.to_be_bytes()); // signCount == 0
     }
 
     #[test]
+    fn uv_flag_reflects_verification_but_up_is_always_set() {
+        // Not verified: UP set (presence required by the caller), UV clear.
+        let (ad, _) = assert(
+            &create("rp", false).unwrap().private_key,
+            "rp",
+            &[0u8; 32],
+            false,
+        )
+        .unwrap();
+        assert_eq!(ad[32] & FLAG_UP, FLAG_UP);
+        assert_eq!(ad[32] & FLAG_UV, 0);
+    }
+
+    #[test]
     fn assertion_signature_verifies_against_the_public_key() {
-        let pk = create("example.com").unwrap();
+        let pk = create("example.com", true).unwrap();
         let client_data_hash = sha256(b"{\"type\":\"webauthn.get\"}");
 
         let (auth_data, der_sig) =
-            assert(&pk.private_key, "example.com", &client_data_hash).unwrap();
+            assert(&pk.private_key, "example.com", &client_data_hash, true).unwrap();
 
         // Reconstruct what was signed and verify with the credential's pubkey.
         let mut signed = auth_data.clone();
@@ -221,10 +254,10 @@ mod tests {
 
     #[test]
     fn a_wrong_key_does_not_verify() {
-        let a = create("rp.example").unwrap();
-        let b = create("rp.example").unwrap();
+        let a = create("rp.example", true).unwrap();
+        let b = create("rp.example", true).unwrap();
         let hash = sha256(b"challenge");
-        let (auth_data, sig_a) = assert(&a.private_key, "rp.example", &hash).unwrap();
+        let (auth_data, sig_a) = assert(&a.private_key, "rp.example", &hash, true).unwrap();
 
         let mut signed = auth_data;
         signed.extend_from_slice(&hash);
@@ -237,7 +270,7 @@ mod tests {
 
     #[test]
     fn bad_private_key_is_an_error_not_a_panic() {
-        assert!(assert(&[0u8; 4], "rp", &[0u8; 32]).is_err());
+        assert!(assert(&[0u8; 4], "rp", &[0u8; 32], true).is_err());
         assert!(public_key_sec1(&[9u8; 10]).is_err());
     }
 }

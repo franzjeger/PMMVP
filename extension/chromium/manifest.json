@@ -44,6 +44,29 @@
       ],
       "run_at": "document_idle",
       "all_frames": false
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "passkey-relay.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "passkey.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
     }
   ],
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2nFJ813WwtcSqGddgBLd7q68hF/eUFO65Psi6mTiKqCbYSjs0VZe14ECYdsileMv0/KrSWArxY0LYJGK/eUKQL5JkNKxTHQDeB+wO2684iCW/9uV287iJGkyGx8wJZkFjyT1a6RyjVdKkhn/AUPQxzDQDBLfOSpqLagS8tO1bJKmWyZ+gU+9jSAE69hoztuLp7rUfnRn+zqn1WHgHNZ05RNZeUd78samMa+CCLV76d74q/UFACDpwpv01SRdw2rB1XhA1O9shv1hZBLuGCOatXcTXYDkN5RNSoMXE9c4rvNPzB93MuFwyuikGx3S+gwC4wV7KYKZSYCZyjTYvIuiBwIDAQAB"

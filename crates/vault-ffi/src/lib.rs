@@ -79,6 +79,7 @@ unsafe fn cstr<'a>(s: *const c_char) -> Option<&'a str> {
 #[no_mangle]
 pub unsafe extern "C" fn vault_ffi_passkey_create(
     rp_id: *const c_char,
+    user_verified: bool,
     out_credential_id: *mut *mut u8,
     out_credential_id_len: *mut usize,
     out_private_key: *mut *mut u8,
@@ -98,7 +99,7 @@ pub unsafe extern "C" fn vault_ffi_passkey_create(
     let Some(rp_id) = cstr(rp_id) else {
         return ERR_UTF8;
     };
-    match vault_core::passkey::create(rp_id) {
+    match vault_core::passkey::create(rp_id, user_verified) {
         Ok(pk) => {
             emit(pk.credential_id, out_credential_id, out_credential_id_len);
             emit(
@@ -129,6 +130,7 @@ pub unsafe extern "C" fn vault_ffi_passkey_assert(
     private_key: *const u8,
     private_key_len: usize,
     rp_id: *const c_char,
+    user_verified: bool,
     client_data_hash: *const u8,
     client_data_hash_len: usize,
     out_authenticator_data: *mut *mut u8,
@@ -150,7 +152,7 @@ pub unsafe extern "C" fn vault_ffi_passkey_assert(
     };
     let key = slice::from_raw_parts(private_key, private_key_len);
     let hash = slice::from_raw_parts(client_data_hash, client_data_hash_len);
-    match vault_core::passkey::assert(key, rp_id, hash) {
+    match vault_core::passkey::assert(key, rp_id, hash, user_verified) {
         Ok((auth_data, sig)) => {
             emit(
                 auth_data,
@@ -183,6 +185,7 @@ mod tests {
         let rc = unsafe {
             vault_ffi_passkey_create(
                 rp.as_ptr(),
+                true,
                 &mut cid,
                 &mut cid_len,
                 &mut pk,
@@ -204,6 +207,7 @@ mod tests {
                 private_key.as_ptr(),
                 private_key.len(),
                 rp.as_ptr(),
+                true,
                 hash.as_ptr(),
                 hash.len(),
                 &mut ad,
@@ -239,6 +243,7 @@ mod tests {
         let rc = unsafe {
             vault_ffi_passkey_create(
                 ptr::null(),
+                true,
                 &mut a,
                 &mut al,
                 &mut a,

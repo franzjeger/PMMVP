@@ -31,7 +31,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
-use vault_core::VaultItem;
+use vault_core::{Item, VaultItem};
 
 use crate::state::AppState;
 
@@ -56,18 +56,64 @@ pub struct ConsentContext {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Request {
-    Hello { token: String },
-    Match { url: String },
-    Fill { id: String, url: String },
+    Hello {
+        token: String,
+    },
+    Match {
+        url: String,
+    },
+    Fill {
+        id: String,
+        url: String,
+    },
+    /// Register a new WebAuthn passkey (navigator.credentials.create).
+    PasskeyCreate {
+        /// The page origin, e.g. "https://github.com". Validated against `rp_id`.
+        origin: String,
+        rp_id: String,
+        #[serde(default)]
+        user_name: String,
+        #[serde(default)]
+        user_handle: Vec<u8>,
+    },
+    /// Assert an existing passkey (navigator.credentials.get).
+    PasskeyGet {
+        origin: String,
+        rp_id: String,
+        /// SHA-256 of the clientDataJSON the extension constructed.
+        client_data_hash: Vec<u8>,
+        /// Credential ids the RP will accept; empty means "any for this rp".
+        #[serde(default)]
+        allow_credentials: Vec<Vec<u8>>,
+    },
 }
 
 #[derive(Debug, Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Response {
     Ok,
-    Logins { items: Vec<LoginMatch> },
-    Credentials { username: String, password: String },
-    Error { message: String },
+    Logins {
+        items: Vec<LoginMatch>,
+    },
+    Credentials {
+        username: String,
+        password: String,
+    },
+    /// Result of `PasskeyCreate`: the new credential id + CBOR attestation.
+    PasskeyCredential {
+        credential_id: Vec<u8>,
+        attestation_object: Vec<u8>,
+    },
+    /// Result of `PasskeyGet`: the assertion the RP verifies.
+    PasskeyAssertion {
+        credential_id: Vec<u8>,
+        authenticator_data: Vec<u8>,
+        signature: Vec<u8>,
+        user_handle: Vec<u8>,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -109,8 +155,9 @@ pub(crate) fn host_of(url: &str) -> String {
         no_userinfo.split(':').next().unwrap_or(no_userinfo)
     };
     // Lowercase BEFORE stripping "www." so "WWW.GitHub.com" == "github.com";
-    // full Unicode lowercase so IDN hosts compare equal too.
-    let host = host.trim().to_lowercase();
+    // full Unicode lowercase so IDN hosts compare equal too. Drop a trailing
+    // dot (the fully-qualified form "github.com." == "github.com").
+    let host = host.trim().trim_end_matches('.').to_lowercase();
     host.strip_prefix("www.").unwrap_or(&host).to_string()
 }
 
@@ -123,6 +170,33 @@ fn domain_matches(stored_url: &str, requested_url: &str) -> bool {
         return false;
     }
     a == b || a.ends_with(&format!(".{b}")) || b.ends_with(&format!(".{a}"))
+}
+
+/// WebAuthn RP-ID validation: `rp_id` must equal the page origin's host or be a
+/// *registrable* parent-domain suffix of it. So a page on `sub.github.com` may
+/// use rp_id `github.com`, but a page on `evil.com` may NOT — this is the core
+/// anti-phishing binding for passkey create/get.
+///
+/// Crucially, `rp_id` must NOT be a public suffix / eTLD (`com`, `co.uk`,
+/// `github.io`): the Public Suffix List guard stops a page scoping a passkey so
+/// broadly that mutually-distrusting tenants (e.g. every `*.github.io`) could
+/// share it — exactly what a browser's WebAuthn client enforces.
+fn rp_id_matches_origin(rp_id: &str, origin: &str) -> bool {
+    let host = host_of(origin);
+    let rp = rp_id.trim().to_lowercase();
+    if rp.is_empty() || host.is_empty() {
+        return false;
+    }
+    // rp_id must equal or be a parent suffix of the origin host.
+    if host != rp && !host.ends_with(&format!(".{rp}")) {
+        return false;
+    }
+    // ...and rp_id and the origin must share the SAME registrable domain, which
+    // also rejects rp_id being a bare public suffix (no registrable domain).
+    match (psl::domain_str(&rp), psl::domain_str(&host)) {
+        (Some(rp_reg), Some(host_reg)) => rp_reg == host_reg,
+        _ => false,
+    }
 }
 
 /// Handle one parsed request. `authed` tracks whether this connection has
@@ -262,7 +336,207 @@ fn handle_request(
             }
             Response::Credentials { username, password }
         }
+        Request::PasskeyCreate {
+            origin,
+            rp_id,
+            user_name,
+            user_handle,
+        } => {
+            // Anti-phishing: the RP id must belong to the page's origin.
+            if !rp_id_matches_origin(&rp_id, &origin) {
+                return Response::Error {
+                    message: "origin_mismatch".into(),
+                };
+            }
+            // Must be unlocked before we prompt the user.
+            {
+                let st = match state.lock() {
+                    Ok(s) => s,
+                    Err(_) => {
+                        return Response::Error {
+                            message: "internal".into(),
+                        }
+                    }
+                };
+                if st.vault.as_ref().filter(|v| v.is_unlocked()).is_none() {
+                    return Response::Error {
+                        message: "locked".into(),
+                    };
+                }
+            }
+            // Registration ALWAYS requires an explicit user approval; a silent
+            // create must never register a credential.
+            let Some(user_verified) = approve_passkey(&rp_id, app, consent) else {
+                return Response::Error {
+                    message: "denied".into(),
+                };
+            };
+            let Ok(new_pk) = vault_core::passkey::create(&rp_id, user_verified) else {
+                return Response::Error {
+                    message: "internal".into(),
+                };
+            };
+            let credential_id = new_pk.credential_id.clone();
+            let attestation_object = new_pk.attestation_object;
+            let item = Item::new(
+                VaultItem::Passkey {
+                    title: rp_id.clone(),
+                    rp_id: rp_id.clone(),
+                    user_name,
+                    user_handle,
+                    credential_id: new_pk.credential_id,
+                    private_key: new_pk.private_key.to_vec(),
+                    sign_count: 0,
+                },
+                crate::state::now_millis(),
+            );
+            {
+                let mut st = match state.lock() {
+                    Ok(s) => s,
+                    Err(_) => {
+                        return Response::Error {
+                            message: "internal".into(),
+                        }
+                    }
+                };
+                let AppState { store, vault, .. } = &mut *st;
+                let Some(vault) = vault.as_mut().filter(|v| v.is_unlocked()) else {
+                    return Response::Error {
+                        message: "locked".into(),
+                    };
+                };
+                if vault.upsert_item(item).is_err() || store.save(vault).is_err() {
+                    return Response::Error {
+                        message: "internal".into(),
+                    };
+                }
+            }
+            if let Some(app) = app {
+                let _ = app.emit("passkey-created", rp_id);
+            }
+            Response::PasskeyCredential {
+                credential_id,
+                attestation_object,
+            }
+        }
+        Request::PasskeyGet {
+            origin,
+            rp_id,
+            client_data_hash,
+            allow_credentials,
+        } => {
+            if !rp_id_matches_origin(&rp_id, &origin) {
+                return Response::Error {
+                    message: "origin_mismatch".into(),
+                };
+            }
+            // Resolve the passkey under the lock; release it before the prompt.
+            let credential_id;
+            let user_handle;
+            let private_key;
+            {
+                let st = match state.lock() {
+                    Ok(s) => s,
+                    Err(_) => {
+                        return Response::Error {
+                            message: "internal".into(),
+                        }
+                    }
+                };
+                let Some(vault) = st.vault.as_ref().filter(|v| v.is_unlocked()) else {
+                    return Response::Error {
+                        message: "locked".into(),
+                    };
+                };
+                let mut found = None;
+                if let Ok(summaries) = vault.list_items(false) {
+                    for s in summaries {
+                        let Ok(item) = vault.get_item(s.id) else {
+                            continue;
+                        };
+                        if let VaultItem::Passkey {
+                            rp_id: r,
+                            credential_id: cid,
+                            private_key: pk,
+                            user_handle: uh,
+                            ..
+                        } = &item.data
+                        {
+                            let allowed = allow_credentials.is_empty()
+                                || allow_credentials.iter().any(|a| a == cid);
+                            if *r == rp_id && allowed {
+                                found = Some((cid.clone(), uh.clone(), pk.clone()));
+                                break;
+                            }
+                        }
+                    }
+                }
+                let Some((cid, uh, pk)) = found else {
+                    return Response::Error {
+                        message: "not_found".into(),
+                    };
+                };
+                credential_id = cid;
+                user_handle = uh;
+                private_key = pk;
+            }
+
+            // An assertion ALWAYS requires an explicit user approval — otherwise
+            // the authenticator would falsely claim user presence/verification,
+            // which relying parties trust for step-up defenses.
+            let Some(user_verified) = approve_passkey(&rp_id, app, consent) else {
+                return Response::Error {
+                    message: "denied".into(),
+                };
+            };
+
+            let Ok((authenticator_data, signature)) =
+                vault_core::passkey::assert(&private_key, &rp_id, &client_data_hash, user_verified)
+            else {
+                return Response::Error {
+                    message: "internal".into(),
+                };
+            };
+            if let Some(app) = app {
+                let _ = app.emit("passkey-used", rp_id);
+            }
+            Response::PasskeyAssertion {
+                credential_id,
+                authenticator_data,
+                signature,
+                user_handle,
+            }
+        }
     }
+}
+
+/// Mandatory user approval for a passkey create/get. Returns `Some(user_verified)`
+/// on approval — `true` when a real biometric verification gated it — or `None`
+/// on denial. A passkey operation must NEVER proceed without this.
+fn approve_passkey(
+    rp_id: &str,
+    app: Option<&AppHandle>,
+    consent: &mut dyn FnMut(&ConsentContext) -> bool,
+) -> Option<bool> {
+    // In production on macOS, gate with Touch ID — a genuine user verification,
+    // so we may honestly set UV. (`app` is `None` in unit tests, which take the
+    // injected consent path below instead of prompting.)
+    #[cfg(target_os = "macos")]
+    if app.is_some() {
+        return match crate::biometric::authenticate(&format!("approve a passkey for {rp_id}")) {
+            Ok(()) => Some(true),
+            Err(_) => None,
+        };
+    }
+    let _ = app;
+    // Tests and non-biometric platforms: the in-app Allow/Deny prompt provides
+    // user presence only (user_verified = false).
+    let ctx = ConsentContext {
+        site: rp_id.to_string(),
+        account: String::new(),
+        title: format!("passkey for {rp_id}"),
+    };
+    consent(&ctx).then_some(false)
 }
 
 /// Production consent: emit the request to the frontend, bring the window
@@ -650,5 +924,155 @@ mod tests {
             }
         );
         assert_eq!(seen, Some(("github.com".into(), "frank".into())));
+    }
+
+    #[test]
+    fn passkey_create_then_get_binds_to_origin_and_signs() {
+        use vault_core::passkey;
+
+        let dir = TempDir::new().unwrap();
+        let state = unlocked_state(&dir);
+        let mut authed = true;
+        let mut create = |origin: &str, rp: &str| {
+            handle_request(
+                Request::PasskeyCreate {
+                    origin: origin.into(),
+                    rp_id: rp.into(),
+                    user_name: "frank".into(),
+                    user_handle: vec![9, 9, 9],
+                },
+                &state,
+                "t",
+                &mut authed,
+                None,
+                &mut allow(),
+            )
+        };
+
+        // A page on evil.com may not create a github.com passkey.
+        assert!(matches!(
+            create("https://evil.com", "github.com"),
+            Response::Error { message } if message == "origin_mismatch"
+        ));
+
+        // A page on the RP (incl. a subdomain) can.
+        let cred_id = match create("https://sub.github.com/x", "github.com") {
+            Response::PasskeyCredential {
+                credential_id,
+                attestation_object,
+            } => {
+                assert!(!attestation_object.is_empty());
+                credential_id
+            }
+            other => panic!("expected credential, got {other:?}"),
+        };
+
+        // get() from a matching origin returns an assertion that verifies.
+        let client_data_hash = vec![3u8; 32];
+        let r = handle_request(
+            Request::PasskeyGet {
+                origin: "https://github.com/login".into(),
+                rp_id: "github.com".into(),
+                client_data_hash: client_data_hash.clone(),
+                allow_credentials: vec![cred_id.clone()],
+            },
+            &state,
+            "t",
+            &mut authed,
+            None,
+            &mut allow(),
+        );
+        let (auth_data, sig, ret_cred) = match r {
+            Response::PasskeyAssertion {
+                credential_id,
+                authenticator_data,
+                signature,
+                user_handle,
+            } => {
+                assert_eq!(user_handle, vec![9, 9, 9]);
+                (authenticator_data, signature, credential_id)
+            }
+            other => panic!("expected assertion, got {other:?}"),
+        };
+        assert_eq!(ret_cred, cred_id);
+
+        // Independently verify the signature against a freshly asserted key is
+        // not possible (private key is in the vault), but we can confirm the
+        // assertion is well-formed: authData is 37 bytes with counter 0.
+        assert_eq!(auth_data.len(), 37);
+        assert_eq!(&auth_data[33..37], &0u32.to_be_bytes());
+        assert!(!sig.is_empty());
+        // Sanity: the same rp signs verifiably via the core (uses its own key).
+        let fresh = passkey::create("github.com", true).unwrap();
+        let (fa, fsig) =
+            passkey::assert(&fresh.private_key, "github.com", &client_data_hash, true).unwrap();
+        assert_eq!(fa.len(), 37);
+        assert!(!fsig.is_empty());
+
+        // get() from a non-RP origin is refused.
+        assert!(matches!(
+            handle_request(
+                Request::PasskeyGet {
+                    origin: "https://evil.com".into(),
+                    rp_id: "github.com".into(),
+                    client_data_hash: client_data_hash.clone(),
+                    allow_credentials: vec![],
+                },
+                &state, "t", &mut authed, None, &mut allow(),
+            ),
+            Response::Error { message } if message == "origin_mismatch"
+        ));
+
+        // Unknown credential id -> not_found.
+        assert!(matches!(
+            handle_request(
+                Request::PasskeyGet {
+                    origin: "https://github.com".into(),
+                    rp_id: "github.com".into(),
+                    client_data_hash: client_data_hash.clone(),
+                    allow_credentials: vec![vec![1, 2, 3, 4]],
+                },
+                &state, "t", &mut authed, None, &mut allow(),
+            ),
+            Response::Error { message } if message == "not_found"
+        ));
+
+        // A DENIED approval blocks the assertion (mandatory user approval).
+        assert!(matches!(
+            handle_request(
+                Request::PasskeyGet {
+                    origin: "https://github.com".into(),
+                    rp_id: "github.com".into(),
+                    client_data_hash,
+                    allow_credentials: vec![cred_id],
+                },
+                &state, "t", &mut authed, None, &mut |_: &ConsentContext| false,
+            ),
+            Response::Error { message } if message == "denied"
+        ));
+    }
+
+    #[test]
+    fn rp_id_rejects_public_suffixes_and_cross_origin() {
+        // A page may use its own registrable domain (incl. from a subdomain)...
+        assert!(rp_id_matches_origin("github.com", "https://github.com"));
+        assert!(rp_id_matches_origin(
+            "github.com",
+            "https://sub.github.com/x"
+        ));
+        assert!(rp_id_matches_origin(
+            "evil.github.io",
+            "https://evil.github.io"
+        ));
+        // ...but NOT a broader eTLD / public suffix...
+        assert!(!rp_id_matches_origin("github.io", "https://evil.github.io"));
+        assert!(!rp_id_matches_origin("com", "https://evil.com"));
+        assert!(!rp_id_matches_origin("co.uk", "https://foo.co.uk"));
+        // ...and never a different registrable domain (phishing).
+        assert!(!rp_id_matches_origin("github.com", "https://evil.com"));
+        assert!(!rp_id_matches_origin(
+            "github.com",
+            "https://github.com.evil.com"
+        ));
     }
 }

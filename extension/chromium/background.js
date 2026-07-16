@@ -52,6 +52,26 @@ api.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       sendNative({ type: "fill", id: msg.id, url: msg.url }).then(sendResponse);
       return true;
 
+    case "passkeyCreate":
+      sendNative({
+        type: "passkey_create",
+        origin: msg.origin,
+        rp_id: msg.rpId,
+        user_name: msg.userName,
+        user_handle: msg.userHandle,
+      }).then(sendResponse);
+      return true;
+
+    case "passkeyGet":
+      sendNative({
+        type: "passkey_get",
+        origin: msg.origin,
+        rp_id: msg.rpId,
+        client_data_hash: msg.clientDataHash,
+        allow_credentials: msg.allowCredentials,
+      }).then(sendResponse);
+      return true;
+
     default:
       return false;
   }

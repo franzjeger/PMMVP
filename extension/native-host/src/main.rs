@@ -44,6 +44,23 @@ enum Request {
     ListMatchingLogins { url: String },
     /// Fetch the credential for a chosen login id, to fill into `url`.
     Fill { id: String, url: String },
+    /// Register a WebAuthn passkey (navigator.credentials.create).
+    PasskeyCreate {
+        origin: String,
+        rp_id: String,
+        #[serde(default)]
+        user_name: String,
+        #[serde(default)]
+        user_handle: Vec<u8>,
+    },
+    /// Assert a WebAuthn passkey (navigator.credentials.get).
+    PasskeyGet {
+        origin: String,
+        rp_id: String,
+        client_data_hash: Vec<u8>,
+        #[serde(default)]
+        allow_credentials: Vec<Vec<u8>>,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -70,6 +87,18 @@ enum Response {
     Credentials {
         username: String,
         password: String,
+    },
+    /// Result of a passkey registration.
+    PasskeyCredential {
+        credential_id: Vec<u8>,
+        attestation_object: Vec<u8>,
+    },
+    /// Result of a passkey assertion.
+    PasskeyAssertion {
+        credential_id: Vec<u8>,
+        authenticator_data: Vec<u8>,
+        signature: Vec<u8>,
+        user_handle: Vec<u8>,
     },
     Error {
         message: String,
@@ -116,7 +145,100 @@ fn handle(request: Request) -> Response {
                 message: "Could not fill (app locked, origin mismatch, or not found).".to_string(),
             },
         },
+        Request::PasskeyCreate {
+            origin,
+            rp_id,
+            user_name,
+            user_handle,
+        } => match passkey_create(&origin, &rp_id, &user_name, &user_handle) {
+            Some((credential_id, attestation_object)) => Response::PasskeyCredential {
+                credential_id,
+                attestation_object,
+            },
+            None => Response::Error {
+                message: "Could not create passkey (app locked, origin mismatch, or not running)."
+                    .to_string(),
+            },
+        },
+        Request::PasskeyGet {
+            origin,
+            rp_id,
+            client_data_hash,
+            allow_credentials,
+        } => match passkey_get(&origin, &rp_id, &client_data_hash, &allow_credentials) {
+            Some((credential_id, authenticator_data, signature, user_handle)) => {
+                Response::PasskeyAssertion {
+                    credential_id,
+                    authenticator_data,
+                    signature,
+                    user_handle,
+                }
+            }
+            None => Response::Error {
+                message: "No matching passkey (or app locked / origin mismatch).".to_string(),
+            },
+        },
     }
+}
+
+/// Decode a JSON array-of-bytes field into `Vec<u8>`.
+fn json_bytes(v: &serde_json::Value, key: &str) -> Option<Vec<u8>> {
+    v.get(key)?
+        .as_array()?
+        .iter()
+        .map(|n| u8::try_from(n.as_u64()?).ok())
+        .collect()
+}
+
+/// Ask the app to register a passkey. Returns (credential_id, attestation_object).
+fn passkey_create(
+    origin: &str,
+    rp_id: &str,
+    user_name: &str,
+    user_handle: &[u8],
+) -> Option<(Vec<u8>, Vec<u8>)> {
+    let resp = bridge_request(serde_json::json!({
+        "type": "passkey_create",
+        "origin": origin,
+        "rp_id": rp_id,
+        "user_name": user_name,
+        "user_handle": user_handle,
+    }))?;
+    if resp.get("type").and_then(|v| v.as_str()) != Some("passkey_credential") {
+        return None;
+    }
+    Some((
+        json_bytes(&resp, "credential_id")?,
+        json_bytes(&resp, "attestation_object")?,
+    ))
+}
+
+/// (credential_id, authenticator_data, signature, user_handle) from an assertion.
+type AssertionParts = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
+
+/// Ask the app to assert a passkey.
+fn passkey_get(
+    origin: &str,
+    rp_id: &str,
+    client_data_hash: &[u8],
+    allow_credentials: &[Vec<u8>],
+) -> Option<AssertionParts> {
+    let resp = bridge_request(serde_json::json!({
+        "type": "passkey_get",
+        "origin": origin,
+        "rp_id": rp_id,
+        "client_data_hash": client_data_hash,
+        "allow_credentials": allow_credentials,
+    }))?;
+    if resp.get("type").and_then(|v| v.as_str()) != Some("passkey_assertion") {
+        return None;
+    }
+    Some((
+        json_bytes(&resp, "credential_id")?,
+        json_bytes(&resp, "authenticator_data")?,
+        json_bytes(&resp, "signature")?,
+        json_bytes(&resp, "user_handle")?,
+    ))
 }
 
 /// Path to the bridge connection-info file the desktop app writes. Uses the
@@ -323,6 +445,33 @@ mod tests {
             url: "https://github.com/login".to_string(),
         });
         assert!(matches!(resp, Response::Logins { .. }));
+    }
+
+    #[test]
+    fn passkey_requests_are_dispatched() {
+        // Without a reachable, unlocked app these resolve to an error; the point
+        // is that both variants parse and route to a handler.
+        let create = handle(Request::PasskeyCreate {
+            origin: "https://github.com".to_string(),
+            rp_id: "github.com".to_string(),
+            user_name: "frank".to_string(),
+            user_handle: vec![1, 2, 3],
+        });
+        assert!(matches!(
+            create,
+            Response::PasskeyCredential { .. } | Response::Error { .. }
+        ));
+
+        let get = handle(Request::PasskeyGet {
+            origin: "https://github.com".to_string(),
+            rp_id: "github.com".to_string(),
+            client_data_hash: vec![0u8; 32],
+            allow_credentials: vec![],
+        });
+        assert!(matches!(
+            get,
+            Response::PasskeyAssertion { .. } | Response::Error { .. }
+        ));
     }
 
     #[test]

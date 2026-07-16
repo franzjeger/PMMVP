@@ -260,7 +260,7 @@ mod tests {
             },
             2,
         );
-        let new_pk = crate::passkey::create("demo.example").unwrap();
+        let new_pk = crate::passkey::create("demo.example", true).unwrap();
         let passkey = Item::new(
             VaultItem::Passkey {
                 title: "demo.example".into(),
