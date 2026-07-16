@@ -29,6 +29,7 @@ pub mod crypto;
 pub mod error;
 pub mod header;
 pub mod item;
+pub mod passkey;
 pub mod password;
 pub mod secret;
 pub mod security;
@@ -259,9 +260,16 @@ mod tests {
             },
             2,
         );
+        let new_pk = crate::passkey::create("demo.example").unwrap();
         let passkey = Item::new(
             VaultItem::Passkey {
                 title: "demo.example".into(),
+                rp_id: "demo.example".into(),
+                user_name: "frank".into(),
+                user_handle: vec![1, 2, 3],
+                credential_id: new_pk.credential_id.clone(),
+                private_key: new_pk.private_key.to_vec(),
+                sign_count: 0,
             },
             3,
         );

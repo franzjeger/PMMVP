@@ -1,0 +1,21 @@
+[package]
+name = "vault-ffi"
+description = "C ABI over vault-core for native platform integrations (macOS AutoFill Credential Provider passkeys)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+# staticlib for linking into the Swift app extension; cdylib for a standalone
+# dynamic library. rlib so Rust integration tests can call the exports directly.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+vault-core.workspace = true
+
+[dev-dependencies]
+# Only to verify the FFI's assertion signatures in tests.
+p256 = { workspace = true }

@@ -50,4 +50,9 @@ pub enum Error {
     /// Invalid arguments supplied by the caller (e.g. password length 0).
     #[error("invalid argument: {0}")]
     InvalidArgument(&'static str),
+
+    /// A passkey operation failed (bad key material, or the item is not a
+    /// passkey). Deliberately indistinct — carries no key material.
+    #[error("passkey operation failed")]
+    Passkey,
 }

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AutoFill Credential Provider extension declaration.
+     ProvidesPasskeys = true is what lets the OS offer SYBR Passwords in the
+     passkey chooser. NSExtensionPrincipalClass must match the Swift class. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>SYBR Passwords</string>
+    <key>CFBundleIdentifier</key>
+    <string>no.sybr.vault.credential-provider</string>
+    <key>NSExtension</key>
+    <dict>
+        <key>NSExtensionPointIdentifier</key>
+        <string>com.apple.authentication-services-credential-provider-ui</string>
+        <key>NSExtensionPrincipalClass</key>
+        <string>$(PRODUCT_MODULE_NAME).CredentialProviderViewController</string>
+        <key>ASCredentialProviderExtensionCapabilities</key>
+        <dict>
+            <key>ProvidesPasswords</key>
+            <false/>
+            <key>ProvidesPasskeys</key>
+            <true/>
+        </dict>
+    </dict>
+</dict>
+</plist>

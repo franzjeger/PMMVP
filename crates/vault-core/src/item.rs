@@ -42,10 +42,32 @@ pub enum VaultItem {
         notes: String,
     },
 
-    /// TODO(phase-2): WebAuthn/passkey credential. A real implementation will
-    /// store rp_id, credential_id, the (non-extractable where possible)
-    /// private key handle, sign counter, and user handle. Stubbed for now.
-    Passkey { title: String },
+    /// A WebAuthn passkey credential. The private key is a P-256 scalar held as
+    /// bytes and zeroized with the rest of the payload; see [`crate::passkey`]
+    /// for the authenticator operations. New fields are `#[serde(default)]` so
+    /// the tagged-CBOR payload stays backward-compatible.
+    Passkey {
+        title: String,
+        /// Relying-party id, e.g. "github.com".
+        #[serde(default)]
+        rp_id: String,
+        /// Human-facing account name shown by the RP (e.g. "franzjeger").
+        #[serde(default)]
+        user_name: String,
+        /// Opaque user handle chosen by the RP at registration.
+        #[serde(default)]
+        user_handle: Vec<u8>,
+        /// Credential id presented on assertions.
+        #[serde(default)]
+        credential_id: Vec<u8>,
+        /// SEC1 P-256 private scalar (32 bytes). Secret.
+        #[serde(default)]
+        private_key: Vec<u8>,
+        /// Reserved. Assertions always report counter 0 (synced/backup-eligible
+        /// credential; see [`crate::passkey::assert`]); kept for schema stability.
+        #[serde(default)]
+        sign_count: u32,
+    },
 
     /// TODO(phase-2): free-form secure note (title + encrypted body). Stubbed.
     SecureNote { title: String },
@@ -64,7 +86,7 @@ impl VaultItem {
     pub fn title(&self) -> &str {
         match self {
             VaultItem::Login { title, .. }
-            | VaultItem::Passkey { title }
+            | VaultItem::Passkey { title, .. }
             | VaultItem::SecureNote { title } => title,
         }
     }
@@ -73,7 +95,8 @@ impl VaultItem {
     pub fn subtitle(&self) -> &str {
         match self {
             VaultItem::Login { username, .. } => username,
-            VaultItem::Passkey { .. } | VaultItem::SecureNote { .. } => "",
+            VaultItem::Passkey { user_name, .. } => user_name,
+            VaultItem::SecureNote { .. } => "",
         }
     }
 
@@ -87,7 +110,10 @@ impl VaultItem {
     pub fn url(&self) -> &str {
         match self {
             VaultItem::Login { url, .. } => url,
-            VaultItem::Passkey { .. } | VaultItem::SecureNote { .. } => "",
+            // The rp_id ("github.com") acts as the passkey's site, so it groups
+            // next to the matching login in the list.
+            VaultItem::Passkey { rp_id, .. } => rp_id,
+            VaultItem::SecureNote { .. } => "",
         }
     }
 }
