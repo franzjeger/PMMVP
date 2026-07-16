@@ -90,6 +90,100 @@
     );
   }
 
+  // Cached match list for the current page, so filtering as the user types
+  // doesn't spawn the native host on every keystroke. Keyed by URL; only a
+  // non-empty (unlocked) result is cached.
+  let cache = null; // { url, items }
+  const cachedItems = () =>
+    cache && cache.url === location.href ? cache.items : null;
+
+  /** Rank an item against the typed query: username prefix beats username
+      substring beats title. -1 = no match. */
+  function score(item, q) {
+    const u = (item.username || "").toLowerCase();
+    const t = (item.title || "").toLowerCase();
+    if (u.startsWith(q)) return 0;
+    if (u.includes(q)) return 1;
+    if (t.startsWith(q)) return 2;
+    if (t.includes(q)) return 3;
+    return -1;
+  }
+
+  /** Filter + rank so the most likely account floats to the top as you type. */
+  function rank(items, query) {
+    const q = (query || "").trim().toLowerCase();
+    if (!q) return items;
+    return items
+      .map((it) => ({ it, s: score(it, q) }))
+      .filter((x) => x.s >= 0)
+      .sort(
+        (a, b) =>
+          a.s - b.s ||
+          (a.it.username || a.it.title || "").localeCompare(
+            b.it.username || b.it.title || "",
+          ),
+      )
+      .map((x) => x.it);
+  }
+
+  /** Build one selectable row for `item`. */
+  function buildRow(item, anchor, isIdentifier) {
+    const row = document.createElement("button");
+    row.className = "sybr-row";
+    row.innerHTML = `<span class="sybr-title"></span><span class="sybr-user"></span>`;
+    row.querySelector(".sybr-title").textContent = item.title || item.url;
+    row.querySelector(".sybr-user").textContent = item.username || "";
+    row.addEventListener("click", async () => {
+      const pwField = isIdentifier ? visiblePasswordField() : anchor;
+      if (isIdentifier && !pwField) {
+        // Pure identifier step (no password field yet): fill just the username.
+        // It's metadata already in `item`; no credential request is made.
+        if (item.username) setNativeValue(anchor, item.username);
+        closePanel();
+        return;
+      }
+      // Request the actual credential. The desktop app only releases it for a
+      // matching origin while unlocked; the password is never in `item`.
+      let fill;
+      try {
+        fill = await api.runtime.sendMessage({
+          cmd: "fill",
+          id: item.id,
+          url: location.href,
+        });
+      } catch (e) {
+        openPanel(anchor, note(`Could not fill: ${String(e)}`));
+        return;
+      }
+      const cred = fill && fill.ok ? fill.response : null;
+      if (cred && cred.type === "credentials") {
+        const userField = isIdentifier ? anchor : findUsernameField(anchor);
+        if (userField && cred.username) setNativeValue(userField, cred.username);
+        if (pwField && cred.password) setNativeValue(pwField, cred.password);
+        closePanel();
+      } else {
+        openPanel(
+          anchor,
+          note((cred && cred.message) || "Couldn't retrieve the password."),
+        );
+      }
+    });
+    return row;
+  }
+
+  /** Render the (filtered, ranked) picker. On an identifier field, filter by
+      what's typed so far; empty result closes the panel. */
+  function renderPicker(anchor, items, isIdentifier) {
+    const filtered = isIdentifier ? rank(items, anchor.value) : items;
+    if (filtered.length === 0) {
+      closePanel();
+      return;
+    }
+    const list = document.createElement("div");
+    filtered.forEach((it) => list.appendChild(buildRow(it, anchor, isIdentifier)));
+    openPanel(anchor, list);
+  }
+
   // Show matching logins. `auto` = triggered by focus (stay quiet when there's
   // nothing useful); manual (badge click) always gives feedback.
   // `isIdentifier` = the anchor is a username/email field (not a password
@@ -98,6 +192,15 @@
   // badged during the identifier step still does a full fill once the password
   // step appears.
   async function showMatches(anchor, auto, isIdentifier = false) {
+    // Filter from cache without a round-trip when we already have the page's
+    // matches (this is the type-ahead path).
+    const have = cachedItems();
+    if (have) {
+      renderPicker(anchor, have, isIdentifier);
+      bindTypeAhead(anchor, isIdentifier);
+      return;
+    }
+
     // Coalesce automatic (focus) triggers, but never drop a manual badge click:
     // "manual always gives feedback".
     if (querying && auto) return;
@@ -150,58 +253,26 @@
         return;
       }
 
-      const list = document.createElement("div");
-      for (const item of items) {
-        const row = document.createElement("button");
-        row.className = "sybr-row";
-        row.innerHTML = `<span class="sybr-title"></span><span class="sybr-user"></span>`;
-        row.querySelector(".sybr-title").textContent = item.title || item.url;
-        row.querySelector(".sybr-user").textContent = item.username || "";
-        row.addEventListener("click", async () => {
-          const pwField = isIdentifier ? visiblePasswordField() : anchor;
-
-          if (isIdentifier && !pwField) {
-            // Pure identifier step (no password field yet): fill just the
-            // username. It's metadata already in `item`; no credential request
-            // is made at all.
-            if (item.username) setNativeValue(anchor, item.username);
-            closePanel();
-            return;
-          }
-
-          // Request the actual credential. The desktop app only releases it for
-          // a matching origin while unlocked; the password is never in `item`.
-          let fill;
-          try {
-            fill = await api.runtime.sendMessage({
-              cmd: "fill",
-              id: item.id,
-              url: location.href,
-            });
-          } catch (e) {
-            openPanel(anchor, note(`Could not fill: ${String(e)}`));
-            return;
-          }
-          const cred = fill && fill.ok ? fill.response : null;
-          if (cred && cred.type === "credentials") {
-            const userField = isIdentifier ? anchor : findUsernameField(anchor);
-            if (userField && cred.username)
-              setNativeValue(userField, cred.username);
-            if (pwField && cred.password) setNativeValue(pwField, cred.password);
-            closePanel();
-          } else {
-            openPanel(
-              anchor,
-              note((cred && cred.message) || "Couldn't retrieve the password."),
-            );
-          }
-        });
-        list.appendChild(row);
-      }
-      openPanel(anchor, list);
+      cache = { url: location.href, items };
+      renderPicker(anchor, items, isIdentifier);
+      bindTypeAhead(anchor, isIdentifier);
     } finally {
       querying = false;
     }
+  }
+
+  /** Re-filter the picker as the user types in an identifier/username field. */
+  function bindTypeAhead(anchor, isIdentifier) {
+    if (!isIdentifier || anchor.dataset.sybrFilterBound) return;
+    anchor.dataset.sybrFilterBound = "1";
+    anchor.addEventListener("input", () => {
+      const items = cachedItems();
+      // Only re-render while this field is focused, so filtering never fights
+      // typing in another field.
+      if (items && document.activeElement === anchor) {
+        renderPicker(anchor, items, true);
+      }
+    });
   }
 
   // Placement callbacks for every attached badge, re-run on scroll/resize AND
