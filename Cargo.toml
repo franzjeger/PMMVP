@@ -4,6 +4,7 @@ members = [
     "crates/vault-core",
     "crates/vault-store",
     "crates/vault-ffi",
+    "crates/vault-secmem",
     "apps/desktop/src-tauri",
     "extension/native-host",
 ]
@@ -15,6 +16,7 @@ default-members = [
     "crates/vault-core",
     "crates/vault-store",
     "crates/vault-ffi",
+    "crates/vault-secmem",
     "extension/native-host",
 ]
 
@@ -30,6 +32,7 @@ repository = "https://example.invalid/vault"
 # --- internal ---
 vault-core = { path = "crates/vault-core" }
 vault-store = { path = "crates/vault-store" }
+vault-secmem = { path = "crates/vault-secmem" }
 
 # --- crypto (audited RustCrypto crates only; no custom primitives) ---
 argon2 = "0.5"
@@ -41,6 +44,8 @@ sha1 = "0.10"
 sha2 = "0.10"
 getrandom = "0.2"
 data-encoding = "2.6"
+# Cross-platform mlock/VirtualLock so secret memory can't be paged to swap.
+region = "3"
 # WebAuthn passkeys: ES256 (P-256 ECDSA). RustCrypto, no custom EC math.
 p256 = { version = "0.13", features = ["ecdsa"] }
 rand_core = { version = "0.6", features = ["getrandom"] }

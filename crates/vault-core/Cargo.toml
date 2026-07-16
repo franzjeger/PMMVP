@@ -20,6 +20,7 @@ getrandom.workspace = true
 data-encoding.workspace = true
 p256.workspace = true
 rand_core.workspace = true
+vault-secmem.workspace = true
 serde.workspace = true
 bincode.workspace = true
 ciborium.workspace = true

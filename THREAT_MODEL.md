@@ -60,8 +60,8 @@ disk at rest, the browser/extension context.
 | T2 | Tampering with vault bytes | A1/A3 | **Mitigated** | Per-item and key-wrap XChaCha20-Poly1305; tampering fails authentication on unlock. |
 | T3 | Format/variant confusion to mis-decode data | A1 | **Mitigated** | Name-tagged CBOR item payloads + versioned header; id bound as AEAD AAD. |
 | T4 | Wrong-password oracle / timing side channel | A1/A6 | **Mitigated** | Poly1305 verification is constant-time; errors are indistinct ("wrong password or tampered"). |
-| T5 | Secrets written to swap/hibernation | A1/A4 | **Not yet** | `mlock`/`VirtualLock` of secret memory is pending (residual). |
-| T6 | Secret residue in process memory | A3/A4 | **Partial** | `zeroize` on drop for keys + plaintext; intermediate copies and un-locked pages may persist. |
+| T5 | Secrets written to swap/hibernation | A1/A4 | **Partial** | Symmetric **key material** (master + vault keys) is held in `mlock`/`VirtualLock`-locked memory (`vault-secmem`) so it can't page to swap/hibernation; locking is best-effort (may be refused by `RLIMIT_MEMLOCK`). Residual: item **plaintext** (passwords, revealed values) still transits non-locked heap / the webview (see T8). |
+| T6 | Secret residue in process memory | A3/A4 | **Partial** | `zeroize` on drop for keys + plaintext; key material additionally lives in locked memory (T5). Intermediate copies (e.g. decrypted item plaintext) may persist until dropped. |
 | T7 | Clipboard sniffing of a copied secret | A3/A6 | **Partial** | Copy happens in Rust (never enters JS); auto-clear after a configurable timeout, only if unchanged. Plaintext is exposed for the clear window. |
 | T8 | Secret exposure via the webview heap | A3/A4 | **Partial** | Secrets sent to the UI only on explicit reveal; copy stays in Rust. Revealed values and live TOTP codes transit the JS heap; CSP restricts the webview. |
 | T9 | Same-user malware reading memory/keychain/file | A3 | **Out of scope** | No local password manager defends against code running as the same user; documented, not claimed. |
@@ -94,7 +94,9 @@ disk at rest, the browser/extension context.
 
 1. **Independent cryptographic and implementation audit** — outstanding, and not
    self-closable by this project. This document is its input, not its substitute.
-2. Land `mlock`/`VirtualLock` for secret memory (T5/T6).
+2. ~~Land `mlock`/`VirtualLock` for secret memory (T5/T6).~~ **Done for key
+   material** (`vault-secmem`); extending locked memory to item plaintext (T8)
+   is a further step.
 3. Consider making the per-fill consent prompt (now available as the opt-in
    `confirm_autofill` setting; T11) the default, once its UX is validated.
 4. Tighten the production CSP (remove dev `'unsafe-inline'`).
