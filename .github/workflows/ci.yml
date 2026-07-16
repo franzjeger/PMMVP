@@ -1,6 +1,6 @@
 name: CI
 
-# Cross-platform verification for the SYBR Passwords workspace.
+# Cross-platform verification for the Arca workspace.
 #
 # `test` builds and runs the full suite on Linux, Windows, and macOS — this is
 # what closes the "compiles/runs on the target platform" gap, including the

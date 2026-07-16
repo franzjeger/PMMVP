@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "SYBR Passwords",
+  "name": "Arca",
   "version": "0.1.0",
-  "description": "Detects login forms and autofills credentials from your SYBR Passwords desktop vault.",
+  "description": "Detects login forms and autofills credentials from your Arca desktop vault.",
   "permissions": ["activeTab", "scripting", "nativeMessaging", "storage"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
@@ -10,7 +10,7 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "SYBR Passwords",
+    "default_title": "Arca",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",

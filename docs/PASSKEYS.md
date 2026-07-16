@@ -74,7 +74,7 @@ Options**. This is a different mechanism from our loopback autofill bridge.
    real work (sharing the encrypted vault + device key between the app and the
    sandboxed extension via an App Group + shared keychain access group).
 2. **Xcode wrapper.** Tauri does not embed app extensions. The app must be built
-   (or post-processed) so the `.appex` lands in `SYBR Passwords.app/Contents/
+   (or post-processed) so the `.appex` lands in `Arca.app/Contents/
    PlugIns/`, code-signed together. In practice this means an Xcode project (or
    a `tauri build` + inject/re-sign step) — decide during implementation.
 3. **Entitlements & provisioning** (needs the Apple Developer account):
@@ -85,7 +85,7 @@ Options**. This is a different mechanism from our loopback autofill bridge.
    - A provisioning profile enabling the entitlement on the App ID, and
      notarization for distribution.
 4. **Enable on device:** System Settings → Passwords → Password Options → turn
-   on "SYBR Passwords". Only then does it appear in the system passkey chooser.
+   on "Arca". Only then does it appear in the system passkey chooser.
 5. **Windows / Linux:** out of scope for now. Windows has a brand-new "plugin
    authenticator" model; Linux has no standard third-party passkey provider
    hook. macOS first.

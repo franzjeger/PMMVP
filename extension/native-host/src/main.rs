@@ -1,4 +1,4 @@
-//! Native-messaging host for the SYBR Passwords browser extension.
+//! Native-messaging host for the Arca browser extension.
 //!
 //! Browsers speak the "native messaging" wire protocol: each message is a
 //! 4-byte length prefix (native byte order — little-endian on all supported
@@ -135,7 +135,7 @@ fn handle(request: Request) -> Response {
                 app_connected: false,
                 items: Vec::new(),
                 note: Some(
-                    "The SYBR Passwords desktop app isn't running or is locked.".to_string(),
+                    "The Arca desktop app isn't running or is locked.".to_string(),
                 ),
             },
         },

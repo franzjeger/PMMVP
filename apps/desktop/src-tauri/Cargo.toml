@@ -1,6 +1,6 @@
 [package]
 name = "vault-desktop"
-description = "SYBR Passwords — cross-platform desktop password manager (Tauri 2 shell over vault-core/vault-store)."
+description = "Arca — cross-platform desktop password manager (Tauri 2 shell over vault-core/vault-store)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

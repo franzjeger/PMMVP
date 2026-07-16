@@ -1,7 +1,7 @@
 // Passkey provider (main world). Runs at document_start in the page's own JS
 // context so it can wrap the WebAuthn API. When a relying party calls
 // navigator.credentials.create/get with a `publicKey` request, we hand it to
-// the SYBR Passwords desktop app (via the isolated content script -> background
+// the Arca desktop app (via the isolated content script -> background
 // -> native host -> loopback bridge), which does the ES256 authenticator work,
 // and return a WebAuthn-shaped result. If we can't service it (app locked, no
 // matching passkey, only non-ES256 requested, error), we fall back to the

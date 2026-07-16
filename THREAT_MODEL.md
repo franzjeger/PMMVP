@@ -1,4 +1,4 @@
-# Threat Model — SYBR Passwords (Phase 1)
+# Threat Model — Arca (Phase 1)
 
 **Status: draft, authored alongside Phase 1.** This document is *not* a
 substitute for an independent review. The project spec requires both a threat

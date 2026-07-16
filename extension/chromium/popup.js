@@ -16,7 +16,7 @@ api.runtime.sendMessage({ cmd: "hello" }).then((result) => {
       : `Host v${result.response.version} (app not running)`;
     if (!appConnected) {
       detail.textContent =
-        "Native host is installed and responding. Open and unlock the SYBR Passwords desktop app to enable autofill.";
+        "Native host is installed and responding. Open and unlock the Arca desktop app to enable autofill.";
     }
   } else {
     dot.classList.add("bad");

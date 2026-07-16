@@ -118,7 +118,7 @@ fn main() {
             commands::set_blur_lock_suppressed,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running the SYBR Passwords application");
+        .expect("error while running the Arca application");
 }
 
 /// Polls once per second; locks the vault after the configured idle timeout.

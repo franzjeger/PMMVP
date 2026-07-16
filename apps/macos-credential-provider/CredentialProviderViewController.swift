@@ -1,7 +1,7 @@
-// SYBR Passwords — macOS AutoFill Credential Provider (passkeys).
+// Arca — macOS AutoFill Credential Provider (passkeys).
 //
 // SCAFFOLD. This is the OS-facing half of passkey support: the extension macOS
-// loads so SYBR Passwords appears in the system "Choose where to save your
+// loads so Arca appears in the system "Choose where to save your
 // passkey" / passkey chooser. It drives the ASCredentialProviderExtension
 // passkey flow and calls the Rust `vault-ffi` C ABI (see
 // crates/vault-ffi/include/vault_ffi.h) for the ES256 authenticator work.

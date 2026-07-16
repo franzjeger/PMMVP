@@ -1,6 +1,6 @@
 [package]
 name = "vault-native-host"
-description = "Native-messaging host bridging the browser extension to the SYBR Passwords desktop app."
+description = "Native-messaging host bridging the browser extension to the Arca desktop app."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -31,7 +31,7 @@ pub fn available() -> bool {
 /// Prompt the device owner to authenticate. `Ok(())` means they succeeded;
 /// `Err(message)` means they cancelled, failed, or biometrics are unavailable.
 ///
-/// `reason` is shown to the user as "SYBR Passwords is trying to <reason>".
+/// `reason` is shown to the user as "Arca is trying to <reason>".
 /// This call **blocks** until the user responds, so callers must not hold the
 /// app-state lock while invoking it.
 #[cfg(target_os = "macos")]
@@ -58,8 +58,8 @@ pub fn authenticate(reason: &str) -> Result<(), String> {
             description: None,
         },
         apple: reason,
-        windows: WindowsText::new("SYBR Passwords", reason)
-            .unwrap_or_else(|| WindowsText::new_truncated("SYBR Passwords", reason)),
+        windows: WindowsText::new("Arca", reason)
+            .unwrap_or_else(|| WindowsText::new_truncated("Arca", reason)),
     };
 
     Context::new(())

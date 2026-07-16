@@ -224,7 +224,7 @@
           openPanel(
             anchor,
             note(
-              "Can't reach SYBR Passwords. Is the desktop app installed and the extension's native host registered?",
+              "Can't reach Arca. Is the desktop app installed and the extension's native host registered?",
             ),
           );
         }
@@ -243,7 +243,7 @@
           const nag = !auto || (!isIdentifier && !lockedHintShown);
           if (nag) {
             if (auto) lockedHintShown = true;
-            openPanel(anchor, note("Open and unlock SYBR Passwords to autofill."));
+            openPanel(anchor, note("Open and unlock Arca to autofill."));
           }
         } else if (!auto) {
           openPanel(anchor, note("No matching logins for this site."));
@@ -289,7 +289,7 @@
     const badge = document.createElement("button");
     badge.type = "button";
     badge.className = "sybr-badge";
-    badge.title = "Autofill from SYBR Passwords";
+    badge.title = "Autofill from Arca";
     badge.textContent = "🔑";
 
     const place = () => {

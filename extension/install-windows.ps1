@@ -1,5 +1,5 @@
 <#
-  One-shot installer for the SYBR Passwords native-messaging host (Windows).
+  One-shot installer for the Arca native-messaging host (Windows).
 
   Builds the host binary and registers it for every Chromium-family browser via
   the per-user registry, with the extension's PINNED id (derived from the public
@@ -39,7 +39,7 @@ Write-Host "    extension id: $ExtId"
 $manifestPath = Join-Path $Repo 'target\release\no.sybr.vault.json'
 $manifest = [ordered]@{
   name            = $HostName
-  description     = 'SYBR Passwords native messaging host'
+  description     = 'Arca native messaging host'
   path            = $HostBin
   type            = 'stdio'
   allowed_origins = @("chrome-extension://$ExtId/")

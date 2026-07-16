@@ -1,6 +1,6 @@
 {
   "name": "no.sybr.vault",
-  "description": "SYBR Passwords native messaging host",
+  "description": "Arca native messaging host",
   "path": "REPLACE_WITH_ABSOLUTE_PATH_TO/vault-native-host",
   "type": "stdio",
   "allowed_extensions": ["sybr-passwords@sybr.no"]

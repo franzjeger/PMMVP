@@ -2,14 +2,14 @@
 #
 # Build the release app and (re)install it into /Applications.
 #
-# Produces a locally built, ad-hoc-signed "SYBR Passwords.app". Local builds
+# Produces a locally built, ad-hoc-signed "Arca.app". Local builds
 # carry no quarantine attribute, so Gatekeeper launches them without warnings.
 # Distribution to OTHER machines needs a Developer ID + notarization instead.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-APP_SRC="$REPO/target/release/bundle/macos/SYBR Passwords.app"
-APP_DST="/Applications/SYBR Passwords.app"
+APP_SRC="$REPO/target/release/bundle/macos/Arca.app"
+APP_DST="/Applications/Arca.app"
 
 echo "==> Building release bundle…"
 (cd "$REPO/apps/desktop" && npm run tauri build -- --bundles app)
@@ -38,4 +38,4 @@ echo "==> Installing to /Applications…"
 rm -rf "$APP_DST"
 ditto "$APP_SRC" "$APP_DST"
 
-echo "Done: $APP_DST (launch it from Spotlight: 'SYBR Passwords')"
+echo "Done: $APP_DST (launch it from Spotlight: 'Arca')"

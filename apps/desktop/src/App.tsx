@@ -331,7 +331,7 @@ function BrowserNotice() {
     <div className="flex h-screen w-screen items-center justify-center bg-canvas p-8 text-center">
       <div className="max-w-sm text-neutral-400">
         <h1 className="mb-2 text-[16px] font-semibold text-neutral-100">
-          SYBR Passwords
+          Arca
         </h1>
         <p className="text-[13px] leading-relaxed">
           This UI talks to a local Rust backend and must run inside the desktop

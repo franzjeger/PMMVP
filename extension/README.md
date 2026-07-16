@@ -1,4 +1,4 @@
-# SYBR Passwords — Browser Extension
+# Arca — Browser Extension
 
 A Manifest V3 extension (Chrome / Brave / Edge, plus a Firefox build target)
 that detects login forms and autofills credentials from the desktop app,

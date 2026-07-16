@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# One-shot installer for the SYBR Passwords native-messaging host (Linux).
+# One-shot installer for the Arca native-messaging host (Linux).
 #
 # Builds the host binary and registers it for every installed Chromium-family
 # browser, with the extension's PINNED id (derived from the public `key` in
@@ -31,7 +31,7 @@ echo "    extension id: $EXT_ID"
 read -r -d '' MANIFEST_JSON <<JSON || true
 {
   "name": "$HOST_NAME",
-  "description": "SYBR Passwords native messaging host",
+  "description": "Arca native messaging host",
   "path": "$HOST_BIN",
   "type": "stdio",
   "allowed_origins": ["chrome-extension://$EXT_ID/"]

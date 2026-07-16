@@ -1,7 +1,7 @@
 # macOS AutoFill Credential Provider (passkeys) — scaffold
 
 This is the OS-facing half of passkey support: the app extension macOS loads so
-**SYBR Passwords appears in the system passkey chooser** ("Choose where to save
+**Arca appears in the system passkey chooser** ("Choose where to save
 your passkey…"). It calls the Rust `vault-ffi` C ABI for the ES256 authenticator
 work (which is implemented and tested).
 
@@ -28,7 +28,7 @@ for the full architecture.
    `crates/vault-ffi/include/vault_ffi.h` to a bridging header.
 2. **Create the extension target** in an Xcode project that also builds the main
    app (Tauri does not embed app extensions, so the `.appex` must be injected
-   into `SYBR Passwords.app/Contents/PlugIns/` and co-signed — an Xcode wrapper
+   into `Arca.app/Contents/PlugIns/` and co-signed — an Xcode wrapper
    is the pragmatic route).
 3. **Entitlements** (Developer portal): enable
    `com.apple.developer.authentication-services.autofill-credential-provider`
@@ -38,4 +38,4 @@ for the full architecture.
    vault via the shared App Group container + the OS-keychain device key. This
    needs a small vault-open surface added to `vault-ffi`.
 5. **Enable on device:** System Settings → Passwords → Password Options → turn
-   on **SYBR Passwords**. It then appears in the passkey chooser.
+   on **Arca**. It then appears in the passkey chooser.

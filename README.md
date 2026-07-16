@@ -1,4 +1,4 @@
-# SYBR Passwords
+# Arca
 
 A cross-platform password manager with an identical UI on **macOS, Windows, and
 Linux**. All security-critical logic lives in a small, audited-crate-only Rust

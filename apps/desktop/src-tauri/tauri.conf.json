@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "SYBR Passwords",
+  "productName": "Arca",
   "version": "0.1.0",
   "identifier": "no.sybr.vault",
   "build": {
