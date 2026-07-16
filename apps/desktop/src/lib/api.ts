@@ -76,6 +76,7 @@ export interface Settings {
   lockOnBlur: boolean;
   clipboardClearSecs: number;
   confirmAutofill: boolean;
+  savePrompt: boolean;
 }
 
 /** Payload of a `fill-consent-request` event: what the app is asking to fill. */
@@ -210,6 +211,12 @@ export function onClipboardCleared(cb: () => void): Promise<UnlistenFn> {
 /** Fired after a credential is autofilled into the browser (for visibility). */
 export function onAutofilled(cb: (what: string) => void): Promise<UnlistenFn> {
   return listen<string>("autofilled", (e) => cb(e.payload));
+}
+
+/** Fired when a login is saved/updated from the browser (save-on-submit), so
+ *  the UI can refresh its item list. */
+export function onLoginSaved(cb: (host: string) => void): Promise<UnlistenFn> {
+  return listen<string>("login-saved", (e) => cb(e.payload));
 }
 
 /** Fired when a passkey is registered ("created") or used to sign in ("used")

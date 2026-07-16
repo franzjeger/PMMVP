@@ -61,6 +61,20 @@ enum Request {
         #[serde(default)]
         allow_credentials: Vec<Vec<u8>>,
     },
+    /// Ask whether a submitted login is worth offering to save.
+    SaveProbe {
+        url: String,
+        #[serde(default)]
+        username: String,
+        password: String,
+    },
+    /// Store a captured login (after the user clicked Save).
+    SaveLogin {
+        url: String,
+        #[serde(default)]
+        username: String,
+        password: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -100,6 +114,12 @@ enum Response {
         signature: Vec<u8>,
         user_handle: Vec<u8>,
     },
+    /// Result of a save probe: "new" | "update" | "known" | "disabled" | "locked".
+    SaveDecision {
+        action: String,
+    },
+    /// A login was stored.
+    Saved,
     Error {
         message: String,
     },
@@ -134,9 +154,7 @@ fn handle(request: Request) -> Response {
                 url,
                 app_connected: false,
                 items: Vec::new(),
-                note: Some(
-                    "The Arca desktop app isn't running or is locked.".to_string(),
-                ),
+                note: Some("The Arca desktop app isn't running or is locked.".to_string()),
             },
         },
         Request::Fill { id, url } => match fill_credential(&id, &url) {
@@ -178,7 +196,52 @@ fn handle(request: Request) -> Response {
                 message: "No matching passkey (or app locked / origin mismatch).".to_string(),
             },
         },
+        Request::SaveProbe {
+            url,
+            username,
+            password,
+        } => match save_probe(&url, &username, &password) {
+            Some(action) => Response::SaveDecision { action },
+            None => Response::Error {
+                message: "Save probe failed (app locked or not running).".to_string(),
+            },
+        },
+        Request::SaveLogin {
+            url,
+            username,
+            password,
+        } => {
+            if save_login(&url, &username, &password) {
+                Response::Saved
+            } else {
+                Response::Error {
+                    message: "Could not save login (app locked or not running).".to_string(),
+                }
+            }
+        }
     }
+}
+
+/// Ask the app whether a submitted login is worth offering to save; returns the
+/// decision string ("new"/"update"/"known"/"disabled"/"locked").
+fn save_probe(url: &str, username: &str, password: &str) -> Option<String> {
+    let resp = bridge_request(serde_json::json!({
+        "type": "save_probe", "url": url, "username": username, "password": password,
+    }))?;
+    if resp.get("type").and_then(|v| v.as_str()) != Some("save_decision") {
+        return None;
+    }
+    Some(resp.get("action")?.as_str()?.to_string())
+}
+
+/// Ask the app to store a captured login. Returns whether it was saved.
+fn save_login(url: &str, username: &str, password: &str) -> bool {
+    let Some(resp) = bridge_request(serde_json::json!({
+        "type": "save_login", "url": url, "username": username, "password": password,
+    })) else {
+        return false;
+    };
+    resp.get("type").and_then(|v| v.as_str()) == Some("saved")
 }
 
 /// Decode a JSON array-of-bytes field into `Vec<u8>`.

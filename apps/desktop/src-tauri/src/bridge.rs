@@ -86,6 +86,21 @@ enum Request {
         #[serde(default)]
         allow_credentials: Vec<Vec<u8>>,
     },
+    /// Ask whether a just-submitted login is worth offering to save.
+    SaveProbe {
+        url: String,
+        #[serde(default)]
+        username: String,
+        password: String,
+    },
+    /// Store a new / updated login captured from a submitted form (after the
+    /// user clicked "Save" in the browser prompt).
+    SaveLogin {
+        url: String,
+        #[serde(default)]
+        username: String,
+        password: String,
+    },
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -111,6 +126,13 @@ enum Response {
         signature: Vec<u8>,
         user_handle: Vec<u8>,
     },
+    /// Result of `SaveProbe`. `action` is one of "new", "update", "known",
+    /// "disabled" (setting off), or "locked".
+    SaveDecision {
+        action: String,
+    },
+    /// A login was stored/updated via `SaveLogin`.
+    Saved,
     Error {
         message: String,
     },
@@ -197,6 +219,29 @@ fn rp_id_matches_origin(rp_id: &str, origin: &str) -> bool {
         (Some(rp_reg), Some(host_reg)) => rp_reg == host_reg,
         _ => false,
     }
+}
+
+/// Find an active login matching (normalized host, lowercased username).
+/// Returns `(id, current_password)` for change detection.
+fn find_login(vault: &vault_core::Vault, host: &str, username: &str) -> Option<(Uuid, String)> {
+    let user = username.to_lowercase();
+    for s in vault.list_items(false).ok()? {
+        let Ok(item) = vault.get_item(s.id) else {
+            continue;
+        };
+        if let VaultItem::Login {
+            url,
+            username: un,
+            password,
+            ..
+        } = &item.data
+        {
+            if host_of(url) == host && un.to_lowercase() == user {
+                return Some((item.id, password.clone()));
+            }
+        }
+    }
+    None
 }
 
 /// Handle one parsed request. `authed` tracks whether this connection has
@@ -506,6 +551,151 @@ fn handle_request(
                 signature,
                 user_handle,
             }
+        }
+        Request::SaveProbe {
+            url,
+            username,
+            password,
+        } => {
+            if password.is_empty() {
+                return Response::SaveDecision {
+                    action: "known".into(), // nothing worth saving
+                };
+            }
+            let st = match state.lock() {
+                Ok(s) => s,
+                Err(_) => {
+                    return Response::Error {
+                        message: "internal".into(),
+                    }
+                }
+            };
+            if !st.settings.save_prompt {
+                return Response::SaveDecision {
+                    action: "disabled".into(),
+                };
+            }
+            let Some(vault) = st.vault.as_ref().filter(|v| v.is_unlocked()) else {
+                return Response::SaveDecision {
+                    action: "locked".into(),
+                };
+            };
+            let host = host_of(&url);
+            if host.is_empty() {
+                return Response::SaveDecision {
+                    action: "disabled".into(),
+                };
+            }
+            let action = match find_login(vault, &host, &username) {
+                None => "new",
+                Some((_, cur)) if cur == password => "known",
+                Some(_) => "update",
+            };
+            Response::SaveDecision {
+                action: action.into(),
+            }
+        }
+        Request::SaveLogin {
+            url,
+            username,
+            password,
+        } => {
+            if password.is_empty() {
+                return Response::Error {
+                    message: "empty".into(),
+                };
+            }
+            let mut st = match state.lock() {
+                Ok(s) => s,
+                Err(_) => {
+                    return Response::Error {
+                        message: "internal".into(),
+                    }
+                }
+            };
+            if !st.settings.save_prompt {
+                return Response::Error {
+                    message: "disabled".into(),
+                };
+            }
+            let host = host_of(&url);
+            if host.is_empty() {
+                return Response::Error {
+                    message: "invalid".into(),
+                };
+            }
+            {
+                let AppState { store, vault, .. } = &mut *st;
+                let Some(vault) = vault.as_mut().filter(|v| v.is_unlocked()) else {
+                    return Response::Error {
+                        message: "locked".into(),
+                    };
+                };
+                match find_login(vault, &host, &username) {
+                    // Already stored with this password: nothing to do.
+                    Some((_, cur)) if cur == password => return Response::Saved,
+                    // Same site + username, new password: update in place.
+                    Some((id, _)) => {
+                        let Ok(current) = vault.get_item(id) else {
+                            return Response::Error {
+                                message: "internal".into(),
+                            };
+                        };
+                        if let VaultItem::Login {
+                            title,
+                            username: un,
+                            url: u,
+                            totp_secret,
+                            notes,
+                            ..
+                        } = &current.data
+                        {
+                            let item = Item {
+                                id: current.id,
+                                created_at: current.created_at,
+                                modified_at: crate::state::now_millis(),
+                                deleted_at: None,
+                                data: VaultItem::Login {
+                                    title: title.clone(),
+                                    username: un.clone(),
+                                    url: u.clone(),
+                                    password,
+                                    totp_secret: totp_secret.clone(),
+                                    notes: notes.clone(),
+                                },
+                            };
+                            if vault.upsert_item(item).is_err() || store.save(vault).is_err() {
+                                return Response::Error {
+                                    message: "internal".into(),
+                                };
+                            }
+                        }
+                    }
+                    // Brand-new login for this site.
+                    None => {
+                        let item = Item::new(
+                            VaultItem::Login {
+                                title: host.clone(),
+                                username,
+                                password,
+                                url,
+                                totp_secret: None,
+                                notes: String::new(),
+                            },
+                            crate::state::now_millis(),
+                        );
+                        if vault.upsert_item(item).is_err() || store.save(vault).is_err() {
+                            return Response::Error {
+                                message: "internal".into(),
+                            };
+                        }
+                    }
+                }
+            }
+            if let Some(app) = app {
+                let _ = app.emit("login-saved", host);
+            }
+            Response::Saved
         }
     }
 }
@@ -1073,6 +1263,108 @@ mod tests {
         assert!(!rp_id_matches_origin(
             "github.com",
             "https://github.com.evil.com"
+        ));
+    }
+
+    #[test]
+    fn save_probe_and_login_add_update_and_dedupe() {
+        let dir = TempDir::new().unwrap();
+        let state = unlocked_state(&dir);
+        let mut authed = true;
+        let probe = |url: &str, user: &str, pw: &str, authed: &mut bool| {
+            handle_request(
+                Request::SaveProbe {
+                    url: url.into(),
+                    username: user.into(),
+                    password: pw.into(),
+                },
+                &state,
+                "t",
+                authed,
+                None,
+                &mut allow(),
+            )
+        };
+        let save = |url: &str, user: &str, pw: &str, authed: &mut bool| {
+            handle_request(
+                Request::SaveLogin {
+                    url: url.into(),
+                    username: user.into(),
+                    password: pw.into(),
+                },
+                &state,
+                "t",
+                authed,
+                None,
+                &mut allow(),
+            )
+        };
+        let github_count = || {
+            let st = state.lock().unwrap();
+            st.vault
+                .as_ref()
+                .unwrap()
+                .list_items(false)
+                .unwrap()
+                .iter()
+                .filter(|s| host_of(&s.url) == "github.com")
+                .count()
+        };
+
+        // Unknown login -> "new"; save it.
+        assert!(matches!(
+            probe("https://github.com/login", "frank", "pw1", &mut authed),
+            Response::SaveDecision { action } if action == "new"
+        ));
+        assert_eq!(
+            save("https://github.com/login", "frank", "pw1", &mut authed),
+            Response::Saved
+        );
+        assert_eq!(github_count(), 1);
+
+        // Same login (messier URL, different username case) + same pw -> "known".
+        assert!(matches!(
+            probe("https://www.github.com", "Frank", "pw1", &mut authed),
+            Response::SaveDecision { action } if action == "known"
+        ));
+        // Saving a duplicate is a no-op, not a second entry.
+        assert_eq!(
+            save("https://github.com", "frank", "pw1", &mut authed),
+            Response::Saved
+        );
+        assert_eq!(github_count(), 1);
+
+        // Changed password -> "update"; commit updates in place (still one item).
+        assert!(matches!(
+            probe("https://github.com", "frank", "pw2", &mut authed),
+            Response::SaveDecision { action } if action == "update"
+        ));
+        assert_eq!(
+            save("https://github.com", "frank", "pw2", &mut authed),
+            Response::Saved
+        );
+        assert_eq!(github_count(), 1);
+        // Now pw2 is "known", pw1 would be an "update" back.
+        assert!(matches!(
+            probe("https://github.com", "frank", "pw2", &mut authed),
+            Response::SaveDecision { action } if action == "known"
+        ));
+
+        // Setting off -> "disabled"; when locked -> "locked".
+        state.lock().unwrap().settings.save_prompt = false;
+        assert!(matches!(
+            probe("https://x.com", "u", "p", &mut authed),
+            Response::SaveDecision { action } if action == "disabled"
+        ));
+        state.lock().unwrap().settings.save_prompt = true;
+        state.lock().unwrap().vault.as_mut().unwrap().lock();
+        assert!(matches!(
+            probe("https://x.com", "u", "p", &mut authed),
+            Response::SaveDecision { action } if action == "locked"
+        ));
+        assert!(matches!(
+            save("https://x.com", "u", "p", &mut authed),
+            Response::Error { message } if message == "locked"
         ));
     }
 }

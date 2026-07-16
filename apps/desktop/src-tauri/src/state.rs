@@ -11,8 +11,13 @@ use vault_core::Vault;
 use crate::clipboard::ClipboardManager;
 
 /// User-configurable security timings. Defaults are conservative.
+///
+/// `#[serde(default)]` at the container level means a settings file written by
+/// an older build (missing a newly-added field) still loads, with just the
+/// missing field defaulted — instead of the whole file failing to parse and
+/// every setting silently reverting to defaults on upgrade.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct Settings {
     /// Auto-lock after this many seconds of inactivity. `0` disables.
     pub auto_lock_secs: u64,
@@ -28,6 +33,9 @@ pub struct Settings {
     /// credential to the browser extension. Off by default (origin binding +
     /// unlock already gate autofill); on makes the app the final approver.
     pub confirm_autofill: bool,
+    /// Offer to save a new (or changed) login when you submit a form the vault
+    /// doesn't already know. On by default.
+    pub save_prompt: bool,
 }
 
 impl Default for Settings {
@@ -37,6 +45,7 @@ impl Default for Settings {
             lock_on_blur: false,
             clipboard_clear_secs: 30,
             confirm_autofill: false,
+            save_prompt: true,
         }
     }
 }
@@ -207,9 +216,27 @@ mod tests {
             lock_on_blur: false,
             clipboard_clear_secs: 15,
             confirm_autofill: true,
+            save_prompt: false,
         };
         save_settings(&vault, &s).unwrap();
         assert_eq!(load_settings(&vault), s);
+    }
+
+    #[test]
+    fn settings_from_older_file_keep_known_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("v.vault");
+        // A settings file written by a build before `savePrompt` existed.
+        std::fs::write(
+            settings_file(&vault),
+            br#"{"autoLockSecs":60,"lockOnBlur":true,"clipboardClearSecs":15,"confirmAutofill":true}"#,
+        )
+        .unwrap();
+        let s = load_settings(&vault);
+        assert_eq!(s.auto_lock_secs, 60);
+        assert!(s.lock_on_blur);
+        assert!(s.confirm_autofill); // preserved, NOT wiped to default
+        assert!(s.save_prompt); // missing field defaults to true
     }
 
     #[test]

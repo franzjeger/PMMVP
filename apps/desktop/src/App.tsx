@@ -8,6 +8,7 @@ import {
   onAutofilled,
   onClipboardCleared,
   onFillConsentRequest,
+  onLoginSaved,
   onPasskeyChanged,
   onVaultLocked,
   type FillConsent,
@@ -104,6 +105,10 @@ export default function App() {
         } else {
           setToast(`Signed in to ${rp} with passkey`);
         }
+      }),
+      onLoginSaved((host) => {
+        setToast(`Saved login for ${host}`);
+        void loadItems();
       }),
     ];
     return () => {

@@ -29,8 +29,50 @@ function sendNative(message) {
   });
 }
 
-api.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+// Per-tab "a login was just submitted" candidate, so the save prompt can be
+// shown after the form navigates. Held only in memory, briefly.
+const pendingSaves = new Map(); // tabId -> { candidate, ts }
+const PENDING_TTL_MS = 90000;
+
+api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.cmd !== "string") return false;
+
+  const tabId = sender.tab && sender.tab.id;
+
+  switch (msg.cmd) {
+    case "capturePending":
+      if (tabId != null) {
+        pendingSaves.set(tabId, {
+          candidate: {
+            url: msg.url,
+            username: msg.username,
+            password: msg.password,
+          },
+          ts: Date.now(),
+        });
+        // Actively wipe the stored plaintext password after the TTL, so an
+        // abandoned SPA login doesn't retain it indefinitely.
+        setTimeout(() => {
+          const e = pendingSaves.get(tabId);
+          if (e && Date.now() - e.ts >= PENDING_TTL_MS) pendingSaves.delete(tabId);
+        }, PENDING_TTL_MS + 500);
+      }
+      sendResponse({ ok: true });
+      return true;
+
+    case "consumePending": {
+      const entry = tabId != null ? pendingSaves.get(tabId) : null;
+      if (tabId != null) pendingSaves.delete(tabId);
+      const fresh = entry && Date.now() - entry.ts < PENDING_TTL_MS;
+      sendResponse({ ok: true, candidate: fresh ? entry.candidate : null });
+      return true;
+    }
+
+    case "clearPending":
+      if (tabId != null) pendingSaves.delete(tabId);
+      sendResponse({ ok: true });
+      return true;
+  }
 
   switch (msg.cmd) {
     case "hello":
@@ -72,7 +114,28 @@ api.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }).then(sendResponse);
       return true;
 
+    case "saveProbe":
+      sendNative({
+        type: "save_probe",
+        url: msg.url,
+        username: msg.username,
+        password: msg.password,
+      }).then(sendResponse);
+      return true;
+
+    case "saveLogin":
+      sendNative({
+        type: "save_login",
+        url: msg.url,
+        username: msg.username,
+        password: msg.password,
+      }).then(sendResponse);
+      return true;
+
     default:
       return false;
   }
 });
+
+// Drop a tab's pending-save candidate when the tab closes.
+api.tabs?.onRemoved?.addListener((tabId) => pendingSaves.delete(tabId));

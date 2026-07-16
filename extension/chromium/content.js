@@ -387,4 +387,124 @@
 
   // (Passkey relay lives in passkey-relay.js, injected at document_start so it's
   // listening before the main-world shim can post an early WebAuthn request.)
+
+  // ---- save-on-submit -----------------------------------------------------
+  // Offer to save a new/changed login when the user submits a sign-in form.
+  const bareHost = (u) => {
+    try {
+      return new URL(u, location.href).hostname.replace(/^www\./, "");
+    } catch (_e) {
+      return "";
+    }
+  };
+  /** Same site (exact host, or a sub/parent-domain relationship). */
+  const sameSite = (urlA, urlB) => {
+    const a = bareHost(urlA);
+    const b = bareHost(urlB);
+    return !!a && !!b && (a === b || a.endsWith(`.${b}`) || b.endsWith(`.${a}`));
+  };
+
+  /** Capture credentials from a submitted form — only a single-password form
+      (a sign-in, not a signup/change form with two+ password fields) that also
+      has a resolvable username. Requiring a username avoids collapsing distinct
+      accounts on identifier-first / password-only pages into one "(host, '')"
+      entry that would overwrite each other. */
+  function captureCandidate(form) {
+    const pws = Array.from(
+      form.querySelectorAll('input[type="password"]'),
+    ).filter((el) => el.value);
+    if (pws.length !== 1) return null;
+    const userEl = findUsernameField(pws[0]);
+    if (!userEl || !userEl.value) return null;
+    return { url: location.href, username: userEl.value, password: pws[0].value };
+  }
+
+  let saveBar = null;
+  function closeSaveBar() {
+    saveBar?.remove();
+    saveBar = null;
+  }
+  function showSaveBar(candidate, action) {
+    closeSaveBar();
+    const host = bareHost(candidate.url);
+    saveBar = document.createElement("div");
+    saveBar.className = "sybr-savebar";
+    const text = document.createElement("span");
+    text.className = "sybr-savebar-text";
+    text.textContent =
+      action === "update"
+        ? `Update password for ${host} in Arca?`
+        : `Save login for ${host} to Arca?`;
+    const yes = document.createElement("button");
+    yes.className = "sybr-savebar-yes";
+    yes.textContent = action === "update" ? "Update" : "Save";
+    const no = document.createElement("button");
+    no.className = "sybr-savebar-no";
+    no.textContent = "Not now";
+    const done = () => {
+      api.runtime.sendMessage({ cmd: "clearPending" }).catch(() => {});
+      closeSaveBar();
+    };
+    yes.addEventListener("click", async () => {
+      try {
+        await api.runtime.sendMessage({ cmd: "saveLogin", ...candidate });
+      } catch (_e) {
+        /* ignore */
+      }
+      done();
+    });
+    no.addEventListener("click", done);
+    saveBar.append(text, yes, no);
+    document.body.appendChild(saveBar);
+  }
+
+  async function offerSave(candidate) {
+    if (!candidate || !candidate.password) return;
+    let probe;
+    try {
+      probe = await api.runtime.sendMessage({ cmd: "saveProbe", ...candidate });
+    } catch (_e) {
+      return;
+    }
+    const action = probe && probe.ok && probe.response ? probe.response.action : null;
+    if (action === "new" || action === "update") showSaveBar(candidate, action);
+  }
+
+  // On submit: stash the candidate for after navigation. For SPA logins that
+  // DON'T navigate, offer only after a short delay AND only if the login form
+  // is gone — a success signal, so a failed/mistyped login can't prompt to
+  // overwrite a good stored password. Navigation-based logins tear down this
+  // timer; the post-navigation reshow (below) handles those.
+  document.addEventListener(
+    "submit",
+    (e) => {
+      const form = e.target;
+      if (!(form instanceof HTMLFormElement)) return;
+      const candidate = captureCandidate(form);
+      if (!candidate) return;
+      api.runtime
+        .sendMessage({ cmd: "capturePending", ...candidate })
+        .catch(() => {});
+      setTimeout(() => {
+        if (!visiblePasswordField()) void offerSave(candidate);
+      }, 1500);
+    },
+    true,
+  );
+
+  // After a navigation: if a login was just submitted and we now appear signed
+  // in (same site, no password field), offer to save the stashed candidate.
+  (async () => {
+    let pending;
+    try {
+      pending = await api.runtime.sendMessage({ cmd: "consumePending" });
+    } catch (_e) {
+      return;
+    }
+    const cand = pending && pending.ok ? pending.candidate : null;
+    if (!cand) return;
+    if (sameSite(cand.url, location.href) && !visiblePasswordField()) {
+      void offerSave(cand);
+    }
+  })();
 })();

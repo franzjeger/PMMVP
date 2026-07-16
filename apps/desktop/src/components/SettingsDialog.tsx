@@ -121,6 +121,12 @@ export function SettingsDialog({
               checked={settings.confirmAutofill}
               onChange={(v) => apply({ confirmAutofill: v })}
             />
+            <ToggleRow
+              label="Offer to save new logins"
+              hint="When you sign in on a site the vault doesn't know, offer to save it (or update a changed password). On by default."
+              checked={settings.savePrompt}
+              onChange={(v) => apply({ savePrompt: v })}
+            />
             <Row
               label="Import passwords"
               hint="From Safari/Apple Passwords, Chrome, Brave, Edge, Firefox, or any CSV export. Safe to re-import: duplicates are skipped."
