@@ -212,6 +212,20 @@ export function onAutofilled(cb: (what: string) => void): Promise<UnlistenFn> {
   return listen<string>("autofilled", (e) => cb(e.payload));
 }
 
+/** Fired when a passkey is registered ("created") or used to sign in ("used")
+ *  via the browser bridge, so the UI can refresh its item list. */
+export function onPasskeyChanged(
+  cb: (rp: string, kind: "created" | "used") => void,
+): Promise<UnlistenFn> {
+  const created = listen<string>("passkey-created", (e) =>
+    cb(e.payload, "created"),
+  );
+  const used = listen<string>("passkey-used", (e) => cb(e.payload, "used"));
+  return Promise.all([created, used]).then(
+    (unls) => () => unls.forEach((u) => u()),
+  );
+}
+
 /**
  * Fired when a fill needs the user's explicit approval (confirm-autofill on).
  * Answer with `api.resolveAutofillConsent(id, approved)`.

@@ -8,6 +8,7 @@ import {
   onAutofilled,
   onClipboardCleared,
   onFillConsentRequest,
+  onPasskeyChanged,
   onVaultLocked,
   type FillConsent,
   type ItemDetail,
@@ -96,11 +97,19 @@ export default function App() {
       onClipboardCleared(() => setToast("Clipboard cleared")),
       onAutofilled((what) => setToast(`Autofilled ${what}`)),
       onFillConsentRequest((req) => setConsent(req)),
+      onPasskeyChanged((rp, kind) => {
+        if (kind === "created") {
+          setToast(`Passkey saved for ${rp}`);
+          void loadItems(); // a new passkey was written via the browser bridge
+        } else {
+          setToast(`Signed in to ${rp} with passkey`);
+        }
+      }),
     ];
     return () => {
       pending.forEach((p) => p.then((u) => u()).catch(() => {}));
     };
-  }, [refreshStatus]);
+  }, [refreshStatus, loadItems]);
 
   // Treat genuine interaction as activity so idle auto-lock is accurate.
   useEffect(() => {
