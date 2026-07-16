@@ -38,4 +38,10 @@ echo "==> Installing to /Applications…"
 rm -rf "$APP_DST"
 ditto "$APP_SRC" "$APP_DST"
 
+# Remove the just-built source bundle so Spotlight/Launch Services don't show a
+# second "Arca" alongside the installed one, then refresh Launch Services.
+rm -rf "$APP_SRC"
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+[ -x "$LSREGISTER" ] && "$LSREGISTER" -f "$APP_DST" 2>/dev/null || true
+
 echo "Done: $APP_DST (launch it from Spotlight: 'Arca')"
