@@ -77,7 +77,7 @@ mod tests {
         }
     }
 
-    fn find<'a>(items: &'a [Item], id_byte: u8) -> Option<&'a Item> {
+    fn find(items: &[Item], id_byte: u8) -> Option<&Item> {
         let id = uuid::Uuid::from_bytes([id_byte; 16]);
         items.iter().find(|i| i.id == id)
     }
