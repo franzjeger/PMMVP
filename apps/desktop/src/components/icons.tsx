@@ -156,6 +156,15 @@ export const MoonIcon = ({ className }: P) => (
   </svg>
 );
 
+// "Follow the OS appearance": a circle with the left half filled (the standard
+// auto/system-theme glyph).
+export const SystemThemeIcon = ({ className }: P) => (
+  <svg {...base(className)}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 3a9 9 0 0 0 0 18Z" fill="currentColor" stroke="none" />
+  </svg>
+);
+
 export const GearIcon = ({ className }: P) => (
   <svg {...base(className)}>
     <circle cx="12" cy="12" r="3" />

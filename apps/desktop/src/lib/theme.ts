@@ -69,13 +69,15 @@ export function initTheme(): void {
   });
 }
 
+const ORDER: ThemePref[] = ["system", "light", "dark"];
+
 /**
- * Flip the *visible* appearance. Starting from "system", this pins the opposite
- * of what's currently shown; from a pinned theme it flips to the other. (Simple
- * two-state toggle; a tri-state picker can call setPref directly.)
+ * Advance the preference: System (follow OS) → Light → Dark → System. "System"
+ * tracks the OS appearance live; the other two pin it.
  */
-export function toggleTheme(): void {
-  setPref(resolveEffective(getStoredPref()) === "dark" ? "light" : "dark");
+export function cycleTheme(): void {
+  const cur = getStoredPref();
+  setPref(ORDER[(ORDER.indexOf(cur) + 1) % ORDER.length]);
 }
 
 function subscribe(cb: () => void): () => void {

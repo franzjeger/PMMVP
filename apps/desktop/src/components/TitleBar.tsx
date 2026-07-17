@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import { LockIcon, MoonIcon, SunIcon } from "./icons";
-import { toggleTheme, useTheme } from "../lib/theme";
+import { LockIcon, MoonIcon, SunIcon, SystemThemeIcon } from "./icons";
+import { cycleTheme, useTheme } from "../lib/theme";
 
 /**
  * Custom title bar matching the concept art: centered "🔒 Passwords" over a
@@ -36,18 +36,25 @@ export function TitleBar({ right }: { right?: ReactNode }) {
   );
 }
 
+const THEME_META = {
+  system: { Icon: SystemThemeIcon, label: "System (follows your OS)" },
+  light: { Icon: SunIcon, label: "Light" },
+  dark: { Icon: MoonIcon, label: "Dark" },
+} as const;
+
 function ThemeToggle() {
-  const { effective } = useTheme();
-  const dark = effective === "dark";
+  const { pref } = useTheme();
+  const { Icon, label } = THEME_META[pref];
+  const title = `Theme: ${label} — click to change`;
   return (
     <button
       type="button"
-      onClick={toggleTheme}
-      title={dark ? "Switch to light mode" : "Switch to dark mode"}
-      aria-label={dark ? "Switch to light mode" : "Switch to dark mode"}
+      onClick={cycleTheme}
+      title={title}
+      aria-label={title}
       className="flex h-7 w-7 items-center justify-center rounded-md text-neutral-400 transition-colors hover:bg-fill/5 hover:text-neutral-200"
     >
-      {dark ? <SunIcon className="h-4 w-4" /> : <MoonIcon className="h-4 w-4" />}
+      <Icon className="h-4 w-4" />
     </button>
   );
 }
