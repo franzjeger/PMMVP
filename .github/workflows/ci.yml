@@ -16,10 +16,15 @@ name: CI
 # one-time run on a real X11 *and* Wayland desktop before shipping to Linux
 # users — see SECURITY.md.
 
+# Minute economics (free tier = 2000 min/month; macOS bills at 10x, Windows at
+# 2x): plain pushes run ONE Linux job. The cross-platform matrix and the Linux
+# smoke job run on pull requests or on demand (workflow_dispatch) — day-to-day
+# macOS/Windows verification happens on the real machines before every deploy.
 on:
   push:
     branches: [main, master]
   pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,12 +32,59 @@ env:
 
 jobs:
   test:
+    name: build & test (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tauri system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libayatana-appindicator3-dev libxdo-dev libssl-dev \
+            libdbus-1-dev build-essential file \
+            libxcb1 libxcb-render0 libxcb-shape0 libxcb-xfixes0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Build frontend (tsc type-check + Vite bundle)
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npm run build
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: test (all crates)
+        run: cargo test --workspace
+
+  test-cross:
     name: build & test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # 2x/10x billing: only on PR or manual dispatch, never plain pushes.
+    if: github.event_name != 'push'
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -78,6 +130,8 @@ jobs:
   linux-smoke:
     name: linux real-clipboard & keychain smoke
     runs-on: ubuntu-latest
+    # Heavier job (X11/Wayland/keyring setup): PR or manual dispatch only.
+    if: github.event_name != 'push'
     steps:
       - uses: actions/checkout@v4
 
