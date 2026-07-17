@@ -15,6 +15,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
 vault-core.workspace = true
+# The passwords surface returns login identities as JSON (metadata only) and
+# parses item ids; zeroize wipes the transient device-key copy on open.
+serde = { workspace = true }
+serde_json.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 # Only to verify the FFI's assertion signatures in tests.
