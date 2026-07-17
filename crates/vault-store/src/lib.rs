@@ -23,11 +23,23 @@ pub use error::{Error, Result};
 use vault_core::SymmetricKey;
 pub use vault_core::Vault;
 
+/// Non-cryptographic fingerprint of the on-disk bytes, to detect that a synced
+/// peer rewrote the file since we last read/wrote it.
+fn fingerprint(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
+}
+
 /// A vault on disk plus its OS-keychain quick-unlock binding.
 pub struct VaultStore {
     path: PathBuf,
     keychain_service: String,
     keychain_account: String,
+    /// Fingerprint of the bytes we last read/wrote, for external-change (sync)
+    /// detection in [`VaultStore::save_synced`].
+    last_seen: AtomicU64,
 }
 
 impl VaultStore {
@@ -43,6 +55,7 @@ impl VaultStore {
             path: path.into(),
             keychain_service: keychain_service.into(),
             keychain_account: keychain_account.into(),
+            last_seen: AtomicU64::new(0),
         }
     }
 
@@ -58,6 +71,7 @@ impl VaultStore {
     /// Load the (locked) vault from disk.
     pub fn load(&self) -> Result<Vault> {
         let bytes = fs::read(&self.path)?;
+        self.last_seen.store(fingerprint(&bytes), Ordering::Relaxed);
         Ok(Vault::from_bytes(&bytes)?)
     }
 
@@ -65,7 +79,38 @@ impl VaultStore {
     pub fn save(&self, vault: &Vault) -> Result<()> {
         let bytes = vault.to_bytes()?;
         write_atomic(&self.path, &bytes)?;
+        self.last_seen.store(fingerprint(&bytes), Ordering::Relaxed);
         Ok(())
+    }
+
+    /// Sync-aware save: if the file on disk changed since we last read/wrote it
+    /// (a synced peer rewrote it), merge those changes into `vault` first so the
+    /// peer's edits aren't clobbered, then persist the merged result. Returns
+    /// `true` if a merge happened. A foreign/corrupt external file surfaces as
+    /// an error (the peer's file is *not* overwritten).
+    pub fn save_synced(&self, vault: &mut Vault) -> Result<bool> {
+        let mut merged = false;
+        if self.path.is_file() {
+            let current = fs::read(&self.path)?;
+            if fingerprint(&current) != self.last_seen.load(Ordering::Relaxed) {
+                match vault.merge_remote(&current) {
+                    Ok(()) => merged = true,
+                    // Unparseable bytes — a corrupt file, or a cloud daemon's
+                    // in-progress partial write. It isn't a real vault, so
+                    // replacing it with ours is safe and, crucially, doesn't
+                    // wedge every future save behind a transient bad file.
+                    Err(vault_core::Error::Format) | Err(vault_core::Error::Serialization) => {}
+                    // A well-formed but un-reconcilable file (a *different*
+                    // vault's key, or we're locked): refuse rather than
+                    // destroy a vault we can't safely merge.
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        }
+        let bytes = vault.to_bytes()?;
+        write_atomic(&self.path, &bytes)?;
+        self.last_seen.store(fingerprint(&bytes), Ordering::Relaxed);
+        Ok(merged)
     }
 
     // ----- quick unlock ---------------------------------------------------
@@ -205,6 +250,64 @@ mod tests {
         let mut loaded = store.load().unwrap();
         loaded.unlock("pw").unwrap();
         assert_eq!(loaded.get_item(id).unwrap().data.title(), "Fastmail");
+    }
+
+    #[test]
+    fn save_synced_merges_a_peers_external_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = VaultStore::new(dir.path().join("v.vault"), "s", "a");
+
+        // Our copy has item A; save it (records the file fingerprint).
+        let mut v = Vault::create("pw", cheap_params()).unwrap();
+        v.upsert_item(Item::new(login(), 10)).unwrap();
+        store.save(&v).unwrap();
+
+        // A synced peer loads the same file, adds B, and writes it directly to
+        // the path — behind our store's back.
+        let peer_bytes = {
+            let mut peer = Vault::from_bytes(&std::fs::read(store.path()).unwrap()).unwrap();
+            peer.unlock("pw").unwrap();
+            peer.upsert_item(Item::new(login(), 20)).unwrap(); // B: fresh id
+            peer.to_bytes().unwrap()
+        };
+        std::fs::write(store.path(), &peer_bytes).unwrap();
+
+        // Saving now detects the external change and merges B into our vault
+        // instead of clobbering it.
+        assert!(store.save_synced(&mut v).unwrap());
+        let mut reloaded = store.load().unwrap();
+        reloaded.unlock("pw").unwrap();
+        assert_eq!(reloaded.list_items(true).unwrap().len(), 2);
+
+        // No external change since -> no merge.
+        assert!(!store.save_synced(&mut v).unwrap());
+    }
+
+    #[test]
+    fn save_synced_replaces_a_corrupt_file_but_refuses_a_foreign_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = VaultStore::new(dir.path().join("v.vault"), "s", "a");
+        let mut v = Vault::create("pw", cheap_params()).unwrap();
+        v.upsert_item(Item::new(login(), 10)).unwrap();
+        store.save(&v).unwrap();
+
+        // A corrupt / partial file (e.g. a cloud daemon mid-write) must NOT
+        // wedge saving — it's not a real vault, so we replace it.
+        std::fs::write(store.path(), b"not a vault at all").unwrap();
+        assert!(!store.save_synced(&mut v).unwrap());
+        let mut reloaded = store.load().unwrap();
+        reloaded.unlock("pw").unwrap();
+        assert_eq!(reloaded.list_items(true).unwrap().len(), 1);
+
+        // But a well-formed DIFFERENT vault (foreign key) is refused, not
+        // clobbered.
+        let foreign = {
+            let mut other = Vault::create("pw", cheap_params()).unwrap();
+            other.upsert_item(Item::new(login(), 5)).unwrap();
+            other.to_bytes().unwrap()
+        };
+        std::fs::write(store.path(), &foreign).unwrap();
+        assert!(store.save_synced(&mut v).is_err());
     }
 
     #[test]

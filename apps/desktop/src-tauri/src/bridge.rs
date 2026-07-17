@@ -450,7 +450,7 @@ fn handle_request(
                         message: "locked".into(),
                     };
                 };
-                if vault.upsert_item(item).is_err() || store.save(vault).is_err() {
+                if vault.upsert_item(item).is_err() || store.save_synced(vault).is_err() {
                     return Response::Error {
                         message: "internal".into(),
                     };
@@ -664,7 +664,8 @@ fn handle_request(
                                     notes: notes.clone(),
                                 },
                             };
-                            if vault.upsert_item(item).is_err() || store.save(vault).is_err() {
+                            if vault.upsert_item(item).is_err() || store.save_synced(vault).is_err()
+                            {
                                 return Response::Error {
                                     message: "internal".into(),
                                 };
@@ -684,7 +685,7 @@ fn handle_request(
                             },
                             crate::state::now_millis(),
                         );
-                        if vault.upsert_item(item).is_err() || store.save(vault).is_err() {
+                        if vault.upsert_item(item).is_err() || store.save_synced(vault).is_err() {
                             return Response::Error {
                                 message: "internal".into(),
                             };

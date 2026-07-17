@@ -204,6 +204,30 @@ impl Vault {
             .ok_or(Error::NotFound)
     }
 
+    /// Merge the items from another serialized vault file (a synced peer) into
+    /// this unlocked vault, keeping the most-recently-changed version of each
+    /// item (see [`crate::sync::merge`]).
+    ///
+    /// The peer's items are decrypted with *this* vault's key — valid because a
+    /// synced vault shares one stable vault key across devices. A decryption
+    /// failure therefore means the file is a *different* vault, and the merge is
+    /// refused ([`Error::Decryption`]) rather than silently importing garbage.
+    /// Requires this vault to be unlocked.
+    pub fn merge_remote(&mut self, remote_bytes: &[u8]) -> Result<()> {
+        let remote_enc = match Self::from_bytes(remote_bytes)?.state {
+            VaultState::Locked { items } => items,
+            // `from_bytes` always yields a locked vault.
+            VaultState::Unlocked { .. } => return Err(Error::Format),
+        };
+        let VaultState::Unlocked { vault_key, items } = &mut self.state else {
+            return Err(Error::Locked);
+        };
+        let remote_items = decrypt_items(vault_key, &remote_enc)?;
+        let local = core::mem::take(items);
+        *items = crate::sync::merge(local, remote_items);
+        Ok(())
+    }
+
     /// Insert a new item or replace an existing one with the same id.
     pub fn upsert_item(&mut self, item: Item) -> Result<()> {
         let items = self.unlocked_items_mut()?;
@@ -406,5 +430,93 @@ mod tests {
                 password: "correct horse battery staple".into(),
             }
         );
+    }
+
+    // ---- merge_remote (sync) --------------------------------------------
+
+    fn cheap_params() -> KdfParams {
+        KdfParams {
+            algorithm: crate::header::KdfAlgorithm::Argon2id,
+            m_cost_kib: 256,
+            t_cost: 1,
+            p_cost: 1,
+            salt: vec![7u8; KdfParams::SALT_LEN],
+        }
+    }
+
+    fn login_item(id_byte: u8, title: &str, modified_at: i64) -> Item {
+        Item {
+            id: Uuid::from_bytes([id_byte; 16]),
+            created_at: 0,
+            modified_at,
+            deleted_at: None,
+            data: crate::item::VaultItem::Login {
+                title: title.into(),
+                username: "u".into(),
+                password: "p".into(),
+                url: "https://x.com".into(),
+                totp_secret: None,
+                notes: String::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn merge_remote_combines_a_peers_edits() {
+        let mut a = Vault::create("pw", cheap_params()).unwrap();
+        a.upsert_item(login_item(1, "X", 10)).unwrap();
+        let base = a.to_bytes().unwrap();
+
+        // Peer loads the same file, unlocks with the same password, adds Y.
+        let mut b = Vault::from_bytes(&base).unwrap();
+        b.unlock("pw").unwrap();
+        b.upsert_item(login_item(2, "Y", 20)).unwrap();
+        let remote = b.to_bytes().unwrap();
+
+        a.merge_remote(&remote).unwrap();
+        let mut ids: Vec<u8> = a
+            .list_items(true)
+            .unwrap()
+            .iter()
+            .map(|s| s.id.as_bytes()[0])
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn merge_remote_takes_the_newer_version() {
+        let mut a = Vault::create("pw", cheap_params()).unwrap();
+        a.upsert_item(login_item(1, "old", 10)).unwrap();
+        let base = a.to_bytes().unwrap();
+        let mut b = Vault::from_bytes(&base).unwrap();
+        b.unlock("pw").unwrap();
+        b.upsert_item(login_item(1, "new", 30)).unwrap(); // same id, newer
+        let remote = b.to_bytes().unwrap();
+
+        a.merge_remote(&remote).unwrap();
+        let item = a.get_item(Uuid::from_bytes([1; 16])).unwrap();
+        assert_eq!(item.data.title(), "new");
+    }
+
+    #[test]
+    fn merge_remote_rejects_a_foreign_vault() {
+        let mut a = Vault::create("pw", cheap_params()).unwrap();
+        // A different vault has a different random vault key, so its items can't
+        // be decrypted with ours -> the merge is refused.
+        let mut other = Vault::create("pw", cheap_params()).unwrap();
+        other.upsert_item(login_item(9, "Z", 5)).unwrap();
+        let foreign = other.to_bytes().unwrap();
+        assert!(matches!(a.merge_remote(&foreign), Err(Error::Decryption)));
+    }
+
+    #[test]
+    fn merge_remote_requires_unlock() {
+        let bytes = Vault::create("pw", cheap_params())
+            .unwrap()
+            .to_bytes()
+            .unwrap();
+        let mut locked = Vault::from_bytes(&bytes).unwrap();
+        assert!(matches!(locked.merge_remote(&bytes), Err(Error::Locked)));
     }
 }

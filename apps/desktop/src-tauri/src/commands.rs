@@ -181,9 +181,15 @@ fn first_letter(title: &str) -> String {
         .unwrap_or_else(|| "#".to_string())
 }
 
-/// Persist the current vault to disk (atomic write).
-fn persist(st: &AppState) -> Result<(), CmdError> {
-    st.store.save(st.vault()?)?;
+/// Persist the current vault to disk (atomic write). Sync-aware: if a synced
+/// peer rewrote the file, its changes are merged in first so they aren't
+/// clobbered (see [`vault_store::VaultStore::save_synced`]).
+fn persist(st: &mut AppState) -> Result<(), CmdError> {
+    let AppState { store, vault, .. } = st;
+    let vault = vault
+        .as_mut()
+        .ok_or_else(|| CmdError::new("no_vault", "No vault is loaded."))?;
+    store.save_synced(vault)?;
     Ok(())
 }
 
@@ -353,7 +359,7 @@ fn do_create_vault(state: &Mutex<AppState>, master_password: &str) -> Result<(),
     let params = KdfParams::new_default().map_err(CmdError::from)?;
     let vault = Vault::create(master_password, params)?;
     st.vault = Some(vault);
-    persist(&st)?;
+    persist(&mut st)?;
     st.touch();
     Ok(())
 }
@@ -410,7 +416,7 @@ pub fn enable_quick_unlock(state: St<'_>) -> Result<(), CmdError> {
         let vault = vault.as_mut().ok_or_else(CmdError::no_vault)?;
         store.enable_quick_unlock(vault)?;
     }
-    persist(&st)?;
+    persist(&mut st)?;
     st.touch();
     Ok(())
 }
@@ -423,7 +429,7 @@ pub fn disable_quick_unlock(state: St<'_>) -> Result<(), CmdError> {
         let vault = vault.as_mut().ok_or_else(CmdError::no_vault)?;
         store.disable_quick_unlock(vault)?;
     }
-    persist(&st)?;
+    persist(&mut st)?;
     st.touch();
     Ok(())
 }
@@ -712,7 +718,7 @@ fn do_import_logins(state: &Mutex<AppState>, path: &str) -> Result<ImportSummary
         imported += 1;
     }
     if imported > 0 || updated > 0 {
-        persist(&st)?;
+        persist(&mut st)?;
     }
     Ok(ImportSummary {
         imported,
@@ -830,7 +836,7 @@ pub(crate) fn do_upsert_item(
             new_id
         }
     };
-    persist(&st)?;
+    persist(&mut st)?;
     Ok(id.to_string())
 }
 
@@ -844,7 +850,7 @@ fn do_delete_item(state: &Mutex<AppState>, id: &str) -> Result<(), CmdError> {
     st.touch();
     let uuid = parse_id(id)?;
     st.vault_mut()?.delete_item(uuid, now_millis())?;
-    persist(&st)?;
+    persist(&mut st)?;
     Ok(())
 }
 
@@ -858,7 +864,7 @@ fn do_restore_item(state: &Mutex<AppState>, id: &str) -> Result<(), CmdError> {
     st.touch();
     let uuid = parse_id(id)?;
     st.vault_mut()?.restore_item(uuid, now_millis())?;
-    persist(&st)?;
+    persist(&mut st)?;
     Ok(())
 }
 
@@ -872,7 +878,7 @@ fn do_purge_item(state: &Mutex<AppState>, id: &str) -> Result<(), CmdError> {
     st.touch();
     let uuid = parse_id(id)?;
     st.vault_mut()?.purge_item(uuid)?;
-    persist(&st)?;
+    persist(&mut st)?;
     Ok(())
 }
 
