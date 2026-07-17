@@ -15,12 +15,11 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    # Team with a local Apple Development cert (used for the dev Run). If your
-    # Xcode is signed into a different team, switch it in
-    # Xcode > Signing & Capabilities. NOTE for M2: the App Group is team-scoped,
-    # so the extension and the shipped Tauri Arca.app must ultimately share ONE
-    # team (Arca ships under LY6LJ395B8).
-    DEVELOPMENT_TEAM: RYS5AACGS6
+    # Frank Lia team: owns the no.sybr.vault namespace and is the team the
+    # shipped Arca uses, so it is also the right team for M2 (App Groups are
+    # team-scoped, so the extension and the Tauri Arca.app must share one team).
+    # Switch in Xcode > Signing & Capabilities if you sign in as another team.
+    DEVELOPMENT_TEAM: LY6LJ395B8
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
