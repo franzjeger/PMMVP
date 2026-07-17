@@ -1189,6 +1189,7 @@ mod tests {
                     rp_id: rp.into(),
                     user_name: "frank".into(),
                     user_handle: vec![9, 9, 9],
+                    exclude_credentials: vec![],
                 },
                 &state,
                 "t",
@@ -1425,5 +1426,61 @@ mod tests {
             save("https://x.com", "u", "p", &mut authed),
             Response::Error { message } if message == "locked"
         ));
+    }
+
+    /// excludeCredentials: a create listing a credential we already hold must
+    /// be refused with "excluded" WITHOUT consulting the user at all — that
+    /// answer becomes InvalidStateError in the page and stops re-registration
+    /// loops (the endless-Touch-ID bug).
+    #[test]
+    fn passkey_create_with_excluded_credential_is_refused_without_prompt() {
+        let dir = TempDir::new().unwrap();
+        let state = unlocked_state(&dir);
+        let mut authed = true;
+
+        // Register one passkey normally.
+        let resp = handle_request(
+            Request::PasskeyCreate {
+                origin: "https://github.com".into(),
+                rp_id: "github.com".into(),
+                user_name: "frank".into(),
+                user_handle: vec![1, 2, 3],
+                exclude_credentials: vec![],
+            },
+            &state,
+            "t",
+            &mut authed,
+            None,
+            &mut allow(),
+        );
+        let Response::PasskeyCredential { credential_id, .. } = resp else {
+            panic!("expected a credential, got {resp:?}");
+        };
+
+        // Re-register with that credential excluded: refused, and the consent
+        // closure must never run (no prompt).
+        let mut never = |_: &ConsentContext| -> bool {
+            panic!("consent must not be requested for an excluded create")
+        };
+        let resp = handle_request(
+            Request::PasskeyCreate {
+                origin: "https://github.com".into(),
+                rp_id: "github.com".into(),
+                user_name: "frank".into(),
+                user_handle: vec![1, 2, 3],
+                exclude_credentials: vec![credential_id],
+            },
+            &state,
+            "t",
+            &mut authed,
+            None,
+            &mut never,
+        );
+        assert_eq!(
+            resp,
+            Response::Error {
+                message: "excluded".into()
+            }
+        );
     }
 }
