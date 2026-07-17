@@ -44,12 +44,13 @@ fn resolve_vault_path(app: &tauri::App, data_dir: &Path) -> PathBuf {
             if std::fs::create_dir_all(&container).is_ok() {
                 let shared_vault = container.join("default.vault");
                 // Migrate once: copy the vault + settings, keep originals.
-                if !shared_vault.exists() && app_data_vault.exists() {
-                    if std::fs::copy(&app_data_vault, &shared_vault).is_ok() {
-                        let old_settings = data_dir.join("settings.json");
-                        if old_settings.exists() {
-                            let _ = std::fs::copy(&old_settings, container.join("settings.json"));
-                        }
+                if !shared_vault.exists()
+                    && app_data_vault.exists()
+                    && std::fs::copy(&app_data_vault, &shared_vault).is_ok()
+                {
+                    let old_settings = data_dir.join("settings.json");
+                    if old_settings.exists() {
+                        let _ = std::fs::copy(&old_settings, container.join("settings.json"));
                     }
                 }
                 // Use the shared vault if it exists (migrated) or there is no
