@@ -1,29 +1,13 @@
-// Arca AutoFill — dev host app (M1).
+// Arca AutoFill — host app (M2).
 //
-// This app exists to (a) contain the AutoFill Credential Provider extension so
-// the OS discovers it, and (b) publish one HARDCODED test credential identity to
-// ASCredentialIdentityStore so it shows up as an AutoFill suggestion. There is no
-// vault access here yet — that is M2. The shipping container will be the Tauri
-// Arca.app; this host is only a build/debug/registration harness.
+// Publishes the real vault's login identities (metadata only — domain +
+// username, never passwords) to ASCredentialIdentityStore so they appear as
+// AutoFill suggestions. Opening the vault to read identities takes one Touch ID;
+// the passwords themselves are only ever read inside the extension, per fill.
+// The shipping container will be the Tauri Arca.app; this host is the harness.
 
 import AuthenticationServices
 import SwiftUI
-
-// The single test identity M1 advertises. The record identifier is the stable id
-// the extension matches on; the domain is chosen at runtime so you can point the
-// demo at any login page (no real account involved — the password is a fixed
-// placeholder). Must stay in sync with M1Credential in the extension.
-enum TestIdentity {
-    static let user = "arca-test"
-    static let recordID = "arca-m1-test"
-
-    static func credentialIdentity(domain: String) -> ASPasswordCredentialIdentity {
-        ASPasswordCredentialIdentity(
-            serviceIdentifier: ASCredentialServiceIdentifier(identifier: domain, type: .domain),
-            user: user,
-            recordIdentifier: recordID)
-    }
-}
 
 @main
 struct ArcaHostApp: App {
@@ -36,13 +20,13 @@ struct ArcaHostApp: App {
 }
 
 struct ContentView: View {
-    @State private var status: String = "Checking…"
+    @State private var status = "Checking…"
     @State private var isEnabled = false
-    @State private var domain = "example.com"
+    @State private var busy = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Arca AutoFill — dev host")
+            Text("Arca AutoFill")
                 .font(.title2).bold()
 
             Text(status)
@@ -52,28 +36,17 @@ struct ContentView: View {
 
             Divider()
 
-            Text("M1 checklist")
-                .font(.headline)
             VStack(alignment: .leading, spacing: 6) {
-                Label("Build & run this app once (registers the extension).", systemImage: "1.circle")
-                Label("System Settings ▸ General ▸ AutoFill & Passwords ▸ enable Arca.", systemImage: "2.circle")
-                Label("Type a domain that has a login form, then Register.", systemImage: "3.circle")
-                Label("Open that site in Safari and pick “\(TestIdentity.user)” in the username field.", systemImage: "4.circle")
+                Label("System Settings ▸ General ▸ AutoFill & Passwords ▸ enable Arca.", systemImage: "1.circle")
+                Label("Press “Sync to AutoFill” (one Touch ID to read your logins).", systemImage: "2.circle")
+                Label("In Safari / an app, pick an Arca suggestion — Touch ID fills it.", systemImage: "3.circle")
             }
             .font(.callout)
 
             HStack {
-                Text("Domain:")
-                TextField("example.com", text: $domain)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 240)
-            }
-            .padding(.top, 2)
-
-            HStack {
                 Button("Open AutoFill Settings") { openAutoFillSettings() }
-                Button("Register test identity") { register() }
-                    .disabled(!isEnabled || domain.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button("Sync to AutoFill") { Task { await sync() } }
+                    .disabled(!isEnabled || busy)
                 Spacer()
                 Button("Refresh") { Task { await refresh() } }
             }
@@ -84,35 +57,35 @@ struct ContentView: View {
         .task { await refresh() }
     }
 
-    // Reflect whether the OS has Arca enabled as an AutoFill provider.
     private func refresh() async {
         let state = await ASCredentialIdentityStore.shared.state()
         isEnabled = state.isEnabled
         status = state.isEnabled
-            ? "Arca is enabled as an AutoFill provider. Register a domain, then try it in Safari."
+            ? "Arca is enabled. Press “Sync to AutoFill” to publish your logins."
             : "Arca is NOT enabled yet. Open AutoFill Settings, turn Arca on, then Refresh."
     }
 
-    // Publish the one test identity for the chosen domain so it appears as an
-    // AutoFill suggestion there.
-    private func register() {
-        let host = domain.trimmingCharacters(in: .whitespaces)
-        ASCredentialIdentityStore.shared.saveCredentialIdentities(
-            [TestIdentity.credentialIdentity(domain: host)]
-        ) { success, error in
-            Task { @MainActor in
-                if success {
-                    status = "Registered “\(TestIdentity.user)” for \(host). Open it in Safari and focus the login field."
-                } else {
-                    status = "Could not register the identity: \(error?.localizedDescription ?? "unknown error")."
-                }
+    // Open the vault (Touch ID) and publish its login identities — metadata only.
+    private func sync() async {
+        busy = true
+        defer { busy = false }
+        do {
+            let vault = try OpenVault.open()
+            let ids = try vault.identities()
+            let identities: [ASPasswordCredentialIdentity] = ids.map {
+                ASPasswordCredentialIdentity(
+                    serviceIdentifier: ASCredentialServiceIdentifier(identifier: $0.domain, type: .domain),
+                    user: $0.user,
+                    recordIdentifier: $0.id)
             }
+            try await ASCredentialIdentityStore.shared.replaceCredentialIdentities(identities)
+            status = "Synced \(identities.count) logins to AutoFill. Try one in Safari."
+        } catch {
+            status = "Sync failed (\(String(describing: error))). Is the vault set up in the shared container, and Touch ID available?"
         }
     }
 
     private func openAutoFillSettings() {
-        // Best-effort deep link to the AutoFill & Passwords pane; if it does not
-        // resolve, the checklist above gives the manual path.
         let candidates = [
             "x-apple.systempreferences:com.apple.Passwords-Settings.extension",
             "x-apple.systempreferences:com.apple.preferences.password",
