@@ -153,7 +153,7 @@ export function SettingsDialog({
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-6 backdrop-blur-sm"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="w-full max-w-md rounded-2xl border border-hairline bg-panel shadow-2xl">
+      <div className="flex max-h-[85vh] w-full max-w-lg flex-col rounded-2xl border border-hairline bg-panel shadow-2xl">
         <div className="flex items-center gap-2 border-b border-hairline px-5 py-3.5">
           <GearIcon className="h-5 w-5 text-accent" />
           <h2 className="text-[15px] font-semibold text-neutral-100">Settings</h2>
@@ -164,7 +164,7 @@ export function SettingsDialog({
             Loading…
           </div>
         ) : (
-          <div className="px-5 py-2">
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-2">
             <SelectRow
               label="Auto-lock when idle"
               value={settings.autoLockSecs}
@@ -327,7 +327,7 @@ export function SettingsDialog({
           </div>
         )}
 
-        <div className="flex justify-end border-t border-hairline px-5 py-3">
+        <div className="flex shrink-0 justify-end border-t border-hairline px-5 py-3">
           <button
             onClick={onClose}
             className="rounded-lg bg-accent px-4 py-1.5 text-[13px] font-medium text-white hover:bg-accent/90"
