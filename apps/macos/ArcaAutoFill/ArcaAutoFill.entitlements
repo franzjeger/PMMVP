@@ -1,10 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- M1 entitlements: only the AutoFill Credential Provider capability, which is
-     the one thing automatic signing must provision for the extension to load.
+<!-- M1 entitlements.
+     - app-sandbox: REQUIRED. macOS app extensions must be sandboxed or pkd
+       silently refuses to register them (the extension never appears in
+       System Settings > AutoFill & Passwords).
+     - autofill-credential-provider: the capability that makes Arca an AutoFill
+       provider (automatic signing provisions it).
      App Group + shared keychain (for reading the real vault) are added in M2. -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
     <key>com.apple.developer.authentication-services.autofill-credential-provider</key>
     <true/>
 </dict>
