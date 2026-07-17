@@ -102,6 +102,7 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         user_name: msg.userName,
         user_handle: msg.userHandle,
         exclude_credentials: msg.excludeCredentials,
+        user_verification: msg.userVerification,
       }).then(sendResponse);
       return true;
 
@@ -112,6 +113,7 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         rp_id: msg.rpId,
         client_data_hash: msg.clientDataHash,
         allow_credentials: msg.allowCredentials,
+        user_verification: msg.userVerification,
       }).then(sendResponse);
       return true;
 

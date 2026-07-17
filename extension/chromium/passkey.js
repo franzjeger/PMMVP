@@ -106,6 +106,10 @@
         userName: (pk.user && pk.user.name) || "",
         userHandle: toArr(pk.user && pk.user.id),
         excludeCredentials: (pk.excludeCredentials || []).map((c) => toArr(c.id)),
+        // The app refuses ("uv_unavailable" -> browser fallback) when the RP
+        // requires user verification it cannot genuinely perform.
+        userVerification:
+          (pk.authenticatorSelection && pk.authenticatorSelection.userVerification) || "",
       });
       if (!resp.ok) {
         // Spec-correct duplicate handling: the RP listed credentials we already
@@ -159,6 +163,7 @@
         rpId: pk.rpId || window.location.hostname,
         clientDataHash: toArr(clientDataHash),
         allowCredentials: (pk.allowCredentials || []).map((c) => toArr(c.id)),
+        userVerification: pk.userVerification || "",
       });
       if (!resp.ok) return realGet(options);
 

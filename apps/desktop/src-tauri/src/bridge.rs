@@ -81,6 +81,13 @@ enum Request {
         /// prompting - this is what makes sites stop re-asking.
         #[serde(default)]
         exclude_credentials: Vec<Vec<u8>>,
+        /// WebAuthn authenticatorSelection.userVerification ("required" |
+        /// "preferred" | "discouraged"; empty = unspecified). When "required"
+        /// and this platform cannot genuinely verify the user, we must refuse
+        /// so the page falls back to the browser instead of registering a
+        /// credential whose UV=0 attestation the RP will reject.
+        #[serde(default)]
+        user_verification: String,
     },
     /// Assert an existing passkey (navigator.credentials.get).
     PasskeyGet {
@@ -91,6 +98,9 @@ enum Request {
         /// Credential ids the RP will accept; empty means "any for this rp".
         #[serde(default)]
         allow_credentials: Vec<Vec<u8>>,
+        /// WebAuthn userVerification requirement; see `PasskeyCreate`.
+        #[serde(default)]
+        user_verification: String,
     },
     /// Ask whether a just-submitted login is worth offering to save.
     SaveProbe {
@@ -225,6 +235,17 @@ fn rp_id_matches_origin(rp_id: &str, origin: &str) -> bool {
         (Some(rp_reg), Some(host_reg)) => rp_reg == host_reg,
         _ => false,
     }
+}
+
+/// Whether we can honour the RP's userVerification requirement: "required"
+/// needs a platform that performs genuine user verification (Touch ID /
+/// Windows Hello). Answering a UV-required ceremony with UV=0 produces an
+/// assertion the RP rejects server-side (Microsoft and Google both require UV
+/// for passkey sign-in); refusing instead lets the page fall back to the
+/// browser's native handler. Takes availability as a parameter so the policy
+/// is unit-testable on every platform.
+fn uv_requirement_met(user_verification: &str, uv_available: bool) -> bool {
+    user_verification != "required" || uv_available
 }
 
 /// Find an active login matching (normalized host, lowercased username).
@@ -393,11 +414,17 @@ fn handle_request(
             user_name,
             user_handle,
             exclude_credentials,
+            user_verification,
         } => {
             // Anti-phishing: the RP id must belong to the page's origin.
             if !rp_id_matches_origin(&rp_id, &origin) {
                 return Response::Error {
                     message: "origin_mismatch".into(),
+                };
+            }
+            if !uv_requirement_met(&user_verification, crate::biometric::available()) {
+                return Response::Error {
+                    message: "uv_unavailable".into(),
                 };
             }
             // Must be unlocked before we prompt the user.
@@ -526,10 +553,16 @@ fn handle_request(
             rp_id,
             client_data_hash,
             allow_credentials,
+            user_verification,
         } => {
             if !rp_id_matches_origin(&rp_id, &origin) {
                 return Response::Error {
                     message: "origin_mismatch".into(),
+                };
+            }
+            if !uv_requirement_met(&user_verification, crate::biometric::available()) {
+                return Response::Error {
+                    message: "uv_unavailable".into(),
                 };
             }
             // Resolve the passkey under the lock; release it before the prompt.
@@ -767,10 +800,11 @@ fn approve_passkey(
     app: Option<&AppHandle>,
     consent: &mut dyn FnMut(&ConsentContext) -> bool,
 ) -> Option<bool> {
-    // In production on macOS, gate with Touch ID — a genuine user verification,
-    // so we may honestly set UV. (`app` is `None` in unit tests, which take the
-    // injected consent path below instead of prompting.)
-    #[cfg(target_os = "macos")]
+    // In production on macOS/Windows, gate with Touch ID / Windows Hello — a
+    // genuine user verification, so we may honestly set UV. (`app` is `None` in
+    // unit tests, which take the injected consent path below instead of
+    // prompting.)
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if app.is_some() {
         return match crate::biometric::authenticate(&format!("approve a passkey for {rp_id}")) {
             Ok(()) => Some(true),
@@ -1190,6 +1224,7 @@ mod tests {
                     user_name: "frank".into(),
                     user_handle: vec![9, 9, 9],
                     exclude_credentials: vec![],
+                    user_verification: String::new(),
                 },
                 &state,
                 "t",
@@ -1225,6 +1260,7 @@ mod tests {
                 rp_id: "github.com".into(),
                 client_data_hash: client_data_hash.clone(),
                 allow_credentials: vec![cred_id.clone()],
+                user_verification: String::new(),
             },
             &state,
             "t",
@@ -1267,6 +1303,7 @@ mod tests {
                     rp_id: "github.com".into(),
                     client_data_hash: client_data_hash.clone(),
                     allow_credentials: vec![],
+                    user_verification: String::new(),
                 },
                 &state, "t", &mut authed, None, &mut allow(),
             ),
@@ -1281,6 +1318,7 @@ mod tests {
                     rp_id: "github.com".into(),
                     client_data_hash: client_data_hash.clone(),
                     allow_credentials: vec![vec![1, 2, 3, 4]],
+                    user_verification: String::new(),
                 },
                 &state, "t", &mut authed, None, &mut allow(),
             ),
@@ -1295,6 +1333,7 @@ mod tests {
                     rp_id: "github.com".into(),
                     client_data_hash,
                     allow_credentials: vec![cred_id],
+                    user_verification: String::new(),
                 },
                 &state, "t", &mut authed, None, &mut |_: &ConsentContext| false,
             ),
@@ -1324,6 +1363,21 @@ mod tests {
             "github.com",
             "https://github.com.evil.com"
         ));
+    }
+
+    #[test]
+    fn uv_required_needs_a_verifying_platform() {
+        // "required" (Microsoft/Google passkey sign-in) must be refused when
+        // the platform cannot genuinely verify the user — a UV=0 assertion
+        // would just be rejected by the RP after a pointless approval prompt.
+        assert!(!uv_requirement_met("required", false));
+        assert!(uv_requirement_met("required", true));
+        // "preferred"/"discouraged"/unspecified proceed either way; UV is then
+        // reported honestly via the authenticator-data flags.
+        for uv in ["preferred", "discouraged", ""] {
+            assert!(uv_requirement_met(uv, false));
+            assert!(uv_requirement_met(uv, true));
+        }
     }
 
     #[test]
@@ -1446,6 +1500,7 @@ mod tests {
                 user_name: "frank".into(),
                 user_handle: vec![1, 2, 3],
                 exclude_credentials: vec![],
+                user_verification: String::new(),
             },
             &state,
             "t",
@@ -1469,6 +1524,7 @@ mod tests {
                 user_name: "frank".into(),
                 user_handle: vec![1, 2, 3],
                 exclude_credentials: vec![credential_id],
+                user_verification: String::new(),
             },
             &state,
             "t",

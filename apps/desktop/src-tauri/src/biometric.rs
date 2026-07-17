@@ -1,4 +1,4 @@
-//! Biometric (Touch ID) gate for quick unlock.
+//! Biometric (Touch ID / Windows Hello) gate for quick unlock.
 //!
 //! This is a *presence* gate placed in front of the keychain-backed quick
 //! unlock: before the app uses the stored device key to unlock the vault, the
@@ -17,13 +17,13 @@
 //! its safe API, so the crate-wide `#![forbid(unsafe_code)]` still holds.
 
 /// Whether biometric authentication is wired on this platform.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn available() -> bool {
     true
 }
 
 /// Whether biometric authentication is wired on this platform.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn available() -> bool {
     false
 }
@@ -31,10 +31,11 @@ pub fn available() -> bool {
 /// Prompt the device owner to authenticate. `Ok(())` means they succeeded;
 /// `Err(message)` means they cancelled, failed, or biometrics are unavailable.
 ///
-/// `reason` is shown to the user as "Arca is trying to <reason>".
+/// `reason` is shown to the user as "Arca is trying to <reason>" (macOS) or as
+/// the message of the Windows Hello / credential dialog (Windows).
 /// This call **blocks** until the user responds, so callers must not hold the
 /// app-state lock while invoking it.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn authenticate(reason: &str) -> Result<(), String> {
     use robius_authentication::{
         AndroidText, BiometricStrength, Context, PolicyBuilder, Text, WindowsText,
@@ -42,16 +43,18 @@ pub fn authenticate(reason: &str) -> Result<(), String> {
 
     let policy = PolicyBuilder::new()
         .biometrics(Some(BiometricStrength::Strong))
-        // Allow the login password / Apple Watch as a fallback when a finger
-        // isn't recognised, so the user is never locked out of quick unlock.
+        // Allow the account password as a fallback when a finger/face isn't
+        // recognised, so the user is never locked out of quick unlock. On
+        // Windows this is the CredUI prompt validated against the current user;
+        // on macOS the login password (or Apple Watch).
         .password(true)
         .watch(true)
         .build()
         .ok_or_else(|| "Biometric authentication is not available on this device.".to_string())?;
 
     let text = Text {
-        // Only `apple` is shown on macOS; the other fields are required by the
-        // struct but unused here.
+        // Only the current platform's field is shown; the others are required
+        // by the struct but unused here.
         android: AndroidText {
             title: reason,
             subtitle: None,
@@ -62,14 +65,19 @@ pub fn authenticate(reason: &str) -> Result<(), String> {
             .unwrap_or_else(|| WindowsText::new_truncated("Arca", reason)),
     };
 
+    #[cfg(target_os = "macos")]
+    const PROVIDER: &str = "Touch ID";
+    #[cfg(target_os = "windows")]
+    const PROVIDER: &str = "Windows Hello";
+
     Context::new(())
         .blocking_authenticate(text, &policy)
-        .map_err(|e| format!("Touch ID was not confirmed ({e:?})."))
+        .map_err(|e| format!("{PROVIDER} was not confirmed ({e:?})."))
 }
 
 /// On platforms without a biometric provider wired up yet, this is a no-op so
 /// the existing (non-biometric) quick unlock keeps working unchanged.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn authenticate(_reason: &str) -> Result<(), String> {
     Ok(())
 }
