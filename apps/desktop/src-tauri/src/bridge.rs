@@ -480,6 +480,7 @@ fn handle_request(
                         message: "internal".into(),
                     };
                 }
+                crate::sync::mark_dirty();
             }
             if let Some(app) = app {
                 let _ = app.emit("passkey-created", rp_id);
@@ -718,6 +719,7 @@ fn handle_request(
                     }
                 }
             }
+            crate::sync::mark_dirty();
             if let Some(app) = app {
                 let _ = app.emit("login-saved", host);
             }

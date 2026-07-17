@@ -251,9 +251,9 @@ mod tests {
     }
 
     #[test]
-    fn all_item_variants_round_trip_through_disk_at_format_v2() {
+    fn all_item_variants_round_trip_through_disk_at_current_format() {
         let mut vault = Vault::create("pw", cheap_params()).unwrap();
-        assert_eq!(vault.header().format_version, 2);
+        assert_eq!(vault.header().format_version, VaultHeader::FORMAT_VERSION);
 
         let login = Item::new(sample_login(), 1);
         let note = Item::new(
@@ -284,7 +284,10 @@ mod tests {
         // variant decodes back to itself.
         let bytes = vault.to_bytes().unwrap();
         let mut reloaded = Vault::from_bytes(&bytes).unwrap();
-        assert_eq!(reloaded.header().format_version, 2);
+        assert_eq!(
+            reloaded.header().format_version,
+            VaultHeader::FORMAT_VERSION
+        );
         reloaded.unlock("pw").unwrap();
 
         assert!(matches!(

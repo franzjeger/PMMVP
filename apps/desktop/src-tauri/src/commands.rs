@@ -191,6 +191,8 @@ fn persist(st: &mut AppState) -> Result<(), CmdError> {
         .as_mut()
         .ok_or_else(|| CmdError::new("no_vault", "No vault is loaded."))?;
     store.save_synced(vault)?;
+    // Local state changed: let the cloud-sync loop know there is work.
+    crate::sync::mark_dirty();
     Ok(())
 }
 

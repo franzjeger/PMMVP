@@ -171,6 +171,10 @@ impl From<vault_core::Error> for CmdError {
             ),
             E::NotFound => CmdError::new("not_found", "Item not found."),
             E::Format => CmdError::new("format", "Unrecognized or unsupported vault format."),
+            E::UnsupportedVersion => CmdError::new(
+                "unsupported_version",
+                "This vault was written by a newer version of Arca. Update the app.",
+            ),
             E::InvalidTotpSecret => CmdError::new(
                 "invalid_totp",
                 "The stored TOTP secret is not valid Base32.",

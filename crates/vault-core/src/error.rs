@@ -26,10 +26,15 @@ pub enum Error {
     #[error("key derivation failed")]
     KeyDerivation,
 
-    /// The on-disk container is not a recognized vault, or its version is
-    /// newer than this build understands.
+    /// The on-disk container is not a recognized vault.
     #[error("unrecognized or unsupported vault format")]
     Format,
+
+    /// The vault was written by a NEWER build than this one. Distinct from
+    /// [`Error::Format`] so sync layers refuse (rather than "repair"/overwrite)
+    /// a legitimate newer-version peer file. The fix is updating the app.
+    #[error("vault written by a newer version of the app")]
+    UnsupportedVersion,
 
     /// (De)serialization of the vault structure failed.
     #[error("vault (de)serialization failed")]

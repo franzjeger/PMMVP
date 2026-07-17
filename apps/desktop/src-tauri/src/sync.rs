@@ -9,15 +9,21 @@
 //! Auth: standard installed-app OAuth — PKCE + loopback redirect. The refresh
 //! token lives in the OS secret store ([`vault_store::secrets`], no biometric
 //! gate: the background loop must read it silently and it only reaches
-//! ciphertext). Access tokens are held in memory.
+//! ciphertext). Access tokens are held in memory with wall-clock expiry.
 //!
-//! Engine: pull → merge (vault-core's item-level newest-wins) → push, run in a
-//! background thread every [`SYNC_INTERVAL`] and on demand. Merging requires an
-//! unlocked vault; while locked we skip silently. Network I/O happens OUTSIDE
-//! the AppState lock; only merge + serialize hold it.
+//! Engine (reviewed adversarially; the shape below closes the findings):
+//! pull → merge (vault-core item-level newest-wins + header-epoch adoption) →
+//! preflight-checked push. One cycle at a time (in-flight guard); uploads only
+//! when something actually changed (dirty flag / merged / bootstrap); the
+//! remote md5 recorded ONLY from our own upload response; a mid-cycle peer
+//! upload is detected by a cheap preflight and the cycle re-runs. Multiple
+//! remote files (duplicate-create races) are all merged, the oldest is kept
+//! and the extras deleted. A newer-format peer file is REFUSED (update the
+//! app), never "repaired".
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -44,17 +50,29 @@ const REMOTE_NAME: &str = "arca.vault";
 /// Background sync cadence.
 const SYNC_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Local changes waiting to be pushed. Set by every persist (app commands and
+/// browser-bridge saves); cleared after a successful upload.
+static DIRTY: AtomicBool = AtomicBool::new(true);
+
+/// One sync cycle at a time, across the background loop and manual "Sync now".
+static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Mark that local vault state changed and should be pushed on the next cycle.
+pub fn mark_dirty() {
+    DIRTY.store(true, Ordering::Relaxed);
+}
+
 /// Sync status shared with the UI.
 #[derive(Default)]
 pub struct SyncState {
     pub account: Option<String>,
     pub last_sync_unix: Option<u64>,
     pub last_error: Option<String>,
-    /// In-memory access token + expiry.
-    access_token: Option<(Zeroizing<String>, Instant)>,
-    /// Drive file id of the remote vault, once discovered/created.
-    remote_id: Option<String>,
-    /// md5 of the remote content we last integrated, to skip no-op cycles.
+    /// In-memory access token + wall-clock expiry.
+    access_token: Option<(Zeroizing<String>, SystemTime)>,
+    /// md5 of remote content we last integrated OR produced ourselves. Only
+    /// ever set from our own upload response (never from a bare listing), so a
+    /// peer's concurrent upload can't be marked "already integrated" unseen.
     last_remote_md5: Option<String>,
 }
 
@@ -67,6 +85,21 @@ pub struct SyncStatusDto {
     pub account: Option<String>,
     pub last_sync_unix: Option<u64>,
     pub last_error: Option<String>,
+}
+
+/// Cycle-internal error classification (drives the retry policy).
+enum CycleError {
+    /// A peer uploaded mid-cycle; re-run pull-merge-push.
+    Conflict,
+    /// Token rejected; refresh once and re-run.
+    Auth,
+    Other(String),
+}
+
+impl From<String> for CycleError {
+    fn from(s: String) -> Self {
+        CycleError::Other(s)
+    }
 }
 
 fn now_unix() -> u64 {
@@ -105,13 +138,13 @@ fn urlenc(s: &str) -> String {
 /// loopback port, exchange the code, store the refresh token. Blocking (call
 /// from a command on a thread); returns the account label.
 pub fn connect(app: &AppHandle) -> Result<String, String> {
-    // PKCE verifier (43-128 chars) + S256 challenge.
+    // PKCE verifier (43-128 chars) + S256 challenge. PKCE binds the code to
+    // this process, so a local port-sniffer can't redeem an intercepted code.
     let mut raw = [0u8; 32];
     getrandom::getrandom(&mut raw).map_err(|_| "rng failure".to_string())?;
     let verifier = data_encoding::BASE64URL_NOPAD.encode(&raw);
     let challenge = data_encoding::BASE64URL_NOPAD.encode(&Sha256::digest(verifier.as_bytes()));
 
-    // Loopback listener on an ephemeral port.
     let listener = TcpListener::bind(("127.0.0.1", 0)).map_err(|e| format!("bind failed: {e}"))?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let redirect = format!("http://127.0.0.1:{port}");
@@ -123,7 +156,6 @@ pub fn connect(app: &AppHandle) -> Result<String, String> {
         urlenc(SCOPE),
         urlenc(&challenge),
     );
-    // Open the system browser at the consent page.
     {
         use tauri_plugin_opener::OpenerExt;
         app.opener()
@@ -131,7 +163,7 @@ pub fn connect(app: &AppHandle) -> Result<String, String> {
             .map_err(|e| format!("could not open the browser: {e}"))?;
     }
 
-    // Wait (max 3 min) for exactly one redirect carrying ?code=...
+    // Wait (max 3 min) for the redirect carrying ?code= (or ?error=).
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let deadline = Instant::now() + Duration::from_secs(180);
     let code = loop {
@@ -146,18 +178,21 @@ pub fn connect(app: &AppHandle) -> Result<String, String> {
             }
             Err(_) => continue,
         };
-        // The accepted stream inherits nonblocking; make it blocking to read.
+        // The accepted stream inherits nonblocking; make it a blocking read
+        // with a short timeout so a stalled local connection can't hang us.
         stream.set_nonblocking(false).ok();
+        stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
         reader.read_line(&mut line).ok();
-        // "GET /?code=...&scope=... HTTP/1.1"
+        // "GET /?code=...&scope=... HTTP/1.1" or "GET /?error=access_denied ..."
         let path = line.split_whitespace().nth(1).unwrap_or("");
+        let denied = path.contains("error=");
         let code = path
             .split_once("code=")
             .map(|(_, r)| r.split('&').next().unwrap_or("").to_string());
         let mut stream = reader.into_inner();
-        let body = if code.is_some() {
+        let body = if code.as_deref().is_some_and(|c| !c.is_empty()) {
             "<h2>Arca is connected.</h2>You can close this tab."
         } else {
             "<h2>Sign-in was cancelled.</h2>You can close this tab."
@@ -170,13 +205,15 @@ pub fn connect(app: &AppHandle) -> Result<String, String> {
             )
             .as_bytes(),
         );
+        if denied {
+            return Err("sign-in was denied".into());
+        }
         if let Some(c) = code {
             if !c.is_empty() {
                 break c;
             }
-            return Err("sign-in was denied".into());
         }
-        // Ignore favicon/noise requests and keep waiting.
+        // Favicon/noise request: keep waiting.
     };
 
     // Exchange the code for tokens.
@@ -199,6 +236,7 @@ pub fn connect(app: &AppHandle) -> Result<String, String> {
         .as_str()
         .ok_or("no refresh token in response")?;
     let access = resp["access_token"].as_str().ok_or("no access token")?;
+    let expires = resp["expires_in"].as_u64().unwrap_or(3600);
     vault_store::secrets::set(SECRET_SERVICE, SECRET_ACCOUNT, refresh)
         .map_err(|_| "could not store the refresh token in the OS keychain")?;
 
@@ -214,15 +252,16 @@ pub fn connect(app: &AppHandle) -> Result<String, String> {
         .unwrap_or("Google account")
         .to_string();
 
-    let sync = app.state::<SharedSync>();
-    if let Ok(mut s) = sync.lock() {
+    if let Ok(mut s) = app.state::<SharedSync>().lock() {
+        // Fresh connection: reset any previous account's bookkeeping.
+        *s = SyncState::default();
         s.account = Some(account.clone());
         s.access_token = Some((
             Zeroizing::new(access.to_string()),
-            Instant::now() + Duration::from_secs(3000),
+            SystemTime::now() + Duration::from_secs(expires.saturating_sub(60)),
         ));
-        s.last_error = None;
     }
+    mark_dirty(); // force a full first cycle
     Ok(account)
 }
 
@@ -242,19 +281,21 @@ pub fn is_connected() -> bool {
 }
 
 /// A valid access token, refreshing via the stored refresh token if needed.
-fn access_token(app: &AppHandle) -> Result<Zeroizing<String>, String> {
+fn access_token(app: &AppHandle) -> Result<Zeroizing<String>, CycleError> {
     {
         let st = app.state::<SharedSync>();
-        let guard = st.lock().map_err(|_| "state poisoned".to_string())?;
+        let guard = st
+            .lock()
+            .map_err(|_| CycleError::Other("state poisoned".into()))?;
         if let Some((tok, until)) = &guard.access_token {
-            if Instant::now() < *until {
+            if SystemTime::now() < *until {
                 return Ok(tok.clone());
             }
         }
     }
     let refresh = vault_store::secrets::get(SECRET_SERVICE, SECRET_ACCOUNT)
-        .map_err(|_| "keychain read failed".to_string())?
-        .ok_or("not connected")?;
+        .map_err(|_| CycleError::Other("keychain read failed".into()))?
+        .ok_or(CycleError::Other("not connected".into()))?;
     let resp: serde_json::Value = http()
         .post("https://oauth2.googleapis.com/token")
         .form(&[
@@ -264,72 +305,140 @@ fn access_token(app: &AppHandle) -> Result<Zeroizing<String>, String> {
             ("grant_type", "refresh_token"),
         ])
         .send()
-        .map_err(|e| format!("token refresh failed: {e}"))?
+        .map_err(|e| CycleError::Other(format!("token refresh failed: {e}")))?
         .json()
-        .map_err(|e| format!("refresh response unreadable: {e}"))?;
-    let access = resp["access_token"]
-        .as_str()
-        .ok_or("refresh rejected (reconnect Google in Settings)")?;
+        .map_err(|e| CycleError::Other(format!("refresh response unreadable: {e}")))?;
+    let access = resp["access_token"].as_str().ok_or(CycleError::Other(
+        "refresh rejected (reconnect Google in Settings)".into(),
+    ))?;
+    let expires = resp["expires_in"].as_u64().unwrap_or(3600);
     let tok = Zeroizing::new(access.to_string());
     if let Ok(mut s) = app.state::<SharedSync>().lock() {
-        s.access_token = Some((tok.clone(), Instant::now() + Duration::from_secs(3000)));
+        s.access_token = Some((
+            tok.clone(),
+            SystemTime::now() + Duration::from_secs(expires.saturating_sub(60)),
+        ));
     }
     Ok(tok)
+}
+
+/// Drop the cached access token (after a 401) so the next call re-refreshes.
+fn invalidate_token(app: &AppHandle) {
+    if let Ok(mut s) = app.state::<SharedSync>().lock() {
+        s.access_token = None;
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Drive appDataFolder ops
 // ---------------------------------------------------------------------------
 
-/// (file_id, md5) of the remote vault, if it exists.
-fn find_remote(token: &str) -> Result<Option<(String, String)>, String> {
-    let resp: serde_json::Value = http()
+/// Map a Drive HTTP status to the cycle error class.
+fn classify(status: reqwest::StatusCode, what: &str) -> CycleError {
+    if status.as_u16() == 401 {
+        CycleError::Auth
+    } else {
+        CycleError::Other(format!("{what} HTTP {status}"))
+    }
+}
+
+/// ALL remote vault files (normally 0 or 1; >1 after a create race), oldest
+/// first. Errors are surfaced, never treated as "no file" (a silent failure
+/// here caused duplicate creation).
+fn find_remote(token: &str) -> Result<Vec<(String, String)>, CycleError> {
+    let resp = http()
         .get(format!(
-            "https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name%3D%27{REMOTE_NAME}%27&fields=files(id,md5Checksum)"
+            "https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name%3D%27{REMOTE_NAME}%27&orderBy=createdTime&fields=files(id,md5Checksum)"
         ))
         .bearer_auth(token)
         .send()
-        .map_err(|e| format!("drive list failed: {e}"))?
+        .map_err(|e| CycleError::Other(format!("drive list failed: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(classify(resp.status(), "drive list"));
+    }
+    let v: serde_json::Value = resp
         .json()
-        .map_err(|e| format!("drive list unreadable: {e}"))?;
-    Ok(resp["files"].as_array().and_then(|f| f.first()).map(|f| {
-        (
-            f["id"].as_str().unwrap_or_default().to_string(),
-            f["md5Checksum"].as_str().unwrap_or_default().to_string(),
-        )
-    }))
+        .map_err(|e| CycleError::Other(format!("drive list unreadable: {e}")))?;
+    Ok(v["files"]
+        .as_array()
+        .map(|files| {
+            files
+                .iter()
+                .map(|f| {
+                    (
+                        f["id"].as_str().unwrap_or_default().to_string(),
+                        f["md5Checksum"].as_str().unwrap_or_default().to_string(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
-fn download(token: &str, id: &str) -> Result<Vec<u8>, String> {
+fn download(token: &str, id: &str) -> Result<Vec<u8>, CycleError> {
     let resp = http()
         .get(format!(
             "https://www.googleapis.com/drive/v3/files/{id}?alt=media"
         ))
         .bearer_auth(token)
         .send()
-        .map_err(|e| format!("download failed: {e}"))?;
+        .map_err(|e| CycleError::Other(format!("download failed: {e}")))?;
     if !resp.status().is_success() {
-        return Err(format!("download HTTP {}", resp.status()));
+        return Err(classify(resp.status(), "download"));
     }
     resp.bytes()
         .map(|b| b.to_vec())
-        .map_err(|e| format!("download body failed: {e}"))
+        .map_err(|e| CycleError::Other(format!("download body failed: {e}")))
 }
 
-/// Create or update the remote file. Returns the file id.
-fn upload(token: &str, existing_id: Option<&str>, bytes: &[u8]) -> Result<String, String> {
+/// Current md5 of a remote file (cheap preflight before the upload).
+fn remote_md5(token: &str, id: &str) -> Result<String, CycleError> {
+    let resp = http()
+        .get(format!(
+            "https://www.googleapis.com/drive/v3/files/{id}?fields=md5Checksum"
+        ))
+        .bearer_auth(token)
+        .send()
+        .map_err(|e| CycleError::Other(format!("preflight failed: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(classify(resp.status(), "preflight"));
+    }
+    let v: serde_json::Value = resp
+        .json()
+        .map_err(|e| CycleError::Other(format!("preflight unreadable: {e}")))?;
+    Ok(v["md5Checksum"].as_str().unwrap_or_default().to_string())
+}
+
+fn delete_file(token: &str, id: &str) -> Result<(), CycleError> {
+    let resp = http()
+        .delete(format!("https://www.googleapis.com/drive/v3/files/{id}"))
+        .bearer_auth(token)
+        .send()
+        .map_err(|e| CycleError::Other(format!("delete failed: {e}")))?;
+    if !resp.status().is_success() && resp.status().as_u16() != 404 {
+        return Err(classify(resp.status(), "delete"));
+    }
+    Ok(())
+}
+
+/// Create or update the remote file. Returns (id, md5) FROM THE UPLOAD
+/// RESPONSE, so what we record as "integrated" is exactly what we wrote.
+fn upload(
+    token: &str,
+    existing_id: Option<&str>,
+    bytes: &[u8],
+) -> Result<(String, String), CycleError> {
     let client = http();
     let resp = match existing_id {
         Some(id) => client
             .patch(format!(
-                "https://www.googleapis.com/upload/drive/v3/files/{id}?uploadType=media&fields=id"
+                "https://www.googleapis.com/upload/drive/v3/files/{id}?uploadType=media&fields=id,md5Checksum"
             ))
             .bearer_auth(token)
             .header("Content-Type", "application/octet-stream")
             .body(bytes.to_vec())
             .send(),
         None => {
-            // Multipart create: metadata (name + appDataFolder parent) + content.
             let meta = format!(r#"{{"name":"{REMOTE_NAME}","parents":["appDataFolder"]}}"#);
             let boundary = "arca-vault-boundary";
             let mut body = Vec::new();
@@ -342,7 +451,7 @@ fn upload(token: &str, existing_id: Option<&str>, bytes: &[u8]) -> Result<String
             body.extend_from_slice(bytes);
             body.extend_from_slice(format!("\r\n--{boundary}--").as_bytes());
             client
-                .post("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id")
+                .post("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,md5Checksum")
                 .bearer_auth(token)
                 .header(
                     "Content-Type",
@@ -352,82 +461,192 @@ fn upload(token: &str, existing_id: Option<&str>, bytes: &[u8]) -> Result<String
                 .send()
         }
     }
-    .map_err(|e| format!("upload failed: {e}"))?;
+    .map_err(|e| CycleError::Other(format!("upload failed: {e}")))?;
     if !resp.status().is_success() {
-        return Err(format!("upload HTTP {}", resp.status()));
+        return Err(classify(resp.status(), "upload"));
     }
     let v: serde_json::Value = resp
         .json()
-        .map_err(|e| format!("upload response unreadable: {e}"))?;
-    Ok(v["id"].as_str().unwrap_or_default().to_string())
+        .map_err(|e| CycleError::Other(format!("upload response unreadable: {e}")))?;
+    Ok((
+        v["id"].as_str().unwrap_or_default().to_string(),
+        v["md5Checksum"].as_str().unwrap_or_default().to_string(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
 // The sync cycle
 // ---------------------------------------------------------------------------
 
-/// One pull→merge→push cycle. Skips silently when not connected or locked.
+/// One pull→merge→push attempt. See module docs for the invariants.
+fn cycle(app: &AppHandle) -> Result<bool, CycleError> {
+    let token = access_token(app)?;
+
+    // Discover ALL remote copies (oldest first). Never silently "no file".
+    let remotes = find_remote(&token)?;
+    let primary = remotes.first().cloned();
+    let duplicates: Vec<_> = remotes.iter().skip(1).cloned().collect();
+
+    // Skip downloads we've provably already integrated (md5 recorded from our
+    // own last upload); everything else gets pulled and merged.
+    let known_md5 = {
+        let st = app.state::<SharedSync>();
+        let guard = st
+            .lock()
+            .map_err(|_| CycleError::Other("state poisoned".into()))?;
+        guard.last_remote_md5.clone()
+    };
+    let mut to_merge: Vec<Vec<u8>> = Vec::new();
+    let mut based_on_md5: Option<String> = None;
+    if let Some((id, md5)) = &primary {
+        if Some(md5) != known_md5.as_ref() {
+            to_merge.push(download(&token, id)?);
+        }
+        based_on_md5 = Some(md5.clone());
+    }
+    for (id, _) in &duplicates {
+        to_merge.push(download(&token, id)?);
+    }
+
+    let dirty = DIRTY.swap(false, Ordering::Relaxed);
+    let merged_any = !to_merge.is_empty();
+    // Nothing new remotely and nothing changed locally: genuine no-op.
+    if !merged_any && !dirty && primary.is_some() {
+        if let Ok(mut s) = app.state::<SharedSync>().lock() {
+            s.last_sync_unix = Some(now_unix());
+            s.last_error = None;
+        }
+        return Ok(false);
+    }
+
+    // Merge + serialize under the state lock (no network in here).
+    let out_bytes;
+    {
+        let state = app.state::<Mutex<AppState>>();
+        let mut st = state
+            .lock()
+            .map_err(|_| CycleError::Other("state poisoned".into()))?;
+        let AppState { store, vault, .. } = &mut *st;
+        let Some(vault) = vault.as_mut().filter(|v| v.is_unlocked()) else {
+            // Locked: can't merge safely. Re-flag local changes and try later.
+            if dirty {
+                mark_dirty();
+            }
+            return Ok(false);
+        };
+        for bytes in &to_merge {
+            match vault.merge_remote(bytes) {
+                Ok(()) => {}
+                // Truly unparseable remote (torn upload): replace it with ours.
+                Err(vault_core::Error::Format) | Err(vault_core::Error::Serialization) => {}
+                // A NEWER app version wrote it: refuse — updating is the fix.
+                Err(vault_core::Error::UnsupportedVersion) => {
+                    if dirty {
+                        mark_dirty();
+                    }
+                    return Err(CycleError::Other(
+                        "the synced vault was written by a newer Arca — update this app".into(),
+                    ));
+                }
+                // Foreign vault (different key) or locked: never overwrite.
+                Err(e) => {
+                    if dirty {
+                        mark_dirty();
+                    }
+                    return Err(CycleError::Other(format!("remote vault refused: {e}")));
+                }
+            }
+        }
+        store
+            .save_synced(vault)
+            .map_err(|e| CycleError::Other(e.to_string()))?;
+        out_bytes = vault
+            .to_bytes()
+            .map_err(|e| CycleError::Other(e.to_string()))?;
+    }
+
+    // Preflight: if a peer uploaded since our download, re-run the whole cycle
+    // instead of clobbering content we haven't merged.
+    if let (Some((id, _)), Some(based)) = (&primary, &based_on_md5) {
+        let now_md5 = remote_md5(&token, id)?;
+        if &now_md5 != based {
+            mark_dirty(); // our serialized state still needs pushing
+            return Err(CycleError::Conflict);
+        }
+    }
+
+    // Push, recording md5 from the upload response itself.
+    let upload_result = upload(
+        &token,
+        primary.as_ref().map(|(id, _)| id.as_str()),
+        &out_bytes,
+    );
+    let (_new_id, new_md5) = match upload_result {
+        Ok(v) => v,
+        Err(e) => {
+            mark_dirty(); // not uploaded; keep the local-changes flag
+            return Err(e);
+        }
+    };
+
+    // Reconcile duplicates: their content is merged into what we just pushed.
+    for (id, _) in &duplicates {
+        delete_file(&token, id)?;
+    }
+
+    if let Ok(mut s) = app.state::<SharedSync>().lock() {
+        s.last_remote_md5 = Some(new_md5);
+        s.last_sync_unix = Some(now_unix());
+        s.last_error = None;
+    }
+    Ok(merged_any)
+}
+
+/// Run sync now (used by the background loop and the manual command). At most
+/// one cycle runs at a time; conflicts and expired tokens retry bounded.
 pub fn sync_now(app: &AppHandle) -> Result<bool, String> {
     if !is_connected() {
         return Ok(false);
     }
-    let token = access_token(app)?;
-
-    // Network: discover + download OUTSIDE the state lock.
-    let remote = find_remote(&token)?;
-    let (remote_id, remote_md5) = match &remote {
-        Some((id, md5)) => (Some(id.clone()), Some(md5.clone())),
-        None => (None, None),
-    };
-    let unchanged = {
-        let s = app.state::<SharedSync>();
-        let guard = s.lock().map_err(|_| "state poisoned".to_string())?;
-        remote_md5.is_some() && remote_md5 == guard.last_remote_md5
-    };
-    let remote_bytes = match (&remote_id, unchanged) {
-        (Some(id), false) => Some(download(&token, id)?),
-        _ => None,
-    };
-
-    // Merge + serialize under the lock (no network in here).
-    let out_bytes;
-    {
-        let state = app.state::<Mutex<AppState>>();
-        let mut st = state.lock().map_err(|_| "state poisoned".to_string())?;
-        let AppState { store, vault, .. } = &mut *st;
-        let Some(vault) = vault.as_mut().filter(|v| v.is_unlocked()) else {
-            return Ok(false); // locked: nothing to merge safely; try later
-        };
-        if let Some(bytes) = &remote_bytes {
-            match vault.merge_remote(bytes) {
-                Ok(()) => {}
-                // Corrupt/partial remote: replace it with ours below.
-                Err(vault_core::Error::Format) | Err(vault_core::Error::Serialization) => {}
-                Err(e) => return Err(format!("remote vault refused: {e}")),
+    if IN_FLIGHT.swap(true, Ordering::Acquire) {
+        return Ok(false); // another cycle is running; it will pick our changes up
+    }
+    let result = (|| {
+        let mut auth_retried = false;
+        for _attempt in 0..3 {
+            match cycle(app) {
+                Ok(merged) => return Ok(merged),
+                Err(CycleError::Conflict) => continue, // peer raced us: re-pull
+                Err(CycleError::Auth) if !auth_retried => {
+                    auth_retried = true;
+                    invalidate_token(app);
+                    continue;
+                }
+                Err(CycleError::Auth) => {
+                    return Err("Google sign-in expired — reconnect in Settings".into())
+                }
+                Err(CycleError::Other(m)) => return Err(m),
             }
         }
-        store.save_synced(vault).map_err(|e| e.to_string())?;
-        out_bytes = vault.to_bytes().map_err(|e| e.to_string())?;
-    }
+        Err("sync kept conflicting with another device — will retry".into())
+    })();
+    IN_FLIGHT.store(false, Ordering::Release);
 
-    // Push (outside the lock).
-    let new_id = upload(&token, remote_id.as_deref(), &out_bytes)?;
-    // Re-read md5 so the next cycle can no-op.
-    let md5_now = find_remote(&token)?.map(|(_, m)| m);
-    {
-        let s = app.state::<SharedSync>();
-        let mut guard = s.lock().map_err(|_| "state poisoned".to_string())?;
-        guard.remote_id = Some(new_id);
-        guard.last_remote_md5 = md5_now;
-        guard.last_sync_unix = Some(now_unix());
-        guard.last_error = None;
+    match &result {
+        Ok(merged) => {
+            if *merged {
+                let _ = app.emit("sync-merged", ());
+            }
+            let _ = app.emit("sync-status", status(app));
+        }
+        Err(e) => {
+            if let Ok(mut s) = app.state::<SharedSync>().lock() {
+                s.last_error = Some(e.clone());
+            }
+            let _ = app.emit("sync-status", status(app));
+        }
     }
-    let merged = remote_bytes.is_some();
-    if merged {
-        let _ = app.emit("sync-merged", ());
-    }
-    let _ = app.emit("sync-status", status(app));
-    Ok(merged)
+    result
 }
 
 /// Status DTO for the UI.
@@ -443,16 +662,11 @@ pub fn status(app: &AppHandle) -> SyncStatusDto {
     }
 }
 
-/// Background loop: a cycle every [`SYNC_INTERVAL`]. Errors are recorded in the
-/// status (shown in Settings), never fatal.
+/// Background loop: a cycle every [`SYNC_INTERVAL`]. Errors land in the status
+/// (shown in Settings), never fatal.
 pub fn start_loop(app: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(SYNC_INTERVAL);
-        if let Err(e) = sync_now(&app) {
-            if let Ok(mut s) = app.state::<SharedSync>().lock() {
-                s.last_error = Some(e);
-            }
-            let _ = app.emit("sync-status", status(&app));
-        }
+        let _ = sync_now(&app);
     });
 }

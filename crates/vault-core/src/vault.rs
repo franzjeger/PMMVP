@@ -2,7 +2,7 @@
 //!
 //! On-disk layout produced by [`Vault::to_bytes`]:
 //! ```text
-//! "SYBRVLT1"            (8-byte magic + container version)
+//! "SYBRVLT2"            (8-byte magic + container version; V1 still readable)
 //! bincode(VaultBody {   (cleartext header + per-item ciphertext)
 //!     header,
 //!     items: [ { id, AeadBlob }, ... ],
@@ -21,8 +21,12 @@ use crate::header::{KdfParams, VaultHeader};
 use crate::item::{Item, ItemSummary};
 use crate::secret::SymmetricKey;
 
-/// Magic + container-format byte string at the start of every vault file.
-const MAGIC: &[u8; 8] = b"SYBRVLT1";
+/// Container magics. V1 framed the v2 header (no rewrap epoch); V2 frames the
+/// current header. Both are readable; writes always use the current magic.
+/// (The outer bincode framing is positional, so a header field addition needs
+/// its own container magic rather than a serde default.)
+const MAGIC_V1: &[u8; 8] = b"SYBRVLT1";
+const MAGIC: &[u8; 8] = b"SYBRVLT2";
 
 /// Fixed AAD context for the device-key (quick-unlock) wrap.
 const DEVICE_UNLOCK_AAD: &[u8] = b"sybr-vault/device-unlock/v1";
@@ -38,6 +42,13 @@ struct EncryptedItem {
 #[derive(Serialize, Deserialize)]
 struct VaultBody {
     header: VaultHeader,
+    items: Vec<EncryptedItem>,
+}
+
+/// Body layout of legacy `SYBRVLT1` containers (v2 header, positionally exact).
+#[derive(Deserialize)]
+struct LegacyBodyV2 {
+    header: crate::header::LegacyHeaderV2,
     items: Vec<EncryptedItem>,
 }
 
@@ -74,6 +85,7 @@ impl Vault {
             kdf: params,
             master_wrapped_vault_key,
             device_wrapped_vault_key: None,
+            rewrap_epoch: 0,
         };
 
         Ok(Self {
@@ -88,15 +100,27 @@ impl Vault {
     /// Parse a locked vault from its serialized bytes. Does not require the
     /// master password; the result is locked until [`Vault::unlock`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() < MAGIC.len() || &bytes[..MAGIC.len()] != MAGIC {
+        if bytes.len() < MAGIC.len() {
             return Err(Error::Format);
         }
-        let body: VaultBody =
-            bincode::deserialize(&bytes[MAGIC.len()..]).map_err(|_| Error::Serialization)?;
-        body.header.check_supported()?;
+        let (header, items) = match &bytes[..MAGIC.len()] {
+            m if m == MAGIC => {
+                let body: VaultBody = bincode::deserialize(&bytes[MAGIC.len()..])
+                    .map_err(|_| Error::Serialization)?;
+                (body.header, body.items)
+            }
+            m if m == MAGIC_V1 => {
+                // Legacy container: v2 header without the rewrap epoch.
+                let body: LegacyBodyV2 = bincode::deserialize(&bytes[MAGIC.len()..])
+                    .map_err(|_| Error::Serialization)?;
+                (body.header.into(), body.items)
+            }
+            _ => return Err(Error::Format),
+        };
+        header.check_supported()?;
         Ok(Self {
-            header: body.header,
-            state: VaultState::Locked { items: body.items },
+            header,
+            state: VaultState::Locked { items },
         })
     }
 
@@ -107,10 +131,11 @@ impl Vault {
             VaultState::Locked { items } => items.clone(),
             VaultState::Unlocked { vault_key, items } => encrypt_items(vault_key, items)?,
         };
-        let body = VaultBody {
-            header: self.header.clone(),
-            items,
-        };
+        let mut header = self.header.clone();
+        // We always write the current container; stamp the version accordingly
+        // (a legacy-loaded header still carries its old number).
+        header.format_version = VaultHeader::FORMAT_VERSION;
+        let body = VaultBody { header, items };
         let mut out = Vec::with_capacity(MAGIC.len() + 64);
         out.extend_from_slice(MAGIC);
         let encoded = bincode::serialize(&body).map_err(|_| Error::Serialization)?;
@@ -214,7 +239,9 @@ impl Vault {
     /// refused ([`Error::Decryption`]) rather than silently importing garbage.
     /// Requires this vault to be unlocked.
     pub fn merge_remote(&mut self, remote_bytes: &[u8]) -> Result<()> {
-        let remote_enc = match Self::from_bytes(remote_bytes)?.state {
+        let remote = Self::from_bytes(remote_bytes)?;
+        let remote_header = remote.header;
+        let remote_enc = match remote.state {
             VaultState::Locked { items } => items,
             // `from_bytes` always yields a locked vault.
             VaultState::Unlocked { .. } => return Err(Error::Format),
@@ -225,6 +252,14 @@ impl Vault {
         let remote_items = decrypt_items(vault_key, &remote_enc)?;
         let local = core::mem::take(items);
         *items = crate::sync::merge(local, remote_items);
+        // Header: adopt a NEWER master rewrap (password rotation / KDF upgrade)
+        // from the peer. The vault key itself never changes on rotation, so the
+        // local device wrap stays valid and is kept.
+        if remote_header.rewrap_epoch > self.header.rewrap_epoch {
+            self.header.kdf = remote_header.kdf;
+            self.header.master_wrapped_vault_key = remote_header.master_wrapped_vault_key;
+            self.header.rewrap_epoch = remote_header.rewrap_epoch;
+        }
         Ok(())
     }
 
@@ -283,6 +318,9 @@ impl Vault {
         let wrapped = crypto::wrap_key(&master_key, &vault_key, &new_params.aad())?;
         self.header.kdf = new_params;
         self.header.master_wrapped_vault_key = wrapped;
+        // Monotonic epoch: peers adopt the higher-epoch header on merge, so the
+        // rotation propagates instead of being reverted by a stale header.
+        self.header.rewrap_epoch += 1;
         Ok(())
     }
 
@@ -508,6 +546,83 @@ mod tests {
         other.upsert_item(login_item(9, "Z", 5)).unwrap();
         let foreign = other.to_bytes().unwrap();
         assert!(matches!(a.merge_remote(&foreign), Err(Error::Decryption)));
+    }
+
+    #[test]
+    fn merge_remote_adopts_a_newer_master_rewrap() {
+        // Device A and B share a vault; A rotates the master password.
+        let mut a = Vault::create("old-pw", cheap_params()).unwrap();
+        a.upsert_item(login_item(1, "X", 10)).unwrap();
+        let base = a.to_bytes().unwrap();
+        let mut b = Vault::from_bytes(&base).unwrap();
+        b.unlock("old-pw").unwrap();
+
+        a.change_master_password("new-pw").unwrap();
+        assert_eq!(a.header().rewrap_epoch, 1);
+        let rotated = a.to_bytes().unwrap();
+
+        // B merges A's file: the rotated header must be adopted, so a vault
+        // serialized by B now opens with the NEW password only.
+        b.merge_remote(&rotated).unwrap();
+        assert_eq!(b.header().rewrap_epoch, 1);
+        let from_b = b.to_bytes().unwrap();
+        let mut check = Vault::from_bytes(&from_b).unwrap();
+        assert!(check.unlock("old-pw").is_err());
+        check.unlock("new-pw").unwrap();
+
+        // And a STALE peer file (epoch 0) must NOT revert B's header.
+        b.merge_remote(&base).unwrap();
+        assert_eq!(b.header().rewrap_epoch, 1);
+    }
+
+    #[test]
+    fn legacy_v1_container_still_loads() {
+        // Hand-build a SYBRVLT1 container (v2 header, no rewrap epoch) and
+        // confirm it round-trips through the current reader.
+        let mut v = Vault::create("pw", cheap_params()).unwrap();
+        v.upsert_item(login_item(3, "Old", 5)).unwrap();
+        let header = v.header().clone();
+        #[derive(serde::Serialize)]
+        struct OldHeader<'a> {
+            format_version: u16,
+            kdf: &'a KdfParams,
+            master_wrapped_vault_key: &'a crate::crypto::AeadBlob,
+            device_wrapped_vault_key: &'a Option<crate::crypto::AeadBlob>,
+        }
+        #[derive(serde::Serialize)]
+        struct OldBody<'a> {
+            header: OldHeader<'a>,
+            items: Vec<EncryptedItem>, // empty: items aren't the point here
+        }
+        let old = OldBody {
+            header: OldHeader {
+                format_version: 2,
+                kdf: &header.kdf,
+                master_wrapped_vault_key: &header.master_wrapped_vault_key,
+                device_wrapped_vault_key: &header.device_wrapped_vault_key,
+            },
+            items: vec![],
+        };
+        let mut bytes = b"SYBRVLT1".to_vec();
+        bytes.extend_from_slice(&bincode::serialize(&old).unwrap());
+        let mut loaded = Vault::from_bytes(&bytes).unwrap();
+        assert_eq!(loaded.header().rewrap_epoch, 0);
+        loaded.unlock("pw").unwrap();
+    }
+
+    #[test]
+    fn newer_format_version_is_refused_distinctly() {
+        let mut v = Vault::create("pw", cheap_params()).unwrap();
+        v.upsert_item(login_item(4, "F", 1)).unwrap();
+        let mut bytes = v.to_bytes().unwrap();
+        // Corrupt the header's format_version (first field after the magic) to
+        // a large value: must surface UnsupportedVersion, not generic Format.
+        bytes[8] = 0xEE;
+        bytes[9] = 0xEE;
+        assert!(matches!(
+            Vault::from_bytes(&bytes),
+            Err(Error::UnsupportedVersion)
+        ));
     }
 
     #[test]

@@ -82,6 +82,11 @@ pub struct VaultHeader {
     /// quick/biometric unlock. `None` until the user opts in. The device key
     /// itself lives only in the OS keychain (see `vault-store`).
     pub device_wrapped_vault_key: Option<AeadBlob>,
+    /// Monotonic master-rewrap epoch: bumped on every master-password change
+    /// (or future KDF hardening). Sync merges adopt the header with the HIGHER
+    /// epoch, so a rotation done on one device propagates instead of being
+    /// reverted by a peer's stale header. Legacy (v2) files load as epoch 0.
+    pub rewrap_epoch: u64,
 }
 
 impl VaultHeader {
@@ -90,13 +95,41 @@ impl VaultHeader {
     /// v1 (never released with real data): item payloads encoded with bincode.
     /// v2: item payloads encoded with self-describing, name-tagged CBOR so the
     ///     `VaultItem` schema can evolve safely.
-    pub const FORMAT_VERSION: u16 = 2;
+    /// v3: header gains `rewrap_epoch` (new `SYBRVLT2` container magic — the
+    ///     outer bincode framing is positional, so the header change needs its
+    ///     own container version; v2 files are still read transparently).
+    pub const FORMAT_VERSION: u16 = 3;
 
     /// Validate that this build can read the header.
     pub(crate) fn check_supported(&self) -> Result<()> {
-        if self.format_version == 0 || self.format_version > Self::FORMAT_VERSION {
+        if self.format_version == 0 {
             return Err(Error::Format);
         }
+        if self.format_version > Self::FORMAT_VERSION {
+            return Err(Error::UnsupportedVersion);
+        }
         Ok(())
+    }
+}
+
+/// The v2 header layout exactly as `SYBRVLT1` containers serialized it
+/// (bincode is positional: the legacy struct must match field-for-field).
+#[derive(Deserialize)]
+pub(crate) struct LegacyHeaderV2 {
+    pub format_version: u16,
+    pub kdf: KdfParams,
+    pub master_wrapped_vault_key: AeadBlob,
+    pub device_wrapped_vault_key: Option<AeadBlob>,
+}
+
+impl From<LegacyHeaderV2> for VaultHeader {
+    fn from(h: LegacyHeaderV2) -> Self {
+        Self {
+            format_version: h.format_version,
+            kdf: h.kdf,
+            master_wrapped_vault_key: h.master_wrapped_vault_key,
+            device_wrapped_vault_key: h.device_wrapped_vault_key,
+            rewrap_epoch: 0,
+        }
     }
 }
