@@ -116,6 +116,16 @@
   navigator.credentials.get = async function (options) {
     const pk = options && options.publicKey;
     if (!pk) return realGet(options);
+    // Conditional / silent mediation is *passive* passkey autofill: the page
+    // probes on load or field-focus to offer credentials, it is NOT an explicit
+    // "use my passkey" action. Servicing it ourselves would pop an approval /
+    // Touch ID prompt just for visiting the page — and again every time the page
+    // re-arms autofill. Defer these to the browser's native handler; Arca only
+    // answers the modal flow the user actively triggers (default/required).
+    const mediation = options && options.mediation;
+    if (mediation === "conditional" || mediation === "silent") {
+      return realGet(options);
+    }
     try {
       const cdj = clientDataJSON("webauthn.get", pk.challenge);
       const clientDataHash = await crypto.subtle.digest("SHA-256", cdj);
