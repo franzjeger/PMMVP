@@ -386,8 +386,13 @@ fn do_unlock(state: &Mutex<AppState>, master_password: &str) -> Result<(), CmdEr
 #[tauri::command]
 pub fn quick_unlock(state: St<'_>) -> Result<(), CmdError> {
     // Prompt for Touch ID *before* taking the state lock — the prompt blocks on
-    // user interaction, and we must not freeze other commands meanwhile. On
-    // platforms without biometrics this is a no-op and quick unlock proceeds.
+    // user interaction, and we must not freeze other commands meanwhile.
+    //
+    // On macOS the device key itself carries a biometric access control, so
+    // reading it (in `store.quick_unlock` below) already prompts Touch ID; a
+    // second app-level prompt here would double it. On Windows/Linux the key is
+    // not OS-gated, so this app-level biometric prompt is the gate.
+    #[cfg(not(target_os = "macos"))]
     crate::biometric::authenticate("unlock your password vault")
         .map_err(|m| CmdError::new("biometric_failed", &m))?;
 

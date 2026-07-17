@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- macOS entitlements for the Tauri Arca app. Shares the vault + device key
+     with the AutoFill extension:
+     - application-groups: the shared container holding the encrypted vault file.
+     - keychain-access-groups: the shared group holding the device key. The team
+       prefix is written literally (raw codesign does not substitute the Xcode
+       $(AppIdentifierPrefix) variable the extension uses); both resolve to
+       LY6LJ395B8.no.sybr.vault.shared. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.no.sybr.vault</string>
+    </array>
+    <key>keychain-access-groups</key>
+    <array>
+        <string>LY6LJ395B8.no.sybr.vault.shared</string>
+    </array>
+</dict>
+</plist>

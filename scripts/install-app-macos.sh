@@ -10,6 +10,10 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 APP_SRC="$REPO/target/release/bundle/macos/Arca.app"
 APP_DST="/Applications/Arca.app"
+# Entitlements (App Group + shared keychain group) so the vault + device key are
+# shared with the AutoFill extension. The re-sign below MUST pass these or it
+# strips what `tauri build` embedded.
+ENTITLEMENTS="$REPO/apps/desktop/src-tauri/Entitlements.plist"
 
 echo "==> Building release bundle…"
 (cd "$REPO/apps/desktop" && npm run tauri build -- --bundles app)
@@ -27,10 +31,10 @@ IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
   | grep -Eo '"Apple Development[^"]*"' | head -1 | tr -d '"')"
 if [ -n "$IDENTITY" ]; then
   echo "==> Signing with: $IDENTITY"
-  codesign --force --deep -s "$IDENTITY" "$APP_SRC"
+  codesign --force --deep --entitlements "$ENTITLEMENTS" -s "$IDENTITY" "$APP_SRC"
 else
-  echo "==> No signing identity found; ad-hoc signing (keychain will re-prompt after rebuilds)"
-  codesign --force --deep -s - "$APP_SRC"
+  echo "==> No signing identity found; ad-hoc signing (App Groups need a real team, so sharing won't work ad-hoc)"
+  codesign --force --deep --entitlements "$ENTITLEMENTS" -s - "$APP_SRC"
 fi
 codesign --verify --deep --strict "$APP_SRC"
 

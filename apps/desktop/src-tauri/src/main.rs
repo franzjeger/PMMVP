@@ -8,6 +8,7 @@ mod clipboard;
 mod commands;
 mod state;
 
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -21,6 +22,48 @@ use state::AppState;
 const KEYCHAIN_SERVICE: &str = "no.sybr.vault";
 const KEYCHAIN_ACCOUNT: &str = "default-vault";
 
+/// The App Group shared with the macOS AutoFill extension.
+#[cfg(target_os = "macos")]
+const APP_GROUP: &str = "group.no.sybr.vault";
+
+/// Resolve where the vault file lives.
+///
+/// On macOS it belongs in the shared App Group container so the sandboxed
+/// AutoFill extension can read it. On first run we migrate an existing vault
+/// (and its settings) into the container, **keeping the original as a backup**
+/// (never deleted). If the container can't be reached (e.g. the entitlement
+/// isn't provisioned), we fall back to the app-data path so the app keeps
+/// working — only cross-app autofill is unavailable. Other platforms always use
+/// the app-data path.
+fn resolve_vault_path(app: &tauri::App, data_dir: &Path) -> PathBuf {
+    let app_data_vault = data_dir.join("default.vault");
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = app.path().home_dir() {
+            let container = home.join("Library/Group Containers").join(APP_GROUP);
+            if std::fs::create_dir_all(&container).is_ok() {
+                let shared_vault = container.join("default.vault");
+                // Migrate once: copy the vault + settings, keep originals.
+                if !shared_vault.exists() && app_data_vault.exists() {
+                    if std::fs::copy(&app_data_vault, &shared_vault).is_ok() {
+                        let old_settings = data_dir.join("settings.json");
+                        if old_settings.exists() {
+                            let _ = std::fs::copy(&old_settings, container.join("settings.json"));
+                        }
+                    }
+                }
+                // Use the shared vault if it exists (migrated) or there is no
+                // app-data vault to fall back to.
+                if shared_vault.exists() || !app_data_vault.exists() {
+                    return shared_vault;
+                }
+            }
+        }
+    }
+    let _ = app; // unused on non-macOS
+    app_data_vault
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -29,7 +72,9 @@ fn main() {
             // Resolve a per-user data directory for the single vault file.
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir).ok();
-            let vault_path = data_dir.join("default.vault");
+            // On macOS this is the shared App Group container (migrated with a
+            // backup); elsewhere the app-data dir.
+            let vault_path = resolve_vault_path(app, &data_dir);
 
             let store = VaultStore::new(vault_path, KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
             // Eagerly load the locked vault if a file already exists.
