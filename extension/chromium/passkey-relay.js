@@ -30,6 +30,8 @@
       reply.ok = true;
       reply.credentialId = resp.credential_id;
       reply.attestationObject = resp.attestation_object;
+    } else if (resp && resp.type === "error") {
+      reply.error = resp.message;
     } else if (resp && resp.type === "passkey_assertion") {
       reply.ok = true;
       reply.credentialId = resp.credential_id;

@@ -101,6 +101,7 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         rp_id: msg.rpId,
         user_name: msg.userName,
         user_handle: msg.userHandle,
+        exclude_credentials: msg.excludeCredentials,
       }).then(sendResponse);
       return true;
 

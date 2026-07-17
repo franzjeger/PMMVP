@@ -75,6 +75,12 @@ enum Request {
         user_name: String,
         #[serde(default)]
         user_handle: Vec<u8>,
+        /// Credential ids the RP says it already has (WebAuthn
+        /// excludeCredentials). If we hold one of them, registration must be
+        /// refused with "excluded" (-> InvalidStateError in the page) WITHOUT
+        /// prompting - this is what makes sites stop re-asking.
+        #[serde(default)]
+        exclude_credentials: Vec<Vec<u8>>,
     },
     /// Assert an existing passkey (navigator.credentials.get).
     PasskeyGet {
@@ -386,6 +392,7 @@ fn handle_request(
             rp_id,
             user_name,
             user_handle,
+            exclude_credentials,
         } => {
             // Anti-phishing: the RP id must belong to the page's origin.
             if !rp_id_matches_origin(&rp_id, &origin) {
@@ -403,10 +410,34 @@ fn handle_request(
                         }
                     }
                 };
-                if st.vault.as_ref().filter(|v| v.is_unlocked()).is_none() {
+                let Some(vault) = st.vault.as_ref().filter(|v| v.is_unlocked()) else {
                     return Response::Error {
                         message: "locked".into(),
                     };
+                };
+                // excludeCredentials: if we already hold one of the listed
+                // credentials for this RP, refuse BEFORE any prompt. The page
+                // surfaces InvalidStateError and the site stops re-asking.
+                if !exclude_credentials.is_empty() {
+                    if let Ok(summaries) = vault.list_items(false) {
+                        for sum in summaries {
+                            let Ok(item) = vault.get_item(sum.id) else {
+                                continue;
+                            };
+                            if let VaultItem::Passkey {
+                                rp_id: r,
+                                credential_id: cid,
+                                ..
+                            } = &item.data
+                            {
+                                if *r == rp_id && exclude_credentials.iter().any(|e| e == cid) {
+                                    return Response::Error {
+                                        message: "excluded".into(),
+                                    };
+                                }
+                            }
+                        }
+                    }
                 }
             }
             // Registration ALWAYS requires an explicit user approval; a silent

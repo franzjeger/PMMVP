@@ -105,8 +105,21 @@
         rpId: (pk.rp && pk.rp.id) || window.location.hostname,
         userName: (pk.user && pk.user.name) || "",
         userHandle: toArr(pk.user && pk.user.id),
+        excludeCredentials: (pk.excludeCredentials || []).map((c) => toArr(c.id)),
       });
-      if (!resp.ok) return realCreate(options);
+      if (!resp.ok) {
+        // Spec-correct duplicate handling: the RP listed credentials we already
+        // hold in excludeCredentials, so the authenticator must answer
+        // InvalidStateError. The site then knows a passkey exists and STOPS
+        // asking - no prompt, no new key, no browser fallback.
+        if (resp.error === "excluded") {
+          throw new DOMException(
+            "The user attempted to register an authenticator that contains one of the credentials already registered with the relying party.",
+            "InvalidStateError",
+          );
+        }
+        return realCreate(options);
+      }
 
       const response = {
         clientDataJSON: cdj,
@@ -117,7 +130,10 @@
         getAuthenticatorData: () => null,
       };
       return shapedCredential(fromArr(resp.credentialId), response);
-    } catch (_e) {
+    } catch (e) {
+      // InvalidStateError is a deliberate, spec-mandated answer (credential
+      // already registered) — it must reach the page, not trigger a fallback.
+      if (e && e.name === "InvalidStateError") throw e;
       return realCreate(options);
     }
   };
