@@ -123,9 +123,18 @@ function Row({
             {item.subtitle}
           </div>
         )}
-        {issuesById && issuesById.get(item.id) && (
+        {(item.kind === "passkey" || (issuesById && issuesById.get(item.id))) && (
           <div className="mt-1 flex flex-wrap gap-1">
-            {issuesById.get(item.id)!.map((tag) => (
+            {item.kind === "passkey" && (
+              <span
+                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                  isSel ? "bg-white/20 text-white" : "bg-accent/15 text-accent"
+                }`}
+              >
+                Passkey
+              </span>
+            )}
+            {(issuesById?.get(item.id) ?? []).map((tag) => (
               <span
                 key={tag}
                 className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${

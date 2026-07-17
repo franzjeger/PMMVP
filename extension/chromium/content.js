@@ -57,11 +57,13 @@
 
   function openPanel(anchor, content) {
     closePanel();
+    // Fixed positioning: viewport coords straight from the rect (no scroll
+    // offsets), so offset/transformed page bodies can't displace the panel.
     const rect = anchor.getBoundingClientRect();
     panel = document.createElement("div");
     panel.className = "sybr-panel";
-    panel.style.top = `${window.scrollY + rect.bottom + 6}px`;
-    panel.style.left = `${window.scrollX + rect.left}px`;
+    panel.style.top = `${rect.bottom + 6}px`;
+    panel.style.left = `${rect.left}px`;
     panel.style.width = `${Math.max(rect.width, 240)}px`;
     panel.appendChild(content);
     document.body.appendChild(panel);
@@ -290,7 +292,12 @@
     badge.type = "button";
     badge.className = "sybr-badge";
     badge.title = "Autofill from Arca";
-    badge.textContent = "🔑";
+    // Inline SVG key (currentColor): renders identically on every platform,
+    // unlike the key emoji which falls back to a dark monochrome glyph on
+    // Windows. Colors come from content.css (theme-aware).
+    badge.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<circle cx="8" cy="15" r="4"/><path d="M10.85 12.15 19 4"/><path d="m18 5 2 2"/><path d="m15 8 2 2"/></svg>';
 
     const place = () => {
       const rect = field.getBoundingClientRect();
@@ -301,8 +308,10 @@
         return;
       }
       badge.style.display = "flex";
-      badge.style.top = `${window.scrollY + rect.top + rect.height / 2 - 12}px`;
-      badge.style.left = `${window.scrollX + rect.right - 28}px`;
+      // Viewport coords (position: fixed) — no scroll offsets. Vertically
+      // centered on the field, tucked just inside its right edge.
+      badge.style.top = `${rect.top + rect.height / 2 - 11}px`;
+      badge.style.left = `${rect.right - 28}px`;
     };
 
     badge.addEventListener("mousedown", (e) => e.preventDefault());

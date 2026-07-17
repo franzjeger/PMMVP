@@ -17,7 +17,7 @@ export interface VaultStatus {
   biometricAvailable: boolean;
 }
 
-export type ItemKind = "login" | "passkey" | "secureNote";
+export type ItemKind = "login" | "passkey" | "sshKey" | "secureNote";
 
 export interface ItemSummary {
   id: string;
