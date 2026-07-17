@@ -190,6 +190,33 @@ export function SettingsDialog({
               onChange={() => void toggleQuickUnlock()}
             />
             <Row
+              label="Find & merge duplicates"
+              hint="Combines logins that share the same site and username. The newest password wins, TOTP codes and notes are kept, and the extras go to the Trash (recoverable)."
+            >
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setBusy(true);
+                  api
+                    .mergeDuplicates()
+                    .then((n) => {
+                      onToast(
+                        n > 0
+                          ? `Merged ${n} duplicate${n === 1 ? "" : "s"} (moved to Trash)`
+                          : "No duplicates found",
+                      );
+                      if (n > 0) onStatusChanged();
+                    })
+                    .catch((e) => onToast(errorMessage(e)))
+                    .finally(() => setBusy(false));
+                }}
+                className="rounded-lg border border-hairline px-3 py-1.5 text-[13px] text-neutral-200 hover:bg-fill/5 disabled:opacity-50"
+              >
+                Merge…
+              </button>
+            </Row>
+            <Row
               label="Sync with Google Drive"
               hint={
                 sync?.connected

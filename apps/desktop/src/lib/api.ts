@@ -151,6 +151,7 @@ export const api = {
   syncDisconnect: () => invoke<void>("sync_disconnect"),
   syncStatus: () => invoke<SyncStatus>("sync_status"),
   syncNow: () => invoke<boolean>("sync_now"),
+  mergeDuplicates: () => invoke<number>("merge_duplicates"),
   lock: () => invoke<void>("lock"),
   touch: () => invoke<void>("touch"),
 

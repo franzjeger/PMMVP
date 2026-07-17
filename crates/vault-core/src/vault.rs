@@ -263,6 +263,17 @@ impl Vault {
         Ok(())
     }
 
+    /// Merge duplicate active logins (same host + username): the newest wins,
+    /// TOTP/notes are adopted, losers are soft-deleted. Returns how many items
+    /// were merged away. Requires the vault to be unlocked.
+    pub fn merge_duplicate_logins(&mut self, now_unix_millis: i64) -> Result<usize> {
+        let items = self.unlocked_items_mut()?;
+        Ok(crate::dedupe::merge_duplicate_logins(
+            items,
+            now_unix_millis,
+        ))
+    }
+
     /// Insert a new item or replace an existing one with the same id.
     pub fn upsert_item(&mut self, item: Item) -> Result<()> {
         let items = self.unlocked_items_mut()?;

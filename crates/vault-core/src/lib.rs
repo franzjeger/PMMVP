@@ -26,6 +26,7 @@
 #![forbid(unsafe_code)]
 
 pub mod crypto;
+pub mod dedupe;
 pub mod error;
 pub mod header;
 pub mod item;

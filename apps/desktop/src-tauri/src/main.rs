@@ -151,6 +151,7 @@ fn main() {
             commands::sync_disconnect,
             commands::sync_status,
             commands::sync_now,
+            commands::merge_duplicates,
             commands::resolve_autofill_consent,
             commands::lock,
             commands::touch,

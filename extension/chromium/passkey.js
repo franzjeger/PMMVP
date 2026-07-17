@@ -85,6 +85,15 @@
   navigator.credentials.create = async function (options) {
     const pk = options && options.publicKey;
     if (!pk) return realCreate(options);
+    // Conditional/silent CREATE is the browser's background "upgrade this
+    // password login to a passkey" flow (sites like GitHub fire it after every
+    // password sign-in). Servicing it would pop an approval + register a fresh
+    // passkey on each login — endless prompts and duplicate keys. Only handle
+    // the explicit, user-initiated (modal) registration.
+    const mediation = options && options.mediation;
+    if (mediation === "conditional" || mediation === "silent") {
+      return realCreate(options);
+    }
     try {
       // We only implement ES256. If the RP requires something else, defer.
       const algs = (pk.pubKeyCredParams || []).map((p) => p.alg);
