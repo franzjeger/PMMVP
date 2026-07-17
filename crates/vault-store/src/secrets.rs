@@ -15,11 +15,26 @@ use crate::error::{Error, Result};
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod backend {
     use super::*;
+    use security_framework::item::{ItemClass, ItemSearchOptions};
     use security_framework::passwords::{
         delete_generic_password, get_generic_password, set_generic_password,
     };
 
     const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+
+    /// Presence check WITHOUT reading the data. Reading a keychain item's data
+    /// runs its ACL (and can prompt the user if the app's code signature has
+    /// changed since the item was written); a metadata search does not. Use
+    /// this for "is X configured?" polling.
+    pub fn exists(service: &str, account: &str) -> bool {
+        ItemSearchOptions::new()
+            .class(ItemClass::generic_password())
+            .service(service)
+            .account(account)
+            .search()
+            .map(|r| !r.is_empty())
+            .unwrap_or(false)
+    }
 
     pub fn set(service: &str, account: &str, value: &str) -> Result<()> {
         set_generic_password(service, account, value.as_bytes()).map_err(|_| Error::Keychain)
@@ -73,6 +88,12 @@ mod backend {
             Err(_) => Err(Error::Keychain),
         }
     }
+
+    /// Windows/Linux secret stores don't ACL-prompt on reads; a get IS the
+    /// presence check.
+    pub fn exists(service: &str, account: &str) -> bool {
+        matches!(get(service, account), Ok(Some(_)))
+    }
 }
 
 #[cfg(not(any(
@@ -93,6 +114,9 @@ mod backend {
     pub fn delete(_: &str, _: &str) -> Result<()> {
         Ok(())
     }
+    pub fn exists(_: &str, _: &str) -> bool {
+        false
+    }
 }
 
-pub use backend::{delete, get, set};
+pub use backend::{delete, exists, get, set};

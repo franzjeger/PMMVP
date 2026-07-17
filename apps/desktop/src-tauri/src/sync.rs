@@ -274,10 +274,11 @@ pub fn disconnect(app: &AppHandle) {
 }
 
 pub fn is_connected() -> bool {
-    matches!(
-        vault_store::secrets::get(SECRET_SERVICE, SECRET_ACCOUNT),
-        Ok(Some(_))
-    )
+    // Presence-only: reading the token DATA runs the item's keychain ACL and
+    // can prompt (e.g. after a code-signature change). The background loop
+    // calls this every tick, so it must never touch the data; only
+    // access_token() reads the token, and only when the cached one expired.
+    vault_store::secrets::exists(SECRET_SERVICE, SECRET_ACCOUNT)
 }
 
 /// A valid access token, refreshing via the stored refresh token if needed.
