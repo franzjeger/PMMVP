@@ -367,9 +367,25 @@ fn do_create_vault(state: &Mutex<AppState>, master_password: &str) -> Result<(),
     Ok(())
 }
 
+/// Kick a background sync right away (used after unlock so peer changes land
+/// immediately instead of waiting for the next 30s tick — while locked, the
+/// background loop skips cycles by design).
+fn kick_sync(app: &tauri::AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let _ = crate::sync::sync_now(&app);
+    });
+}
+
 #[tauri::command]
-pub fn unlock(state: St<'_>, master_password: String) -> Result<(), CmdError> {
-    do_unlock(state.inner(), &master_password)
+pub fn unlock(
+    app: tauri::AppHandle,
+    state: St<'_>,
+    master_password: String,
+) -> Result<(), CmdError> {
+    do_unlock(state.inner(), &master_password)?;
+    kick_sync(&app);
+    Ok(())
 }
 
 fn do_unlock(state: &Mutex<AppState>, master_password: &str) -> Result<(), CmdError> {
@@ -386,7 +402,7 @@ fn do_unlock(state: &Mutex<AppState>, master_password: &str) -> Result<(), CmdEr
 /// Unlock using the OS keychain device key (no master password), gated behind a
 /// biometric (Touch ID) prompt where available.
 #[tauri::command]
-pub fn quick_unlock(state: St<'_>) -> Result<(), CmdError> {
+pub fn quick_unlock(app: tauri::AppHandle, state: St<'_>) -> Result<(), CmdError> {
     // Prompt for Touch ID *before* taking the state lock — the prompt blocks on
     // user interaction, and we must not freeze other commands meanwhile.
     //
@@ -406,6 +422,8 @@ pub fn quick_unlock(state: St<'_>) -> Result<(), CmdError> {
     let vault = vault.as_mut().ok_or_else(CmdError::no_vault)?;
     store.quick_unlock(vault)?;
     st.touch();
+    drop(st);
+    kick_sync(&app);
     Ok(())
 }
 
