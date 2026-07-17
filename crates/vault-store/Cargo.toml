@@ -17,8 +17,12 @@ zeroize.workspace = true
 
 # OS keychain backends, selected per-target so each platform only pulls its own
 # native backend (no D-Bus/secret-service on macOS or Windows, etc.).
+#
+# macOS uses security-framework directly (not keyring) so the device key can go
+# into a SHARED keychain access group with a biometric access control — that is
+# what lets the sandboxed AutoFill extension read it after Touch ID.
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
-keyring = { version = "3", features = ["apple-native"] }
+security-framework = "3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }

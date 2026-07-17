@@ -115,12 +115,10 @@ impl VaultStore {
 
     // ----- quick unlock ---------------------------------------------------
 
-    /// Whether a device key is present in the OS keychain.
+    /// Whether a device key is present in the OS keychain. Uses a presence-only
+    /// check so it never triggers the biometric prompt (unlike reading the key).
     pub fn quick_unlock_available(&self) -> bool {
-        matches!(
-            keychain::get(&self.keychain_service, &self.keychain_account),
-            Ok(Some(_))
-        )
+        keychain::exists(&self.keychain_service, &self.keychain_account)
     }
 
     /// Enable quick-unlock: mint a random device key, store it in the OS
