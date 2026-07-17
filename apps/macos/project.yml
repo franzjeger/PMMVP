@@ -47,6 +47,21 @@ scriptDefaults: &buildFfi
     cp -f "target/aarch64-apple-darwin/release/libvault_ffi.a" "$SRCROOT/libs/libvault_ffi.a"
 
 targets:
+  # Provisioning helper: exists only so Xcode provisions the no.sybr.vault App ID
+  # with App Groups + Keychain Sharing; its profile is embedded into the Tauri
+  # Arca.app. Not shipped, not installed.
+  ArcaSign:
+    type: application
+    platform: macOS
+    sources:
+      - ProvisionStub
+    settings:
+      base:
+        PRODUCT_NAME: ArcaSign
+        PRODUCT_BUNDLE_IDENTIFIER: no.sybr.vault
+        INFOPLIST_FILE: ProvisionStub/Info.plist
+        CODE_SIGN_ENTITLEMENTS: ProvisionStub/ProvisionStub.entitlements
+
   ArcaHost:
     type: application
     platform: macOS
