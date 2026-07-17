@@ -1,0 +1,54 @@
+# XcodeGen project definition — the reviewable source of truth for the Xcode
+# project. Regenerate the .xcodeproj with:  cd apps/macos && xcodegen generate
+#
+# M1 (this file): a dev host app + an AutoFill Credential Provider extension that
+# serves ONE hardcoded test credential. No App Group, no vault, no vault-ffi yet
+# (that is M2). The goal is only to prove the OS integration: Arca appears under
+# System Settings > General > AutoFill & Passwords and fills a field in Safari.
+name: Arca
+options:
+  bundleIdPrefix: no.sybr.vault
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    # Team with a local Apple Development cert (used for the dev Run). If your
+    # Xcode is signed into a different team, switch it in
+    # Xcode > Signing & Capabilities. NOTE for M2: the App Group is team-scoped,
+    # so the extension and the shipped Tauri Arca.app must ultimately share ONE
+    # team (Arca ships under LY6LJ395B8).
+    DEVELOPMENT_TEAM: RYS5AACGS6
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  ArcaHost:
+    type: application
+    platform: macOS
+    sources:
+      - ArcaHost
+    settings:
+      base:
+        PRODUCT_NAME: ArcaHost
+        PRODUCT_BUNDLE_IDENTIFIER: no.sybr.vault.autofill-host
+        INFOPLIST_FILE: ArcaHost/Info.plist
+    # Depending on the extension makes XcodeGen embed the .appex into the host's
+    # Contents/PlugIns, which is how the OS discovers the credential provider.
+    dependencies:
+      - target: ArcaAutoFill
+
+  ArcaAutoFill:
+    type: app-extension
+    platform: macOS
+    sources:
+      - ArcaAutoFill
+    settings:
+      base:
+        PRODUCT_NAME: ArcaAutoFill
+        PRODUCT_BUNDLE_IDENTIFIER: no.sybr.vault.autofill-host.autofill
+        INFOPLIST_FILE: ArcaAutoFill/Info.plist
+        CODE_SIGN_ENTITLEMENTS: ArcaAutoFill/ArcaAutoFill.entitlements
