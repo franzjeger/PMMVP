@@ -56,6 +56,27 @@ open Arca.xcodeproj
 > domain **and** has a login form, so pick a domain with an actual form in
 > step 4 (a bare page like `example.com` has no field to fill).
 
+## Troubleshooting: Arca doesn't appear in the AutoFill list
+
+Two things the OS silently requires:
+
+- **The extension must be sandboxed.** `ArcaAutoFill.entitlements` includes
+  `com.apple.security.app-sandbox`. Without it `pkd` discards the extension at
+  scan time (no error, no log) and it never shows up.
+- **`pkd` registers extensions from LaunchServices-trusted locations, not
+  reliably from DerivedData.** Copy the built host to `/Applications` and launch
+  it once, keeping a single copy registered:
+
+  ```sh
+  APP=~/Library/Developer/Xcode/DerivedData/Arca-*/Build/Products/Debug/ArcaHost.app
+  ditto $APP /Applications/ArcaHost.app && open /Applications/ArcaHost.app
+  pluginkit -m | grep sybr        # should list no.sybr.vault.autofill-host.autofill
+  ```
+
+  If several stale copies pile up (multiple builds), `pkd` can't pick a
+  canonical container and registers none — unregister the extras with
+  `lsregister -u <path>` so only one `ArcaHost.app` remains.
+
 ## Verify without signing (what CI / a headless machine can do)
 
 ```sh
