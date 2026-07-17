@@ -427,6 +427,39 @@ pub fn enable_quick_unlock(state: St<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+// ---- Google Drive sync ----------------------------------------------------
+
+/// Interactive Google sign-in (opens the browser; blocks until the redirect).
+/// Runs the flow on a thread via async so the UI stays responsive.
+#[tauri::command]
+pub async fn sync_connect(app: tauri::AppHandle) -> Result<String, CmdError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::sync::connect(&app).map_err(|m| CmdError::new("sync_connect", &m))
+    })
+    .await
+    .map_err(|_| CmdError::new("internal", "sign-in task failed"))?
+}
+
+#[tauri::command]
+pub fn sync_disconnect(app: tauri::AppHandle) {
+    crate::sync::disconnect(&app);
+}
+
+#[tauri::command]
+pub fn sync_status(app: tauri::AppHandle) -> crate::sync::SyncStatusDto {
+    crate::sync::status(&app)
+}
+
+/// One manual sync cycle; returns true if remote changes were merged in.
+#[tauri::command]
+pub async fn sync_now(app: tauri::AppHandle) -> Result<bool, CmdError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::sync::sync_now(&app).map_err(|m| CmdError::new("sync_failed", &m))
+    })
+    .await
+    .map_err(|_| CmdError::new("internal", "sync task failed"))?
+}
+
 /// Re-key the vault under a new master password. Requires an unlocked vault and
 /// a fresh biometric re-auth (Touch ID / Windows Hello; no-op where absent) so a
 /// walk-up attacker at an unlocked machine can't silently rotate the password

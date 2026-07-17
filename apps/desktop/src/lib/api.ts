@@ -19,6 +19,13 @@ export interface VaultStatus {
 
 export type ItemKind = "login" | "passkey" | "sshKey" | "secureNote";
 
+export interface SyncStatus {
+  connected: boolean;
+  account: string | null;
+  lastSyncUnix: number | null;
+  lastError: string | null;
+}
+
 export interface ItemSummary {
   id: string;
   kind: ItemKind;
@@ -140,6 +147,10 @@ export const api = {
   disableQuickUnlock: () => invoke<void>("disable_quick_unlock"),
   changeMasterPassword: (newPassword: string) =>
     invoke<void>("change_master_password", { newPassword }),
+  syncConnect: () => invoke<string>("sync_connect"),
+  syncDisconnect: () => invoke<void>("sync_disconnect"),
+  syncStatus: () => invoke<SyncStatus>("sync_status"),
+  syncNow: () => invoke<boolean>("sync_now"),
   lock: () => invoke<void>("lock"),
   touch: () => invoke<void>("touch"),
 
@@ -223,6 +234,11 @@ export function onLoginSaved(cb: (host: string) => void): Promise<UnlistenFn> {
 
 /** Fired when a passkey is registered ("created") or used to sign in ("used")
  *  via the browser bridge, so the UI can refresh its item list. */
+/** Fired when a background sync merged in changes from another device. */
+export function onSyncMerged(cb: () => void): Promise<UnlistenFn> {
+  return listen("sync-merged", () => cb());
+}
+
 export function onPasskeyChanged(
   cb: (rp: string, kind: "created" | "used") => void,
 ): Promise<UnlistenFn> {

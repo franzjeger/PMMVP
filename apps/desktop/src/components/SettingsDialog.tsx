@@ -3,6 +3,7 @@ import {
   api,
   errorMessage,
   type Settings,
+  type SyncStatus,
   type VaultStatus,
 } from "../lib/api";
 import { GearIcon } from "./icons";
@@ -57,6 +58,52 @@ export function SettingsDialog({
   const [pwOpen, setPwOpen] = useState(false);
   const [newPw, setNewPw] = useState("");
   const [confirmPw, setConfirmPw] = useState("");
+  const [sync, setSync] = useState<SyncStatus | null>(null);
+
+  useEffect(() => {
+    void api.syncStatus().then(setSync).catch(() => {});
+  }, []);
+
+  const connectSync = async () => {
+    setBusy(true);
+    try {
+      const account = await api.syncConnect();
+      onToast(`Connected to Google (${account})`);
+      await api.syncNow().catch(() => false);
+      setSync(await api.syncStatus());
+    } catch (e) {
+      onToast(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disconnectSync = async () => {
+    setBusy(true);
+    try {
+      await api.syncDisconnect();
+      setSync(await api.syncStatus());
+      onToast("Google sync disconnected");
+    } catch (e) {
+      onToast(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runSyncNow = async () => {
+    setBusy(true);
+    try {
+      const merged = await api.syncNow();
+      setSync(await api.syncStatus());
+      onToast(merged ? "Synced (changes merged in)" : "Synced");
+      if (merged) onStatusChanged();
+    } catch (e) {
+      onToast(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const changePassword = async () => {
     if (newPw.length < 8) {
@@ -142,6 +189,48 @@ export function SettingsDialog({
               disabled={busy}
               onChange={() => void toggleQuickUnlock()}
             />
+            <Row
+              label="Sync with Google Drive"
+              hint={
+                sync?.connected
+                  ? `Connected as ${sync.account ?? "Google"}. The encrypted vault syncs to a hidden app folder in your Drive; Google only ever sees ciphertext.${
+                      sync.lastSyncUnix
+                        ? ` Last sync ${new Date(sync.lastSyncUnix * 1000).toLocaleTimeString()}.`
+                        : ""
+                    }${sync.lastError ? ` Last error: ${sync.lastError}` : ""}`
+                  : "Keep all your devices in sync via your own Google account. Only the encrypted vault file is uploaded; Google can never read your passwords."
+              }
+            >
+              {sync?.connected ? (
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void runSyncNow()}
+                    className="rounded-lg border border-hairline px-3 py-1.5 text-[13px] text-neutral-200 hover:bg-fill/5 disabled:opacity-50"
+                  >
+                    Sync now
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void disconnectSync()}
+                    className="rounded-lg border border-hairline px-3 py-1.5 text-[13px] text-neutral-400 hover:bg-fill/5 disabled:opacity-50"
+                  >
+                    Disconnect
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void connectSync()}
+                  className="rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white hover:bg-accent/90 disabled:opacity-50"
+                >
+                  Sign in with Google
+                </button>
+              )}
+            </Row>
             <Row
               label="Change master password"
               hint="Re-keys the vault under a new password after a biometric check. Quick unlock keeps working; other devices need the new password after the next sync/seed."

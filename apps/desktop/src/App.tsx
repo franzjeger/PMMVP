@@ -10,6 +10,7 @@ import {
   onFillConsentRequest,
   onLoginSaved,
   onPasskeyChanged,
+  onSyncMerged,
   onVaultLocked,
   type FillConsent,
   type ItemDetail,
@@ -108,6 +109,10 @@ export default function App() {
       }),
       onLoginSaved((host) => {
         setToast(`Saved login for ${host}`);
+        void loadItems();
+      }),
+      onSyncMerged(() => {
+        setToast("Synced changes from another device");
         void loadItems();
       }),
     ];

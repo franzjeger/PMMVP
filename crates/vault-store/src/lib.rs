@@ -13,6 +13,7 @@
 
 mod error;
 mod keychain;
+pub mod secrets;
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;

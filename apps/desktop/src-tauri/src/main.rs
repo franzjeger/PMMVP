@@ -7,6 +7,7 @@ mod bridge;
 mod clipboard;
 mod commands;
 mod state;
+mod sync;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -96,6 +97,9 @@ fn main() {
             // Shared map of in-flight autofill-consent prompts (used only when
             // the confirm-autofill setting is on).
             app.manage(bridge::PendingConsents::default());
+            // Google Drive sync: shared status + background pull-merge-push loop.
+            app.manage(sync::SharedSync::default());
+            sync::start_loop(app.handle().clone());
 
             // Local autofill bridge for the browser extension (loopback + token;
             // gated on unlock + origin match). Best-effort: failure to bind just
@@ -143,6 +147,10 @@ fn main() {
             commands::enable_quick_unlock,
             commands::disable_quick_unlock,
             commands::change_master_password,
+            commands::sync_connect,
+            commands::sync_disconnect,
+            commands::sync_status,
+            commands::sync_now,
             commands::resolve_autofill_consent,
             commands::lock,
             commands::touch,

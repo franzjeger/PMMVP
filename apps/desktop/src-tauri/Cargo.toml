@@ -31,6 +31,13 @@ psl.workspace = true
 arboard = "3"
 # RFC 4180 CSV parsing for importing exports from other password managers.
 csv = "1"
+# Google Drive sync: blocking HTTP client (runs on the dedicated sync thread).
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# PKCE code-challenge hashing + verifier randomness for the OAuth flow.
+sha2.workspace = true
+getrandom.workspace = true
+data-encoding.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
