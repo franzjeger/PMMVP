@@ -5,3 +5,5 @@ build/
 DerivedData/
 *.xcuserstate
 *.xcuserdatad
+libs/
+Arca-Bridging-Header.h.orig

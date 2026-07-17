@@ -1,10 +1,10 @@
 # XcodeGen project definition — the reviewable source of truth for the Xcode
 # project. Regenerate the .xcodeproj with:  cd apps/macos && xcodegen generate
 #
-# M1 (this file): a dev host app + an AutoFill Credential Provider extension that
-# serves ONE hardcoded test credential. No App Group, no vault, no vault-ffi yet
-# (that is M2). The goal is only to prove the OS integration: Arca appears under
-# System Settings > General > AutoFill & Passwords and fills a field in Safari.
+# M2: host + AutoFill extension backed by the REAL vault. Both targets link the
+# Rust vault-ffi static library (built by the pre-build script below) and read
+# the encrypted vault from the shared App Group container, unlocking with the
+# device key from the shared keychain group. Passwords + passkeys.
 name: Arca
 options:
   bundleIdPrefix: no.sybr.vault
@@ -20,13 +20,31 @@ settings:
     # recognize that indirection, so build a conventional single-binary target.
     ENABLE_DEBUG_DYLIB: "NO"
     # Frank Lia team: owns the no.sybr.vault namespace and is the team the
-    # shipped Arca uses, so it is also the right team for M2 (App Groups are
-    # team-scoped, so the extension and the Tauri Arca.app must share one team).
-    # Switch in Xcode > Signing & Capabilities if you sign in as another team.
+    # shipped Arca uses (App Groups + keychain groups are team-scoped, so the
+    # extension and the Tauri Arca.app must share one team).
     DEVELOPMENT_TEAM: LY6LJ395B8
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
+    # vault-ffi (Rust) linkage, shared by both targets.
+    SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/Arca-Bridging-Header.h"
+    HEADER_SEARCH_PATHS: "$(SRCROOT)/../../crates/vault-ffi/include"
+    LIBRARY_SEARCH_PATHS: "$(SRCROOT)/libs"
+    OTHER_LDFLAGS: "-lvault_ffi"
+
+# Pre-build step reused by both targets: build the Rust static lib for the Mac
+# and stage it where the linker looks. `basedOnDependencyAnalysis: false` so it
+# always runs (cargo itself is incremental).
+scriptDefaults: &buildFfi
+  name: "Build vault-ffi (Rust static lib)"
+  basedOnDependencyAnalysis: false
+  script: |
+    set -euo pipefail
+    export PATH="$HOME/.cargo/bin:$PATH"
+    cd "$SRCROOT/../.."
+    cargo build -p vault-ffi --release --target aarch64-apple-darwin
+    mkdir -p "$SRCROOT/libs"
+    cp -f "target/aarch64-apple-darwin/release/libvault_ffi.a" "$SRCROOT/libs/libvault_ffi.a"
 
 targets:
   ArcaHost:
@@ -34,12 +52,15 @@ targets:
     platform: macOS
     sources:
       - ArcaHost
+      - Shared
     settings:
       base:
         PRODUCT_NAME: ArcaHost
         PRODUCT_BUNDLE_IDENTIFIER: no.sybr.vault.autofill-host
         INFOPLIST_FILE: ArcaHost/Info.plist
         CODE_SIGN_ENTITLEMENTS: ArcaHost/ArcaHost.entitlements
+    preBuildScripts:
+      - *buildFfi
     # Depending on the extension makes XcodeGen embed the .appex into the host's
     # Contents/PlugIns, which is how the OS discovers the credential provider.
     dependencies:
@@ -50,9 +71,12 @@ targets:
     platform: macOS
     sources:
       - ArcaAutoFill
+      - Shared
     settings:
       base:
         PRODUCT_NAME: ArcaAutoFill
         PRODUCT_BUNDLE_IDENTIFIER: no.sybr.vault.autofill-host.autofill
         INFOPLIST_FILE: ArcaAutoFill/Info.plist
         CODE_SIGN_ENTITLEMENTS: ArcaAutoFill/ArcaAutoFill.entitlements
+    preBuildScripts:
+      - *buildFfi

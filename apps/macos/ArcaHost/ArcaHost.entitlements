@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- The CONTAINING app must also carry the AutoFill Credential Provider
-     capability (and be sandboxed) for the OS to offer its extension as a
-     provider — the entitlement on the extension alone is not enough. Confirmed
-     via Apple Developer Forums: the capability goes on BOTH targets. -->
+<!-- The containing app carries the same capabilities as the extension so the OS
+     offers Arca as a provider (capability must be on BOTH targets) and so the
+     host can read the shared vault + device key to populate the credential
+     identity store. -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -10,5 +10,13 @@
     <true/>
     <key>com.apple.developer.authentication-services.autofill-credential-provider</key>
     <true/>
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.no.sybr.vault</string>
+    </array>
+    <key>keychain-access-groups</key>
+    <array>
+        <string>$(AppIdentifierPrefix)no.sybr.vault.shared</string>
+    </array>
 </dict>
 </plist>
