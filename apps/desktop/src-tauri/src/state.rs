@@ -176,7 +176,9 @@ impl From<vault_core::Error> for CmdError {
                 "The stored TOTP secret is not valid Base32.",
             ),
             E::InvalidArgument(m) => CmdError::new("invalid_argument", m),
-            // KeyDerivation / Serialization / Random — generic, no detail leaked.
+            E::Ssh => CmdError::new("ssh", "The SSH key operation failed."),
+            // KeyDerivation / Serialization / Random / Passkey — generic, no
+            // detail leaked.
             _ => CmdError::new("error", "The operation failed."),
         }
     }

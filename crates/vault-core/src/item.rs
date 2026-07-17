@@ -15,6 +15,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 pub enum ItemKind {
     Login,
     Passkey,
+    SshKey,
     SecureNote,
 }
 
@@ -29,7 +30,11 @@ pub enum ItemKind {
 /// item payload (see [`crate::vault`]), the format stays stable when variants
 /// are reordered or new ones are appended — a guarantee a positional codec
 /// such as bincode does NOT provide.
-#[derive(Clone, Debug, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+///
+/// `Debug` is implemented by hand (below) so secret fields (passwords, TOTP
+/// secrets, notes, private keys) are redacted rather than printed — a derived
+/// `Debug` would dump them into any log line or `{:?}` of a containing struct.
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(tag = "type")]
 pub enum VaultItem {
     Login {
@@ -69,6 +74,31 @@ pub enum VaultItem {
         sign_count: u32,
     },
 
+    /// An SSH key served over the ssh-agent protocol. The private key is a
+    /// 32-byte Ed25519 seed, zeroized with the rest of the payload; see
+    /// [`crate::ssh`] for generation and signing. Signing happens inside the
+    /// vault and the seed never leaves it. New fields are `#[serde(default)]`
+    /// so the tagged-CBOR payload stays backward-compatible.
+    SshKey {
+        title: String,
+        /// OpenSSH comment (conventionally `user@host`); shown by the agent.
+        #[serde(default)]
+        comment: String,
+        /// Key algorithm on the wire, e.g. "ssh-ed25519". Stored so future
+        /// algorithms can coexist; only Ed25519 is generated today.
+        #[serde(default)]
+        key_type: String,
+        /// OpenSSH public-key blob (the agent identity + `authorized_keys` body).
+        #[serde(default)]
+        public_key: Vec<u8>,
+        /// Ed25519 seed (32 bytes). Secret.
+        #[serde(default)]
+        private_key: Vec<u8>,
+        /// SHA-256 fingerprint (`SHA256:…`), cached for display.
+        #[serde(default)]
+        fingerprint: String,
+    },
+
     /// TODO(phase-2): free-form secure note (title + encrypted body). Stubbed.
     SecureNote { title: String },
 }
@@ -78,6 +108,7 @@ impl VaultItem {
         match self {
             VaultItem::Login { .. } => ItemKind::Login,
             VaultItem::Passkey { .. } => ItemKind::Passkey,
+            VaultItem::SshKey { .. } => ItemKind::SshKey,
             VaultItem::SecureNote { .. } => ItemKind::SecureNote,
         }
     }
@@ -87,6 +118,7 @@ impl VaultItem {
         match self {
             VaultItem::Login { title, .. }
             | VaultItem::Passkey { title, .. }
+            | VaultItem::SshKey { title, .. }
             | VaultItem::SecureNote { title } => title,
         }
     }
@@ -96,6 +128,8 @@ impl VaultItem {
         match self {
             VaultItem::Login { username, .. } => username,
             VaultItem::Passkey { user_name, .. } => user_name,
+            // The comment (conventionally user@host) is the recognizable label.
+            VaultItem::SshKey { comment, .. } => comment,
             VaultItem::SecureNote { .. } => "",
         }
     }
@@ -113,7 +147,65 @@ impl VaultItem {
             // The rp_id ("github.com") acts as the passkey's site, so it groups
             // next to the matching login in the list.
             VaultItem::Passkey { rp_id, .. } => rp_id,
+            // SSH keys are not tied to a web site; they group under their kind.
+            VaultItem::SshKey { .. } => "",
             VaultItem::SecureNote { .. } => "",
+        }
+    }
+}
+
+/// Hand-written `Debug` that redacts every secret field. Non-secret metadata
+/// (titles, usernames, URLs, rp ids, fingerprints) is shown to keep logs useful;
+/// passwords, TOTP secrets, notes, and private keys are replaced with a marker.
+impl std::fmt::Debug for VaultItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const REDACTED: &str = "<redacted>";
+        match self {
+            VaultItem::Login {
+                title,
+                username,
+                url,
+                ..
+            } => f
+                .debug_struct("Login")
+                .field("title", title)
+                .field("username", username)
+                .field("url", url)
+                .field("password", &REDACTED)
+                .field("totp_secret", &REDACTED)
+                .field("notes", &REDACTED)
+                .finish(),
+            VaultItem::Passkey {
+                title,
+                rp_id,
+                user_name,
+                credential_id,
+                ..
+            } => f
+                .debug_struct("Passkey")
+                .field("title", title)
+                .field("rp_id", rp_id)
+                .field("user_name", user_name)
+                .field("credential_id", credential_id)
+                .field("private_key", &REDACTED)
+                .finish_non_exhaustive(),
+            VaultItem::SshKey {
+                title,
+                comment,
+                key_type,
+                fingerprint,
+                ..
+            } => f
+                .debug_struct("SshKey")
+                .field("title", title)
+                .field("comment", comment)
+                .field("key_type", key_type)
+                .field("fingerprint", fingerprint)
+                .field("private_key", &REDACTED)
+                .finish_non_exhaustive(),
+            VaultItem::SecureNote { title } => {
+                f.debug_struct("SecureNote").field("title", title).finish()
+            }
         }
     }
 }
@@ -179,4 +271,49 @@ pub struct ItemSummary {
     pub has_totp: bool,
     pub is_deleted: bool,
     pub modified_at: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_redacts_secrets_for_every_variant() {
+        let login = VaultItem::Login {
+            title: "GitHub".into(),
+            username: "frank".into(),
+            password: "hunter2-SECRET".into(),
+            url: "https://github.com".into(),
+            totp_secret: Some("JBSWY3DP-SECRET".into()),
+            notes: "note-SECRET".into(),
+        };
+        let passkey = VaultItem::Passkey {
+            title: "pk".into(),
+            rp_id: "github.com".into(),
+            user_name: "frank".into(),
+            user_handle: vec![1, 2, 3],
+            credential_id: vec![4, 5, 6],
+            private_key: b"PASSKEY-SEED-SECRET".to_vec(),
+            sign_count: 0,
+        };
+        let ssh = VaultItem::SshKey {
+            title: "laptop".into(),
+            comment: "frank@host".into(),
+            key_type: "ssh-ed25519".into(),
+            public_key: vec![7, 8, 9],
+            private_key: b"SSH-SEED-SECRET".to_vec(),
+            fingerprint: "SHA256:abc".into(),
+        };
+        for item in [&login, &passkey, &ssh] {
+            let dbg = format!("{item:?}");
+            assert!(dbg.contains("<redacted>"), "no redaction marker in {dbg}");
+            assert!(
+                !dbg.contains("SECRET"),
+                "a secret leaked into Debug output: {dbg}"
+            );
+        }
+        // Non-secret metadata is still visible (keeps logs useful).
+        assert!(format!("{login:?}").contains("frank"));
+        assert!(format!("{ssh:?}").contains("SHA256:abc"));
+    }
 }

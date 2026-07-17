@@ -55,4 +55,9 @@ pub enum Error {
     /// passkey). Deliberately indistinct — carries no key material.
     #[error("passkey operation failed")]
     Passkey,
+
+    /// An SSH key operation failed (bad key material, or the item is not an
+    /// SSH key). Deliberately indistinct — carries no key material.
+    #[error("ssh key operation failed")]
+    Ssh,
 }

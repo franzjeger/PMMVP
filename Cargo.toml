@@ -49,6 +49,11 @@ region = "3"
 # WebAuthn passkeys: ES256 (P-256 ECDSA). RustCrypto, no custom EC math.
 p256 = { version = "0.13", features = ["ecdsa"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
+# SSH agent keys: Ed25519 (dalek, audited). The OpenSSH wire encoding is
+# hand-rolled from length-prefixed strings and tested byte-exactly against the
+# ssh CLI; signing stays internal so the private key never leaves the vault.
+# Seeds come from `getrandom` (not dalek's RNG helper), so no `rand_core` feature.
+ed25519-dalek = { version = "2", features = ["zeroize"] }
 
 # --- serde / data ---
 serde = { version = "1", features = ["derive"] }

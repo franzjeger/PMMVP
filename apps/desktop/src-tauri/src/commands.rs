@@ -150,6 +150,7 @@ fn kind_str(kind: ItemKind) -> &'static str {
     match kind {
         ItemKind::Login => "login",
         ItemKind::Passkey => "passkey",
+        ItemKind::SshKey => "sshKey",
         ItemKind::SecureNote => "secureNote",
     }
 }

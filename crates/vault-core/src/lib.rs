@@ -33,6 +33,7 @@ pub mod passkey;
 pub mod password;
 pub mod secret;
 pub mod security;
+pub mod ssh;
 pub mod sync;
 pub mod totp;
 pub mod vault;
