@@ -1,22 +1,20 @@
 // Arca — macOS AutoFill Credential Provider (passwords), M1 skeleton.
 //
-// This is the OS-facing extension the system loads when a user picks an Arca
-// suggestion in Safari / a native app. In M1 it serves ONE hardcoded test
-// credential so we can prove the end-to-end OS integration before wiring the
-// real vault (that is M2). No real secret and no vault/FFI access is involved.
+// Serves ONE hardcoded test credential so we can prove the OS integration end
+// to end before wiring the real vault (M2). No real secret, no vault/FFI.
 //
-// Flow:
-//  - The host app publishes a test identity to ASCredentialIdentityStore.
-//  - The OS shows it as an AutoFill suggestion for example.com.
-//  - When the user picks it, the OS calls provideCredentialWithoutUserInteraction
-//    (quick fill) or, if it shows our UI, prepareInterfaceToProvideCredential /
-//    prepareCredentialList.
-//  - We hand back an ASPasswordCredential and the field fills.
+// Every entry point is logged (subsystem no.sybr.vault.autofill) and completes
+// directly with the test credential — no match-guard that could silently drop
+// the fill, and both the modern (ASCredentialRequest) and legacy
+// (ASPasswordCredentialIdentity) shapes are covered so it works regardless of
+// which one this macOS calls.
 
 import AuthenticationServices
 import SwiftUI
+import os
 
-// Must match the identity the host app registers.
+private let log = Logger(subsystem: "no.sybr.vault.autofill", category: "provider")
+
 enum M1Credential {
     static let recordID = "arca-m1-test"
     static let domain = "example.com"
@@ -27,42 +25,52 @@ enum M1Credential {
 
 final class CredentialProviderViewController: ASCredentialProviderViewController {
 
-    // MARK: Quick fill (no UI)
+    // MARK: Quick fill (no UI) — modern + legacy
 
-    // Called when the OS wants the credential with no interaction (e.g. the user
-    // tapped our inline Safari suggestion). M1 has nothing to unlock, so we can
-    // answer immediately. In M2 this returns .userInteractionRequired when the
-    // vault is locked, so the OS then shows our unlock UI.
     override func provideCredentialWithoutUserInteraction(for credentialRequest: ASCredentialRequest) {
-        guard credentialRequest.type == .password,
-              credentialRequest.credentialIdentity.recordIdentifier == M1Credential.recordID
-        else {
-            extensionContext.cancelRequest(
-                withError: ASExtensionError(.credentialIdentityNotFound))
-            return
-        }
-        completeWithTestCredential()
+        log.info("provideWithoutUI(request) type=\(credentialRequest.type.rawValue, privacy: .public) rec=\(credentialRequest.credentialIdentity.recordIdentifier ?? "nil", privacy: .public)")
+        complete()
     }
 
-    // MARK: UI paths
+    @available(macOS, deprecated: 14.0)
+    override func provideCredentialWithoutUserInteraction(for credentialIdentity: ASPasswordCredentialIdentity) {
+        log.info("provideWithoutUI(identity) rec=\(credentialIdentity.recordIdentifier ?? "nil", privacy: .public)")
+        complete()
+    }
 
-    // The OS shows our extension UI and asks us to provide a specific credential.
+    // MARK: UI paths — modern + legacy. Complete directly (nothing to unlock in M1).
+
     override func prepareInterfaceToProvideCredential(for credentialRequest: ASCredentialRequest) {
-        presentList()
+        log.info("prepareInterface(request) rec=\(credentialRequest.credentialIdentity.recordIdentifier ?? "nil", privacy: .public)")
+        complete()
+    }
+
+    @available(macOS, deprecated: 14.0)
+    override func prepareInterfaceToProvideCredential(for credentialIdentity: ASPasswordCredentialIdentity) {
+        log.info("prepareInterface(identity) rec=\(credentialIdentity.recordIdentifier ?? "nil", privacy: .public)")
+        complete()
     }
 
     // The user opened the AutoFill list manually.
     override func prepareCredentialList(for serviceIdentifiers: [ASCredentialServiceIdentifier]) {
+        log.info("prepareCredentialList count=\(serviceIdentifiers.count, privacy: .public)")
         presentList()
     }
 
     // MARK: Helpers
 
+    private func complete() {
+        let credential = ASPasswordCredential(
+            user: M1Credential.user, password: M1Credential.password)
+        log.info("completing with user=\(M1Credential.user, privacy: .public)")
+        extensionContext.completeRequest(withSelectedCredential: credential, completionHandler: nil)
+    }
+
     private func presentList() {
         let view = CredentialListView(
             user: M1Credential.user,
             domain: M1Credential.domain,
-            onPick: { [weak self] in self?.completeWithTestCredential() },
+            onPick: { [weak self] in self?.complete() },
             onCancel: { [weak self] in
                 self?.extensionContext.cancelRequest(
                     withError: ASExtensionError(.userCanceled))
@@ -77,11 +85,5 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
             host.view.topAnchor.constraint(equalTo: self.view.topAnchor),
             host.view.bottomAnchor.constraint(equalTo: self.view.bottomAnchor),
         ])
-    }
-
-    private func completeWithTestCredential() {
-        let credential = ASPasswordCredential(
-            user: M1Credential.user, password: M1Credential.password)
-        extensionContext.completeRequest(withSelectedCredential: credential)
     }
 }
