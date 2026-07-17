@@ -30,8 +30,11 @@
             <dict>
                 <key>ProvidesPasswords</key>
                 <true/>
+                <!-- Passkeys: capability wired next; kept off until the passkey
+                     provider methods are implemented so Arca doesn't appear in
+                     the passkey chooser and fail. -->
                 <key>ProvidesPasskeys</key>
-                <true/>
+                <false/>
             </dict>
         </dict>
         <key>NSExtensionPointIdentifier</key>
