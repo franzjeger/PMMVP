@@ -18,23 +18,33 @@ ENTITLEMENTS="$REPO/apps/desktop/src-tauri/Entitlements.plist"
 echo "==> Building release bundle…"
 (cd "$REPO/apps/desktop" && npm run tauri build -- --bundles app)
 
-# Prefer a stable signing identity (Developer ID / Apple Development): the
-# macOS keychain grants quick-unlock access per code signature, so a stable
-# identity means "Always Allow" sticks across rebuilds. Ad-hoc signatures
-# change every build and would re-prompt for the login password each time.
-# Prefer Developer ID (long-lived, distribution-grade) over Apple Development
-# (expires yearly) — and keep using ONE identity consistently: the keychain
-# item is ACL-bound to the signing identity, so switching identity re-prompts.
+# Signing: the app carries RESTRICTED entitlements (App Group + keychain access
+# group, shared with the AutoFill extension). macOS (AMFI) only honors those
+# with a provisioning profile that authorizes them — Developer ID without a
+# profile is KILLED at launch. Development signing (Apple Development cert +
+# the Mac Team dev profile) authorizes them, so that's what we use locally.
+# The profile is produced by building the ArcaSign stub once in apps/macos
+# (Xcode auto-provisioning). Distribution later needs a Developer ID profile.
+# Profile source, most-reliable first: the currently installed app (already
+# proven to launch), a fresh ArcaSign stub build, then Xcode's newest profile.
+PROFILE_SRC="$APP_DST/Contents/embedded.provisionprofile"
+[ -f "$PROFILE_SRC" ] || PROFILE_SRC="$REPO/apps/macos/build/Build/Products/Debug/ArcaSign.app/Contents/embedded.provisionprofile"
+[ -f "$PROFILE_SRC" ] || PROFILE_SRC="$(ls -t "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"/*.provisionprofile 2>/dev/null | head -1)"
+
 IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
-  | grep -Eo '"Developer ID Application[^"]*"' | head -1 | tr -d '"')"
-[ -n "$IDENTITY" ] || IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
   | grep -Eo '"Apple Development[^"]*"' | head -1 | tr -d '"')"
-if [ -n "$IDENTITY" ]; then
-  echo "==> Signing with: $IDENTITY"
+if [ -n "$IDENTITY" ] && [ -n "$PROFILE_SRC" ] && [ -f "$PROFILE_SRC" ]; then
+  echo "==> Embedding provisioning profile: $PROFILE_SRC"
+  cp "$PROFILE_SRC" "$APP_SRC/Contents/embedded.provisionprofile"
+  echo "==> Signing with: $IDENTITY (entitled: shared App Group + keychain)"
   codesign --force --deep --entitlements "$ENTITLEMENTS" -s "$IDENTITY" "$APP_SRC"
 else
-  echo "==> No signing identity found; ad-hoc signing (App Groups need a real team, so sharing won't work ad-hoc)"
-  codesign --force --deep --entitlements "$ENTITLEMENTS" -s - "$APP_SRC"
+  # Fallback: no dev cert/profile — sign WITHOUT the restricted entitlements so
+  # the app still launches; only cross-app autofill sharing is unavailable.
+  echo "==> No Apple Development identity/profile; signing WITHOUT shared entitlements"
+  FALLBACK_ID="$(security find-identity -v -p codesigning 2>/dev/null \
+    | grep -Eo '"Developer ID Application[^"]*"' | head -1 | tr -d '"')"
+  codesign --force --deep -s "${FALLBACK_ID:--}" "$APP_SRC"
 fi
 codesign --verify --deep --strict "$APP_SRC"
 
