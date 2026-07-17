@@ -423,18 +423,6 @@ fn handle_request(
             };
             let credential_id = new_pk.credential_id.clone();
             let attestation_object = new_pk.attestation_object;
-            let item = Item::new(
-                VaultItem::Passkey {
-                    title: rp_id.clone(),
-                    rp_id: rp_id.clone(),
-                    user_name,
-                    user_handle,
-                    credential_id: new_pk.credential_id,
-                    private_key: new_pk.private_key.to_vec(),
-                    sign_count: 0,
-                },
-                crate::state::now_millis(),
-            );
             {
                 let mut st = match state.lock() {
                     Ok(s) => s,
@@ -450,6 +438,43 @@ fn handle_request(
                         message: "locked".into(),
                     };
                 };
+                // Dedup: if a passkey for the same relying party AND the same
+                // user handle already exists, REPLACE it (reuse its id) instead
+                // of piling up a duplicate every time the site re-registers.
+                // Only when the user handle is non-empty — an empty handle can't
+                // distinguish accounts, so we must not collapse them.
+                let existing_id = if user_handle.is_empty() {
+                    None
+                } else {
+                    vault.list_items(false).ok().and_then(|sums| {
+                        sums.into_iter().find_map(|s| {
+                            let item = vault.get_item(s.id).ok()?;
+                            match &item.data {
+                                VaultItem::Passkey {
+                                    rp_id: r,
+                                    user_handle: uh,
+                                    ..
+                                } if *r == rp_id && *uh == user_handle => Some(s.id),
+                                _ => None,
+                            }
+                        })
+                    })
+                };
+                let mut item = Item::new(
+                    VaultItem::Passkey {
+                        title: rp_id.clone(),
+                        rp_id: rp_id.clone(),
+                        user_name,
+                        user_handle,
+                        credential_id: new_pk.credential_id,
+                        private_key: new_pk.private_key.to_vec(),
+                        sign_count: 0,
+                    },
+                    crate::state::now_millis(),
+                );
+                if let Some(id) = existing_id {
+                    item.id = id;
+                }
                 if vault.upsert_item(item).is_err() || store.save_synced(vault).is_err() {
                     return Response::Error {
                         message: "internal".into(),
