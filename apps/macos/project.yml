@@ -15,6 +15,10 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
+    # Xcode 16+ wraps Debug builds in a separate <name>.debug.dylib launched via
+    # a thunk. For an app extension the credential-provider loader can fail to
+    # recognize that indirection, so build a conventional single-binary target.
+    ENABLE_DEBUG_DYLIB: "NO"
     # Frank Lia team: owns the no.sybr.vault namespace and is the team the
     # shipped Arca uses, so it is also the right team for M2 (App Groups are
     # team-scoped, so the extension and the Tauri Arca.app must share one team).
@@ -35,6 +39,7 @@ targets:
         PRODUCT_NAME: ArcaHost
         PRODUCT_BUNDLE_IDENTIFIER: no.sybr.vault.autofill-host
         INFOPLIST_FILE: ArcaHost/Info.plist
+        CODE_SIGN_ENTITLEMENTS: ArcaHost/ArcaHost.entitlements
     # Depending on the extension makes XcodeGen embed the .appex into the host's
     # Contents/PlugIns, which is how the OS discovers the credential provider.
     dependencies:

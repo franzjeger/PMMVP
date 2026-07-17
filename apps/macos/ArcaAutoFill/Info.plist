@@ -19,17 +19,23 @@
     <string>$(CURRENT_PROJECT_VERSION)</string>
     <key>NSExtension</key>
     <dict>
+        <!-- ASCredentialProviderExtensionCapabilities MUST be nested under
+             NSExtensionAttributes. Placed directly under NSExtension the OS
+             registers the extension but never sees ProvidesPasswords, so it is
+             not offered as a password source and never appears in
+             System Settings > AutoFill & Passwords. -->
+        <key>NSExtensionAttributes</key>
+        <dict>
+            <key>ASCredentialProviderExtensionCapabilities</key>
+            <dict>
+                <key>ProvidesPasswords</key>
+                <true/>
+            </dict>
+        </dict>
         <key>NSExtensionPointIdentifier</key>
         <string>com.apple.authentication-services-credential-provider-ui</string>
         <key>NSExtensionPrincipalClass</key>
         <string>$(PRODUCT_MODULE_NAME).CredentialProviderViewController</string>
-        <key>ASCredentialProviderExtensionCapabilities</key>
-        <dict>
-            <key>ProvidesPasswords</key>
-            <true/>
-            <key>ProvidesPasskeys</key>
-            <false/>
-        </dict>
     </dict>
 </dict>
 </plist>

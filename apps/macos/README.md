@@ -58,7 +58,13 @@ open Arca.xcodeproj
 
 ## Troubleshooting: Arca doesn't appear in the AutoFill list
 
-Two things the OS silently requires:
+**The capability must be on BOTH targets.** The single thing that made Arca
+appear under "AutoFill from": the `authentication-services.autofill-credential-provider`
+capability has to be on the **containing app** (`ArcaHost`) as well as the
+extension. With it on the extension alone the extension registers with `pkd` but
+the OS never offers it as a provider — no error anywhere.
+
+Other things the OS silently requires:
 
 - **The extension must be sandboxed.** `ArcaAutoFill.entitlements` includes
   `com.apple.security.app-sandbox`. Without it `pkd` discards the extension at

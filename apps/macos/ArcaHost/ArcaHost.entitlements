@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The CONTAINING app must also carry the AutoFill Credential Provider
+     capability (and be sandboxed) for the OS to offer its extension as a
+     provider — the entitlement on the extension alone is not enough. Confirmed
+     via Apple Developer Forums: the capability goes on BOTH targets. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <key>com.apple.developer.authentication-services.autofill-credential-provider</key>
+    <true/>
+</dict>
+</plist>
