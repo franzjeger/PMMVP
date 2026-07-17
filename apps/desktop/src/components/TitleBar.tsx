@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { LockIcon } from "./icons";
+import { LockIcon, MoonIcon, SunIcon } from "./icons";
+import { toggleTheme, useTheme } from "../lib/theme";
 
 /**
  * Custom title bar matching the concept art: centered "🔒 Passwords" over a
@@ -27,7 +28,26 @@ export function TitleBar({ right }: { right?: ReactNode }) {
         <LockIcon className="h-4 w-4 text-neutral-400" />
         <span>Passwords</span>
       </div>
-      <div className="flex w-16 items-center justify-end">{right}</div>
+      <div className="flex w-16 items-center justify-end gap-1">
+        {right}
+        <ThemeToggle />
+      </div>
     </div>
+  );
+}
+
+function ThemeToggle() {
+  const { effective } = useTheme();
+  const dark = effective === "dark";
+  return (
+    <button
+      type="button"
+      onClick={toggleTheme}
+      title={dark ? "Switch to light mode" : "Switch to dark mode"}
+      aria-label={dark ? "Switch to light mode" : "Switch to dark mode"}
+      className="flex h-7 w-7 items-center justify-center rounded-md text-neutral-400 transition-colors hover:bg-fill/5 hover:text-neutral-200"
+    >
+      {dark ? <SunIcon className="h-4 w-4" /> : <MoonIcon className="h-4 w-4" />}
+    </button>
   );
 }

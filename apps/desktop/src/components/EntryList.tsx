@@ -35,7 +35,7 @@ export function EntryList({
         <h2 className="text-[15px] font-bold text-neutral-100">{title}</h2>
         <button
           onClick={onAdd}
-          className="rounded-md p-1 text-accent hover:bg-white/5"
+          className="rounded-md p-1 text-accent hover:bg-fill/5"
           title="Add item"
         >
           <PlusIcon className="h-5 w-5" />
@@ -102,7 +102,7 @@ function Row({
     <button
       onClick={() => onSelect(item.id)}
       className={`flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors ${
-        isSel ? "bg-accent/90" : "hover:bg-white/5"
+        isSel ? "bg-accent/90" : "hover:bg-fill/5"
       }`}
     >
       <Tile letter={item.letter} seed={item.title || item.id} />

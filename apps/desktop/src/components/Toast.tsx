@@ -20,7 +20,7 @@ export function Toast({
   if (!message) return null;
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-6 z-50 flex justify-center">
-      <div className="flex items-center gap-2 rounded-full bg-neutral-800/95 px-4 py-2 text-[13px] text-neutral-100 shadow-lg ring-1 ring-white/10 backdrop-blur">
+      <div className="flex items-center gap-2 rounded-full bg-neutral-800 px-4 py-2 text-[13px] text-neutral-100 shadow-lg ring-1 ring-line/10 backdrop-blur">
         <CheckIcon className="h-4 w-4 text-green-400" />
         {message}
       </div>

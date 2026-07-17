@@ -49,7 +49,7 @@ export function ConsentDialog({
           <button
             autoFocus
             onClick={() => answer(false)}
-            className="flex-1 rounded-lg border border-hairline py-2.5 text-[13px] text-neutral-200 hover:bg-white/5"
+            className="flex-1 rounded-lg border border-hairline py-2.5 text-[13px] text-neutral-200 hover:bg-fill/5"
           >
             Deny
           </button>

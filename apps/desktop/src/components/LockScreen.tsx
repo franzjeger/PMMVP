@@ -109,7 +109,7 @@ export function LockScreen({
               if (canBiometric && !busy && password === "") void quick(true);
             }}
             placeholder="Master password"
-            className="w-full rounded-lg bg-white/5 px-3 py-2.5 text-[14px] text-neutral-100 outline-none ring-1 ring-white/10 focus:ring-accent/60"
+            className="w-full rounded-lg bg-fill/5 px-3 py-2.5 text-[14px] text-neutral-100 outline-none ring-1 ring-line/10 focus:ring-accent/60"
           />
           {creating && (
             <input
@@ -117,7 +117,7 @@ export function LockScreen({
               value={confirm}
               onChange={(e) => setConfirm(e.target.value)}
               placeholder="Confirm master password"
-              className="w-full rounded-lg bg-white/5 px-3 py-2.5 text-[14px] text-neutral-100 outline-none ring-1 ring-white/10 focus:ring-accent/60"
+              className="w-full rounded-lg bg-fill/5 px-3 py-2.5 text-[14px] text-neutral-100 outline-none ring-1 ring-line/10 focus:ring-accent/60"
             />
           )}
 

@@ -135,7 +135,7 @@ export function SettingsDialog({
                 type="button"
                 disabled={busy}
                 onClick={() => setImportOpen(true)}
-                className="rounded-lg border border-hairline px-3 py-1.5 text-[13px] text-neutral-200 hover:bg-white/5 disabled:opacity-50"
+                className="rounded-lg border border-hairline px-3 py-1.5 text-[13px] text-neutral-200 hover:bg-fill/5 disabled:opacity-50"
               >
                 Import…
               </button>
@@ -204,7 +204,7 @@ function SelectRow({
       <select
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="rounded-lg bg-white/5 px-2.5 py-1.5 text-[13px] text-neutral-100 outline-none ring-1 ring-white/10 focus:ring-accent/60"
+        className="rounded-lg bg-fill/5 px-2.5 py-1.5 text-[13px] text-neutral-100 outline-none ring-1 ring-line/10 focus:ring-accent/60"
       >
         {options.map((o) => (
           <option key={o.value} value={o.value} className="bg-panel">
@@ -238,7 +238,7 @@ function ToggleRow({
         disabled={disabled}
         onClick={() => onChange(!checked)}
         className={`relative h-6 w-10 rounded-full transition-colors disabled:opacity-50 ${
-          checked ? "bg-accent" : "bg-white/15"
+          checked ? "bg-accent" : "bg-fill/15"
         }`}
       >
         {/* left-0 anchors the knob: without it, WKWebView derives the static

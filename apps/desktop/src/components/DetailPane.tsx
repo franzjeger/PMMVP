@@ -66,7 +66,7 @@ function IconButton({
     <button
       onClick={onClick}
       title={title}
-      className="rounded-md p-1 text-neutral-500 hover:bg-white/5 hover:text-neutral-200"
+      className="rounded-md p-1 text-neutral-500 hover:bg-fill/5 hover:text-neutral-200"
     >
       {children}
     </button>
@@ -118,7 +118,7 @@ export function DetailPane({
           <div className="flex gap-2">
             <button
               onClick={() => api.restoreItem(detail.id).then(onChanged)}
-              className="rounded-lg border border-hairline px-3 py-1 text-[13px] text-neutral-200 hover:bg-white/5"
+              className="rounded-lg border border-hairline px-3 py-1 text-[13px] text-neutral-200 hover:bg-fill/5"
             >
               Restore
             </button>
@@ -135,7 +135,7 @@ export function DetailPane({
         ) : (
           <button
             onClick={onEdit}
-            className="rounded-lg border border-hairline px-4 py-1 text-[13px] font-medium text-neutral-200 hover:bg-white/5"
+            className="rounded-lg border border-hairline px-4 py-1 text-[13px] font-medium text-neutral-200 hover:bg-fill/5"
           >
             Edit
           </button>
@@ -143,7 +143,7 @@ export function DetailPane({
       </div>
 
       {/* fields */}
-      <div className="mx-8 rounded-xl bg-white/[0.03] px-4 ring-1 ring-white/5">
+      <div className="mx-8 rounded-xl bg-fill/[0.03] px-4 ring-1 ring-line/5">
         {detail.kind === "login" && (
           <>
             <Row label="User name">

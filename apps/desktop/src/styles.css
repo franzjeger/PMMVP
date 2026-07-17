@@ -2,8 +2,111 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Theme tokens. Dark is the default (:root). Light applies either when the user
+ * picks it explicitly (`<html data-theme="light">`, set by src/lib/theme.ts) or
+ * when they leave it on "system" and the OS reports a light appearance
+ * (the prefers-color-scheme block below, which only matches when no explicit
+ * data-theme is present).
+ *
+ * The `neutral` scale mirrors Tailwind's default values in dark mode; in light
+ * mode it is inverted by *prominence* (n-50/100 = darkest text, n-600 = faint
+ * text, n-800 = a light surface) so existing `text-neutral-100` / `bg-neutral-800`
+ * classes keep the same visual hierarchy without touching any component.
+ */
 :root {
   color-scheme: dark;
+
+  --canvas-rgb: 22 22 23;
+  --sidebar: #1f1f21;
+  --panel: #1c1c1e;
+  --hairline: #2e2e30;
+  --accent-rgb: 10 132 255;
+
+  --body-bg: #161617;
+  --body-fg: #f5f5f7;
+  --scrollbar: #3a3a3c;
+  --scrollbar-hover: #4a4a4c;
+
+  /* overlay tints (white-on-dark) */
+  --fill-rgb: 255 255 255;
+  --line-rgb: 255 255 255;
+
+  /* neutral scale — Tailwind defaults */
+  --n-50: #fafafa;
+  --n-100: #f5f5f5;
+  --n-200: #e5e5e5;
+  --n-300: #d4d4d4;
+  --n-400: #a3a3a3;
+  --n-500: #737373;
+  --n-600: #525252;
+  --n-700: #404040;
+  --n-800: #262626;
+  --n-900: #171717;
+}
+
+/* Explicit light choice. */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --canvas-rgb: 245 245 247;
+  --sidebar: #ececee;
+  --panel: #ffffff;
+  --hairline: #d8d8dc;
+  --accent-rgb: 10 132 255;
+
+  --body-bg: #f5f5f7;
+  --body-fg: #1d1d1f;
+  --scrollbar: #c4c4c8;
+  --scrollbar-hover: #a8a8ae;
+
+  /* overlay tints (black-on-light) */
+  --fill-rgb: 0 0 0;
+  --line-rgb: 0 0 0;
+
+  /* neutral scale — inverted by prominence for dark-on-light */
+  --n-50: #000000;
+  --n-100: #1d1d1f;
+  --n-200: #2a2a2e;
+  --n-300: #3a3a3f;
+  --n-400: #57575c;
+  --n-500: #6e6e73;
+  --n-600: #8a8a8f;
+  --n-700: #b0b0b5;
+  --n-800: #e6e6ea;
+  --n-900: #f0f0f2;
+}
+
+/* System-light fallback: only when the user hasn't pinned an explicit theme. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    color-scheme: light;
+
+    --canvas-rgb: 245 245 247;
+    --sidebar: #ececee;
+    --panel: #ffffff;
+    --hairline: #d8d8dc;
+    --accent-rgb: 10 132 255;
+
+    --body-bg: #f5f5f7;
+    --body-fg: #1d1d1f;
+    --scrollbar: #c4c4c8;
+    --scrollbar-hover: #a8a8ae;
+
+    --fill-rgb: 0 0 0;
+    --line-rgb: 0 0 0;
+
+    --n-50: #000000;
+    --n-100: #1d1d1f;
+    --n-200: #2a2a2e;
+    --n-300: #3a3a3f;
+    --n-400: #57575c;
+    --n-500: #6e6e73;
+    --n-600: #8a8a8f;
+    --n-700: #b0b0b5;
+    --n-800: #e6e6ea;
+    --n-900: #f0f0f2;
+  }
 }
 
 html,
@@ -14,8 +117,8 @@ body,
 
 body {
   margin: 0;
-  background: #161617;
-  color: #f5f5f7;
+  background: var(--body-bg);
+  color: var(--body-fg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -38,12 +141,12 @@ body {
   height: 9px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #3a3a3c;
+  background: var(--scrollbar);
   border-radius: 9999px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: #4a4a4c;
+  background: var(--scrollbar-hover);
   background-clip: content-box;
 }

@@ -67,7 +67,7 @@ export function TotpField({
         onClick={() => {
           api.copyToClipboard(totp.code).then(() => onCopy("Code copied"));
         }}
-        className="rounded-md p-1 text-neutral-500 hover:bg-white/5 hover:text-neutral-200"
+        className="rounded-md p-1 text-neutral-500 hover:bg-fill/5 hover:text-neutral-200"
         title="Copy code"
       >
         <CopyIcon className="h-4 w-4" />

@@ -37,7 +37,7 @@ export function PasswordGenerator({ onUse }: { onUse: (pw: string) => void }) {
   const enabledCount = TOGGLES.filter((t) => opts[t.key]).length;
 
   return (
-    <div className="mt-2 rounded-lg border border-hairline bg-white/[0.03] p-3">
+    <div className="mt-2 rounded-lg border border-hairline bg-fill/[0.03] p-3">
       <div className="flex items-center gap-2">
         <code className="flex-1 truncate rounded bg-black/30 px-2 py-1.5 font-mono text-[13px] text-neutral-100">
           {preview || "…"}
@@ -45,7 +45,7 @@ export function PasswordGenerator({ onUse }: { onUse: (pw: string) => void }) {
         <button
           type="button"
           onClick={regenerate}
-          className="rounded-md p-1.5 text-neutral-400 hover:bg-white/5 hover:text-neutral-100"
+          className="rounded-md p-1.5 text-neutral-400 hover:bg-fill/5 hover:text-neutral-100"
           title="Regenerate"
         >
           <RefreshIcon className="h-4 w-4" />
@@ -81,7 +81,7 @@ export function PasswordGenerator({ onUse }: { onUse: (pw: string) => void }) {
               className={`rounded-md px-2.5 py-1 font-mono text-[12px] ring-1 transition-colors ${
                 on
                   ? "bg-accent/20 text-accent ring-accent/40"
-                  : "text-neutral-400 ring-white/10 hover:bg-white/5"
+                  : "text-neutral-400 ring-line/10 hover:bg-fill/5"
               } ${lastOn ? "cursor-not-allowed opacity-70" : ""}`}
               title={lastOn ? "At least one set is required" : undefined}
             >

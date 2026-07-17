@@ -128,7 +128,7 @@ export function EditDialog({
             <div>
               <FieldLabel>Password</FieldLabel>
               <div className="flex items-center gap-2">
-                <div className="flex flex-1 items-center rounded-lg bg-white/5 ring-1 ring-white/10 focus-within:ring-accent/60">
+                <div className="flex flex-1 items-center rounded-lg bg-fill/5 ring-1 ring-line/10 focus-within:ring-accent/60">
                   <input
                     type={showPw ? "text" : "password"}
                     value={form.password}
@@ -151,7 +151,7 @@ export function EditDialog({
                 <button
                   type="button"
                   onClick={() => setShowGen((s) => !s)}
-                  className="rounded-lg border border-hairline px-3 py-2 text-[12px] text-neutral-200 hover:bg-white/5"
+                  className="rounded-lg border border-hairline px-3 py-2 text-[12px] text-neutral-200 hover:bg-fill/5"
                 >
                   Generate
                 </button>
@@ -187,7 +187,7 @@ export function EditDialog({
                 value={form.notes}
                 onChange={(e) => set("notes", e.target.value)}
                 rows={2}
-                className="w-full resize-none rounded-lg bg-white/5 px-3 py-2 text-[13px] text-neutral-100 outline-none ring-1 ring-white/10 focus:ring-accent/60"
+                className="w-full resize-none rounded-lg bg-fill/5 px-3 py-2 text-[13px] text-neutral-100 outline-none ring-1 ring-line/10 focus:ring-accent/60"
               />
             </div>
 
@@ -198,7 +198,7 @@ export function EditDialog({
         <div className="flex justify-end gap-2 border-t border-hairline px-5 py-3">
           <button
             onClick={onClose}
-            className="rounded-lg px-4 py-1.5 text-[13px] text-neutral-300 hover:bg-white/5"
+            className="rounded-lg px-4 py-1.5 text-[13px] text-neutral-300 hover:bg-fill/5"
           >
             Cancel
           </button>
@@ -246,7 +246,7 @@ function LabeledInput({
         autoFocus={autoFocus}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
-        className={`w-full rounded-lg bg-white/5 px-3 py-2 text-[13px] text-neutral-100 outline-none ring-1 ring-white/10 placeholder-neutral-600 focus:ring-accent/60 ${
+        className={`w-full rounded-lg bg-fill/5 px-3 py-2 text-[13px] text-neutral-100 outline-none ring-1 ring-line/10 placeholder-neutral-600 focus:ring-accent/60 ${
           mono ? "font-mono" : ""
         }`}
         spellCheck={false}

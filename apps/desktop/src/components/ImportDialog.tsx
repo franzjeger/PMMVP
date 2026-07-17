@@ -146,7 +146,7 @@ export function ImportDialog({
                           onClick={() =>
                             void src.action!.run().catch((e) => onToast(errorMessage(e)))
                           }
-                          className="rounded-lg border border-hairline px-3 py-1.5 text-[13px] text-neutral-200 hover:bg-white/5 disabled:opacity-50"
+                          className="rounded-lg border border-hairline px-3 py-1.5 text-[13px] text-neutral-200 hover:bg-fill/5 disabled:opacity-50"
                         >
                           {src.action.label}
                         </button>

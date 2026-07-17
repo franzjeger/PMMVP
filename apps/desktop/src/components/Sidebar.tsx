@@ -41,7 +41,7 @@ export function Sidebar({
   return (
     <div className="flex w-60 shrink-0 flex-col border-r border-hairline bg-sidebar">
       <div className="px-3 pt-3">
-        <div className="flex items-center gap-2 rounded-lg bg-white/5 px-2.5 py-1.5 text-neutral-300 focus-within:ring-1 focus-within:ring-accent/60">
+        <div className="flex items-center gap-2 rounded-lg bg-fill/5 px-2.5 py-1.5 text-neutral-300 focus-within:ring-1 focus-within:ring-accent/60">
           <SearchIcon className="h-4 w-4 text-neutral-500" />
           <input
             value={search}
@@ -66,7 +66,7 @@ export function Sidebar({
               className={`flex w-full items-center gap-3 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors ${
                 isActive
                   ? "bg-accent text-white"
-                  : "text-neutral-300 hover:bg-white/5"
+                  : "text-neutral-300 hover:bg-fill/5"
               }`}
             >
               <Icon
@@ -101,7 +101,7 @@ export function Sidebar({
           </button>
           <button
             onClick={onOpenSettings}
-            className="no-drag rounded-md p-1 text-neutral-400 hover:bg-white/5 hover:text-neutral-200"
+            className="no-drag rounded-md p-1 text-neutral-400 hover:bg-fill/5 hover:text-neutral-200"
             title="Settings"
           >
             <GearIcon className="h-4 w-4" />
@@ -111,7 +111,7 @@ export function Sidebar({
           {["macOS", "Windows", "Linux"].map((p) => (
             <span
               key={p}
-              className="rounded-md bg-white/5 px-2 py-0.5 text-[11px] text-neutral-400 ring-1 ring-white/5"
+              className="rounded-md bg-fill/5 px-2 py-0.5 text-[11px] text-neutral-400 ring-1 ring-line/5"
             >
               {p}
             </span>
