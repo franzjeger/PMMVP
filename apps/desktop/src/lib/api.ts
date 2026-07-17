@@ -138,6 +138,8 @@ export const api = {
   quickUnlock: () => invoke<void>("quick_unlock"),
   enableQuickUnlock: () => invoke<void>("enable_quick_unlock"),
   disableQuickUnlock: () => invoke<void>("disable_quick_unlock"),
+  changeMasterPassword: (newPassword: string) =>
+    invoke<void>("change_master_password", { newPassword }),
   lock: () => invoke<void>("lock"),
   touch: () => invoke<void>("touch"),
 

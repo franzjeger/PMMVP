@@ -427,6 +427,33 @@ pub fn enable_quick_unlock(state: St<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// Re-key the vault under a new master password. Requires an unlocked vault and
+/// a fresh biometric re-auth (Touch ID / Windows Hello; no-op where absent) so a
+/// walk-up attacker at an unlocked machine can't silently rotate the password
+/// and lock the owner out. Quick-unlock stays valid: the device-wrapped copy of
+/// the vault key is untouched by rotation.
+#[tauri::command]
+pub fn change_master_password(state: St<'_>, new_password: String) -> Result<(), CmdError> {
+    if new_password.chars().count() < 8 {
+        return Err(CmdError::new(
+            "weak_password",
+            "Use at least 8 characters for the master password.",
+        ));
+    }
+    // Re-auth BEFORE taking the state lock (the prompt blocks on the user).
+    crate::biometric::authenticate("change your master password")
+        .map_err(|m| CmdError::new("biometric_failed", &m))?;
+
+    let mut st = guard(state.inner())?;
+    {
+        let vault = st.vault.as_mut().ok_or_else(CmdError::no_vault)?;
+        vault.change_master_password(&new_password)?;
+    }
+    persist(&mut st)?;
+    st.touch();
+    Ok(())
+}
+
 #[tauri::command]
 pub fn disable_quick_unlock(state: St<'_>) -> Result<(), CmdError> {
     let mut st = guard(state.inner())?;

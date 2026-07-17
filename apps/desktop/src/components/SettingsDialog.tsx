@@ -54,6 +54,33 @@ export function SettingsDialog({
     api.setSettings(next).catch((e) => onToast(errorMessage(e)));
   };
 
+  const [pwOpen, setPwOpen] = useState(false);
+  const [newPw, setNewPw] = useState("");
+  const [confirmPw, setConfirmPw] = useState("");
+
+  const changePassword = async () => {
+    if (newPw.length < 8) {
+      onToast("Use at least 8 characters");
+      return;
+    }
+    if (newPw !== confirmPw) {
+      onToast("Passwords don't match");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.changeMasterPassword(newPw);
+      setNewPw("");
+      setConfirmPw("");
+      setPwOpen(false);
+      onToast("Master password changed");
+    } catch (e) {
+      onToast(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const toggleQuickUnlock = async () => {
     setBusy(true);
     try {
@@ -115,6 +142,47 @@ export function SettingsDialog({
               disabled={busy}
               onChange={() => void toggleQuickUnlock()}
             />
+            <Row
+              label="Change master password"
+              hint="Re-keys the vault under a new password after a biometric check. Quick unlock keeps working; other devices need the new password after the next sync/seed."
+            >
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setPwOpen((v) => !v)}
+                className="rounded-lg border border-hairline px-3 py-1.5 text-[13px] text-neutral-200 hover:bg-fill/5 disabled:opacity-50"
+              >
+                {pwOpen ? "Cancel" : "Change…"}
+              </button>
+            </Row>
+            {pwOpen && (
+              <div className="mb-2 flex flex-col gap-2 rounded-lg bg-fill/5 p-3 ring-1 ring-line/10">
+                <input
+                  type="password"
+                  placeholder="New master password (min. 8 characters)"
+                  value={newPw}
+                  autoFocus
+                  onChange={(e) => setNewPw(e.target.value)}
+                  className="rounded-lg bg-fill/5 px-3 py-2 text-[13px] text-neutral-100 outline-none ring-1 ring-line/10 placeholder-neutral-600 focus:ring-accent/60"
+                />
+                <input
+                  type="password"
+                  placeholder="Repeat new master password"
+                  value={confirmPw}
+                  onChange={(e) => setConfirmPw(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && void changePassword()}
+                  className="rounded-lg bg-fill/5 px-3 py-2 text-[13px] text-neutral-100 outline-none ring-1 ring-line/10 placeholder-neutral-600 focus:ring-accent/60"
+                />
+                <button
+                  type="button"
+                  disabled={busy || newPw.length === 0}
+                  onClick={() => void changePassword()}
+                  className="self-end rounded-lg bg-accent px-4 py-1.5 text-[13px] font-medium text-white hover:bg-accent/90 disabled:opacity-50"
+                >
+                  Set new password
+                </button>
+              </div>
+            )}
             <ToggleRow
               label="Confirm before autofill"
               hint="Ask for an explicit Allow/Deny in this app before a password is filled into the browser. Off by default; autofill is already limited to the matching site while unlocked."

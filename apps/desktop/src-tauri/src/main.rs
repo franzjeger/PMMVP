@@ -142,6 +142,7 @@ fn main() {
             commands::quick_unlock,
             commands::enable_quick_unlock,
             commands::disable_quick_unlock,
+            commands::change_master_password,
             commands::resolve_autofill_consent,
             commands::lock,
             commands::touch,
