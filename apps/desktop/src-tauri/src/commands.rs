@@ -518,6 +518,57 @@ pub fn enable_quick_unlock(state: St<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// Export all logins to a CSV file at `path`, re-importable by Arca (and by
+/// generic password managers). Gated behind a biometric re-auth because it
+/// writes EVERY password to a plaintext file. Rust writes the file directly, so
+/// the plaintext never passes through the webview. Returns the row count.
+#[tauri::command]
+pub fn export_logins_csv(state: St<'_>, path: String) -> Result<usize, CmdError> {
+    crate::biometric::authenticate("export your passwords to a file")
+        .map_err(|m| CmdError::new("biometric_failed", &m))?;
+    let mut st = guard(state.inner())?;
+    st.touch();
+    let vault = st.vault.as_ref().ok_or_else(CmdError::no_vault)?;
+    if !vault.is_unlocked() {
+        return Err(CmdError::new("locked", "Unlock the vault first."));
+    }
+    let mut wtr = csv::Writer::from_path(&path)
+        .map_err(|e| CmdError::new("export", &format!("Could not create the file: {e}")))?;
+    wtr.write_record(["title", "url", "username", "password", "totp", "notes"])
+        .map_err(|e| CmdError::new("export", &e.to_string()))?;
+    let mut n = 0usize;
+    if let Ok(summaries) = vault.list_items(false) {
+        for s in summaries {
+            let Ok(item) = vault.get_item(s.id) else {
+                continue;
+            };
+            if let VaultItem::Login {
+                title,
+                url,
+                username,
+                password,
+                totp_secret,
+                notes,
+            } = &item.data
+            {
+                wtr.write_record([
+                    title.as_str(),
+                    url.as_str(),
+                    username.as_str(),
+                    password.as_str(),
+                    totp_secret.as_deref().unwrap_or(""),
+                    notes.as_str(),
+                ])
+                .map_err(|e| CmdError::new("export", &e.to_string()))?;
+                n += 1;
+            }
+        }
+    }
+    wtr.flush()
+        .map_err(|e| CmdError::new("export", &e.to_string()))?;
+    Ok(n)
+}
+
 /// Merge duplicate logins (same site + username). Losers go to the Trash;
 /// returns how many were merged away.
 #[tauri::command]

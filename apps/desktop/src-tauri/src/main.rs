@@ -181,6 +181,7 @@ fn main() {
             commands::security_report,
             commands::check_breaches,
             commands::import_logins,
+            commands::export_logins_csv,
             commands::open_passwords_app,
             commands::generate,
             commands::get_settings,

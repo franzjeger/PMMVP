@@ -330,6 +330,28 @@ export function SettingsDialog({
                 Import…
               </button>
             </Row>
+            <Row
+              label="Export passwords"
+              hint="Writes every login to a plaintext CSV (re-importable). Requires a biometric check. Keep the file safe and delete it once you're done — anyone who reads it sees all your passwords."
+            >
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setBusy(true);
+                  api
+                    .exportLoginsCsv()
+                    .then((n) => {
+                      if (n !== null) onToast(`Exported ${n} logins`);
+                    })
+                    .catch((e) => onToast(errorMessage(e)))
+                    .finally(() => setBusy(false));
+                }}
+                className="rounded-lg border border-hairline px-3 py-1.5 text-[13px] text-neutral-200 hover:bg-fill/5 disabled:opacity-50"
+              >
+                Export…
+              </button>
+            </Row>
           </div>
         )}
 

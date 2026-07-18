@@ -5,7 +5,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import {
+  open as openDialog,
+  save as saveDialog,
+} from "@tauri-apps/plugin-dialog";
 
 // ---- types (mirror the Rust DTOs, which serialize camelCase) --------------
 
@@ -274,6 +277,25 @@ export const api = {
       });
       if (typeof path !== "string") return null;
       return await invoke<ImportSummary>("import_logins", { path });
+    } finally {
+      await invoke<void>("set_blur_lock_suppressed", { suppressed: false });
+    }
+  },
+
+  /**
+   * Native "save as" dialog, then export all logins to a CSV (written in Rust,
+   * gated behind a biometric re-auth). Returns the row count, or `null` if the
+   * user cancels the dialog. Blur-lock is suppressed around the dialog.
+   */
+  exportLoginsCsv: async (): Promise<number | null> => {
+    await invoke<void>("set_blur_lock_suppressed", { suppressed: true });
+    try {
+      const path = await saveDialog({
+        defaultPath: "arca-passwords.csv",
+        filters: [{ name: "CSV", extensions: ["csv"] }],
+      });
+      if (typeof path !== "string") return null;
+      return await invoke<number>("export_logins_csv", { path });
     } finally {
       await invoke<void>("set_blur_lock_suppressed", { suppressed: false });
     }
