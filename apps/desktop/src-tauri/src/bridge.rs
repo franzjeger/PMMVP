@@ -149,6 +149,10 @@ struct LoginMatch {
     id: String,
     title: String,
     username: String,
+    /// Credential type for the picker UI: "password" for a stored login,
+    /// "passkey" for a WebAuthn credential. A passkey row is informational (it
+    /// signs in via the site's own passkey ceremony, not by filling a field).
+    kind: String,
 }
 
 /// Port + token, written for the native host to read.
@@ -293,20 +297,45 @@ fn handle_request(
             if let Ok(summaries) = vault.list_items(false) {
                 for s in summaries {
                     if let Ok(item) = vault.get_item(s.id) {
-                        if let VaultItem::Login {
-                            url: u,
-                            username,
-                            title,
-                            ..
-                        } = &item.data
-                        {
-                            if domain_matches(u, &url) {
-                                items.push(LoginMatch {
-                                    id: item.id.to_string(),
-                                    title: title.clone(),
-                                    username: username.clone(),
-                                });
+                        match &item.data {
+                            VaultItem::Login {
+                                url: u,
+                                username,
+                                title,
+                                ..
+                            } => {
+                                if domain_matches(u, &url) {
+                                    items.push(LoginMatch {
+                                        id: item.id.to_string(),
+                                        title: title.clone(),
+                                        username: username.clone(),
+                                        kind: "password".into(),
+                                    });
+                                }
                             }
+                            // Passkeys for this site: surfaced so the picker can
+                            // show the user a passkey exists. Matched by the same
+                            // rp_id<->origin rule the ceremony uses, so e.g. a
+                            // login.microsoft.com passkey does NOT show on a
+                            // login.microsoftonline.com page (distinct domains).
+                            VaultItem::Passkey {
+                                rp_id,
+                                user_name,
+                                title,
+                                ..
+                            } => {
+                                if rp_id_matches_origin(rp_id, &url) {
+                                    items.push(LoginMatch {
+                                        id: item.id.to_string(),
+                                        title: title.clone(),
+                                        username: user_name.clone(),
+                                        kind: "passkey".into(),
+                                    });
+                                }
+                            }
+                            // Other item kinds (SSH keys, secure notes) are not
+                            // autofillable into a web form; skip them.
+                            _ => {}
                         }
                     }
                 }
@@ -1123,6 +1152,52 @@ mod tests {
             &mut allow(),
         );
         assert!(matches!(r, Response::Error { message } if message == "locked"));
+    }
+
+    #[test]
+    fn match_labels_passwords_and_passkeys_by_kind() {
+        let dir = TempDir::new().unwrap();
+        let state = unlocked_state(&dir);
+        // A password login and a passkey, both for github.com.
+        add(&state, "GitHub", "frank", "gh-pw", "https://github.com");
+        let mut authed = true;
+        let r = handle_request(
+            Request::PasskeyCreate {
+                origin: "https://github.com".into(),
+                rp_id: "github.com".into(),
+                user_name: "frank".into(),
+                user_handle: vec![1, 2, 3],
+                exclude_credentials: vec![],
+            },
+            &state,
+            "t",
+            &mut authed,
+            None,
+            &mut allow(),
+        );
+        assert!(matches!(r, Response::PasskeyCredential { .. }));
+
+        // Match on a github.com page returns both, each tagged by kind.
+        let r = handle_request(
+            Request::Match {
+                url: "https://github.com/login".into(),
+            },
+            &state,
+            "t",
+            &mut authed,
+            None,
+            &mut allow(),
+        );
+        match r {
+            Response::Logins { items } => {
+                assert_eq!(items.len(), 2);
+                assert!(items
+                    .iter()
+                    .any(|i| i.kind == "password" && i.username == "frank"));
+                assert!(items.iter().any(|i| i.kind == "passkey"));
+            }
+            other => panic!("expected logins, got {other:?}"),
+        }
     }
 
     #[test]
