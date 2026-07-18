@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { ItemSummary, SecurityTag } from "../lib/api";
 import { buildSections } from "../lib/grouping";
 import { ClockIcon, PasskeyIcon, PlusIcon, TrashIcon } from "./icons";
@@ -30,6 +30,7 @@ export function EntryList({
   onToggleSelect,
   onSelectAll,
   onClearSelection,
+  onSelectRange,
   isDeletedView,
   onBulkDelete,
   onBulkRestore,
@@ -48,6 +49,8 @@ export function EntryList({
   onToggleSelect: (id: string) => void;
   onSelectAll: () => void;
   onClearSelection: () => void;
+  /** Replace the whole selection (used for Shift+click range selection). */
+  onSelectRange: (ids: string[]) => void;
   /** Deleted (trash) view: bulk actions are Restore + Delete Forever. */
   isDeletedView: boolean;
   onBulkDelete: () => void;
@@ -59,6 +62,43 @@ export function EntryList({
   const selectionActive = selCount > 0;
   const allSelected =
     items.length > 0 && items.every((i) => selectedIds.has(i.id));
+
+  // Flat id list in the exact order rows are rendered (grouped + sorted), so
+  // Shift+click can pick a contiguous range.
+  const orderedIds = useMemo(
+    () =>
+      sections.flatMap((s) =>
+        s.kind === "single" ? [s.item.id] : s.items.map((i) => i.id),
+      ),
+    [sections],
+  );
+  // Anchor for Shift+range selection: the last row activated by a plain or
+  // Ctrl/Cmd click.
+  const [anchorId, setAnchorId] = useState<string | null>(null);
+
+  // A left-click on a row: plain = open detail (and reset the selection),
+  // Ctrl/Cmd = toggle this row, Shift = select the range from the anchor.
+  const activateRow = (id: string, e: React.MouseEvent) => {
+    if (e.shiftKey) {
+      const anchor = anchorId ?? selectedId;
+      const a = anchor ? orderedIds.indexOf(anchor) : -1;
+      const b = orderedIds.indexOf(id);
+      if (a !== -1 && b !== -1) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        onSelectRange(orderedIds.slice(lo, hi + 1));
+        return;
+      }
+    }
+    if (e.ctrlKey || e.metaKey) {
+      onToggleSelect(id);
+      setAnchorId(id);
+      return;
+    }
+    // Plain click: single-select for the detail pane, clear any multi-selection.
+    if (selectionActive) onClearSelection();
+    setAnchorId(id);
+    onSelect(id);
+  };
 
   return (
     <div className="flex w-[340px] shrink-0 flex-col border-r border-hairline bg-panel">
@@ -133,7 +173,7 @@ export function EntryList({
                 key={section.item.id}
                 item={section.item}
                 isSel={section.item.id === selectedId}
-                onSelect={onSelect}
+                onActivate={activateRow}
                 issuesById={issuesById}
                 checked={selectedIds.has(section.item.id)}
                 onToggleSelect={onToggleSelect}
@@ -155,7 +195,7 @@ export function EntryList({
                       key={item.id}
                       item={item}
                       isSel={item.id === selectedId}
-                      onSelect={onSelect}
+                      onActivate={activateRow}
                       issuesById={issuesById}
                       checked={selectedIds.has(item.id)}
                       onToggleSelect={onToggleSelect}
@@ -175,7 +215,7 @@ export function EntryList({
 function Row({
   item,
   isSel,
-  onSelect,
+  onActivate,
   issuesById,
   checked,
   onToggleSelect,
@@ -183,7 +223,7 @@ function Row({
 }: {
   item: ItemSummary;
   isSel: boolean;
-  onSelect: (id: string) => void;
+  onActivate: (id: string, e: React.MouseEvent) => void;
   issuesById?: Map<string, SecurityTag[]>;
   checked: boolean;
   onToggleSelect: (id: string) => void;
@@ -221,8 +261,8 @@ function Row({
       </button>
 
       <button
-        onClick={() => onSelect(item.id)}
-        className="flex min-w-0 flex-1 items-center gap-3 py-2 text-left"
+        onClick={(e) => onActivate(item.id, e)}
+        className="flex min-w-0 flex-1 select-none items-center gap-3 py-2 text-left"
       >
         <Tile letter={item.letter} seed={item.title || item.id} />
         <div className="min-w-0 flex-1">

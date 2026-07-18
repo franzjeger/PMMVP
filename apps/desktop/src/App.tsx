@@ -327,6 +327,7 @@ export default function App() {
           onToggleSelect={toggleSelect}
           onSelectAll={selectAllVisible}
           onClearSelection={clearSelection}
+          onSelectRange={(ids) => setSelectedIds(new Set(ids))}
           isDeletedView={category === "deleted"}
           onBulkDelete={() => void runBulk(api.deleteItem, "Deleted")}
           onBulkRestore={() => void runBulk(api.restoreItem, "Restored")}
