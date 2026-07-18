@@ -99,6 +99,7 @@ export interface Settings {
   clipboardClearSecs: number;
   confirmAutofill: boolean;
   savePrompt: boolean;
+  handlePasskeys: boolean;
 }
 
 /** Payload of a `fill-consent-request` event: what the app is asking to fill. */

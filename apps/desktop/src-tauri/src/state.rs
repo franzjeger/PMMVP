@@ -36,6 +36,11 @@ pub struct Settings {
     /// Offer to save a new (or changed) login when you submit a form the vault
     /// doesn't already know. On by default.
     pub save_prompt: bool,
+    /// Handle WebAuthn passkeys in Arca (create + sign in). On by default. Turn
+    /// OFF to make Arca ignore all passkey ceremonies so the browser / platform
+    /// authenticator handles them instead — a clean escape hatch if a site's
+    /// background passkey probes become a nuisance.
+    pub handle_passkeys: bool,
 }
 
 impl Default for Settings {
@@ -46,6 +51,7 @@ impl Default for Settings {
             clipboard_clear_secs: 30,
             confirm_autofill: false,
             save_prompt: true,
+            handle_passkeys: true,
         }
     }
 }
@@ -223,6 +229,7 @@ mod tests {
             clipboard_clear_secs: 15,
             confirm_autofill: true,
             save_prompt: false,
+            handle_passkeys: false,
         };
         save_settings(&vault, &s).unwrap();
         assert_eq!(load_settings(&vault), s);

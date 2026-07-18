@@ -300,6 +300,12 @@ export function SettingsDialog({
               </div>
             )}
             <ToggleRow
+              label="Handle passkeys in Arca"
+              hint="Let Arca create and sign in with passkeys in the browser. Turn off to hand all passkey prompts back to the browser / platform (a clean escape if a site's background passkey probes get annoying)."
+              checked={settings.handlePasskeys}
+              onChange={(v) => apply({ handlePasskeys: v })}
+            />
+            <ToggleRow
               label="Confirm before autofill"
               hint="Ask for an explicit Allow/Deny in this app before a password is filled into the browser. Off by default; autofill is already limited to the matching site while unlocked."
               checked={settings.confirmAutofill}

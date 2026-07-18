@@ -430,6 +430,14 @@ fn handle_request(
             user_handle,
             exclude_credentials,
         } => {
+            // Kill switch: when passkey handling is off, ignore the ceremony so
+            // the browser / platform authenticator takes over (the shim falls
+            // back on this error). No prompt, ever.
+            if !passkeys_enabled(state) {
+                return Response::Error {
+                    message: "passkeys_disabled".into(),
+                };
+            }
             // Anti-phishing: the RP id must belong to the page's origin.
             if !rp_id_matches_origin(&rp_id, &origin) {
                 return Response::Error {
@@ -580,6 +588,11 @@ fn handle_request(
             client_data_hash,
             allow_credentials,
         } => {
+            if !passkeys_enabled(state) {
+                return Response::Error {
+                    message: "passkeys_disabled".into(),
+                };
+            }
             if !rp_id_matches_origin(&rp_id, &origin) {
                 return Response::Error {
                     message: "origin_mismatch".into(),
@@ -815,6 +828,15 @@ fn handle_request(
 /// Mandatory user approval for a passkey create/get. Returns `Some(user_verified)`
 /// on approval — `true` when a genuine user verification gated it — or `None`
 /// on denial. A passkey operation must NEVER proceed without this.
+/// Whether Arca should handle passkey ceremonies at all (the Settings kill
+/// switch). Defaults to on if the state lock is unavailable.
+fn passkeys_enabled(state: &Mutex<AppState>) -> bool {
+    state
+        .lock()
+        .map(|st| st.settings.handle_passkeys)
+        .unwrap_or(true)
+}
+
 /// How long a decline silences further passkey prompts for the same relying
 /// party. A background browser tab can fire passkey ceremonies repeatedly (the
 /// conditional-mediation autofill loop) even after the extension is updated —
