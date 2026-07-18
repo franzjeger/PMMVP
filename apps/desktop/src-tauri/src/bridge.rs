@@ -25,8 +25,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -815,7 +815,68 @@ fn handle_request(
 /// Mandatory user approval for a passkey create/get. Returns `Some(user_verified)`
 /// on approval — `true` when a genuine user verification gated it — or `None`
 /// on denial. A passkey operation must NEVER proceed without this.
+/// How long a decline silences further passkey prompts for the same relying
+/// party. A background browser tab can fire passkey ceremonies repeatedly (the
+/// conditional-mediation autofill loop) even after the extension is updated —
+/// reloading the extension does not evict already-injected content scripts in
+/// open tabs. Once the user declines one prompt, we treat further prompts for
+/// that site as the same background loop and suppress them, so the nag stops
+/// without the user having to hunt down the offending tab. A genuine sign-in is
+/// completed on the first prompt, so it never records a decline and is never
+/// suppressed.
+const PASSKEY_DECLINE_COOLDOWN: Duration = Duration::from_secs(90);
+
+/// Per-rp time of the last declined passkey prompt (see cooldown above).
+static PASSKEY_DECLINED_AT: LazyLock<Mutex<HashMap<String, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn passkey_recently_declined(rp_id: &str) -> bool {
+    let map = match PASSKEY_DECLINED_AT.lock() {
+        Ok(m) => m,
+        Err(e) => e.into_inner(),
+    };
+    map.get(rp_id)
+        .is_some_and(|at| at.elapsed() < PASSKEY_DECLINE_COOLDOWN)
+}
+
+fn record_passkey_decline(rp_id: &str) {
+    if let Ok(mut map) = PASSKEY_DECLINED_AT.lock() {
+        map.insert(rp_id.to_string(), Instant::now());
+    }
+}
+
+/// Reset the decline cooldown for a relying party (after a successful approval,
+/// so a later genuine ceremony is not suppressed).
+fn clear_passkey_decline(rp_id: &str) {
+    if let Ok(mut map) = PASSKEY_DECLINED_AT.lock() {
+        map.remove(rp_id);
+    }
+}
+
 fn approve_passkey(
+    rp_id: &str,
+    app: Option<&AppHandle>,
+    consent: &mut dyn FnMut(&ConsentContext) -> bool,
+) -> Option<bool> {
+    // If the user just declined a prompt for this site, a background tab is
+    // almost certainly re-firing the same ceremony — suppress it silently
+    // instead of nagging again. (Only active in production, where `app` drives
+    // a real prompt; unit tests inject their own consent and must run every
+    // time.)
+    if app.is_some() && passkey_recently_declined(rp_id) {
+        return None;
+    }
+    let result = approve_passkey_inner(rp_id, app, consent);
+    if app.is_some() {
+        match result {
+            None => record_passkey_decline(rp_id),
+            Some(_) => clear_passkey_decline(rp_id),
+        }
+    }
+    result
+}
+
+fn approve_passkey_inner(
     rp_id: &str,
     app: Option<&AppHandle>,
     consent: &mut dyn FnMut(&ConsentContext) -> bool,
