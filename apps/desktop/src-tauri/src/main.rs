@@ -153,6 +153,7 @@ fn main() {
             commands::sync_now,
             commands::merge_duplicates,
             commands::resolve_autofill_consent,
+            commands::verify_passkey_approval,
             commands::lock,
             commands::touch,
             commands::list_items,

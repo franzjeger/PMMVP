@@ -160,6 +160,23 @@ impl Vault {
         self.finish_unlock(vault_key)
     }
 
+    /// Verify the master password WITHOUT changing lock state. Returns `true`
+    /// when the password correctly re-derives and unwraps the vault key. Used
+    /// for re-authentication (user verification) while the vault is already
+    /// unlocked — e.g. approving a passkey ceremony, where a correct password is
+    /// a genuine user-verification factor.
+    pub fn verify_master_password(&self, master_password: &str) -> bool {
+        let Ok(master_key) = crypto::derive_master_key(master_password, &self.header.kdf) else {
+            return false;
+        };
+        crypto::unwrap_key(
+            &master_key,
+            &self.header.master_wrapped_vault_key,
+            &self.header.kdf.aad(),
+        )
+        .is_ok()
+    }
+
     /// Unlock using a device key fetched from the OS keychain (quick/biometric
     /// unlock). Fails if quick-unlock was never enabled.
     pub fn unlock_with_device_key(&mut self, device_key: &SymmetricKey) -> Result<()> {
@@ -508,6 +525,17 @@ mod tests {
                 notes: String::new(),
             },
         }
+    }
+
+    #[test]
+    fn verify_master_password_checks_without_unlock_shortcut() {
+        // A freshly created vault is unlocked; verification must still re-check
+        // the password (unlike `unlock`, which short-circuits when unlocked).
+        let v = Vault::create("correct-horse", cheap_params()).unwrap();
+        assert!(v.is_unlocked());
+        assert!(v.verify_master_password("correct-horse"));
+        assert!(!v.verify_master_password("wrong"));
+        assert!(!v.verify_master_password(""));
     }
 
     #[test]

@@ -45,5 +45,5 @@ tempfile = "3"
 [lints.rust]
 unsafe_code = "forbid"
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 robius-authentication = "0.1"
