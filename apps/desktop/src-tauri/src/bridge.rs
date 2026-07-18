@@ -303,15 +303,13 @@ fn handle_request(
                                 username,
                                 title,
                                 ..
-                            } => {
-                                if domain_matches(u, &url) {
-                                    items.push(LoginMatch {
-                                        id: item.id.to_string(),
-                                        title: title.clone(),
-                                        username: username.clone(),
-                                        kind: "password".into(),
-                                    });
-                                }
+                            } if domain_matches(u, &url) => {
+                                items.push(LoginMatch {
+                                    id: item.id.to_string(),
+                                    title: title.clone(),
+                                    username: username.clone(),
+                                    kind: "password".into(),
+                                });
                             }
                             // Passkeys for this site: surfaced so the picker can
                             // show the user a passkey exists. Matched by the same
@@ -323,18 +321,16 @@ fn handle_request(
                                 user_name,
                                 title,
                                 ..
-                            } => {
-                                if rp_id_matches_origin(rp_id, &url) {
-                                    items.push(LoginMatch {
-                                        id: item.id.to_string(),
-                                        title: title.clone(),
-                                        username: user_name.clone(),
-                                        kind: "passkey".into(),
-                                    });
-                                }
+                            } if rp_id_matches_origin(rp_id, &url) => {
+                                items.push(LoginMatch {
+                                    id: item.id.to_string(),
+                                    title: title.clone(),
+                                    username: user_name.clone(),
+                                    kind: "passkey".into(),
+                                });
                             }
-                            // Other item kinds (SSH keys, secure notes) are not
-                            // autofillable into a web form; skip them.
+                            // Non-matching logins/passkeys and other item kinds
+                            // (SSH keys, secure notes) are not autofillable here.
                             _ => {}
                         }
                     }
