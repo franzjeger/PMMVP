@@ -10,9 +10,11 @@ import {
   onFillConsentRequest,
   onLoginSaved,
   onPasskeyChanged,
+  onPasskeyVerifyRequest,
   onSyncMerged,
   onVaultLocked,
   type FillConsent,
+  type PasskeyVerifyRequest,
   type ItemDetail,
   type ItemSummary,
   type SecurityIssue,
@@ -34,6 +36,7 @@ import { LockScreen } from "./components/LockScreen";
 import { EditDialog } from "./components/EditDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { ConsentDialog } from "./components/ConsentDialog";
+import { PasskeyVerifyDialog } from "./components/PasskeyVerifyDialog";
 import { TouchIdBanner } from "./components/TouchIdBanner";
 import { Toast } from "./components/Toast";
 import { KeyIcon } from "./components/icons";
@@ -49,6 +52,9 @@ export default function App() {
   const [editing, setEditing] = useState<{ id: string | null } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [consent, setConsent] = useState<FillConsent | null>(null);
+  const [passkeyVerify, setPasskeyVerify] = useState<PasskeyVerifyRequest | null>(
+    null,
+  );
   const [toast, setToast] = useState<string | null>(null);
 
   const loadItems = useCallback(async () => {
@@ -94,11 +100,13 @@ export default function App() {
         setDetail(null);
         setItems([]);
         setSecurity([]);
+        setPasskeyVerify(null);
         void refreshStatus();
       }),
       onClipboardCleared(() => setToast("Clipboard cleared")),
       onAutofilled((what) => setToast(`Autofilled ${what}`)),
       onFillConsentRequest((req) => setConsent(req)),
+      onPasskeyVerifyRequest((req) => setPasskeyVerify(req)),
       onPasskeyChanged((rp, kind) => {
         if (kind === "created") {
           setToast(`Passkey saved for ${rp}`);
@@ -310,6 +318,13 @@ export default function App() {
         <ConsentDialog
           request={consent}
           onResolved={() => setConsent(null)}
+          onToast={setToast}
+        />
+      )}
+      {passkeyVerify && (
+        <PasskeyVerifyDialog
+          request={passkeyVerify}
+          onResolved={() => setPasskeyVerify(null)}
           onToast={setToast}
         />
       )}

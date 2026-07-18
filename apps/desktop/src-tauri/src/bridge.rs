@@ -760,16 +760,16 @@ fn handle_request(
 }
 
 /// Mandatory user approval for a passkey create/get. Returns `Some(user_verified)`
-/// on approval — `true` when a real biometric verification gated it — or `None`
+/// on approval — `true` when a genuine user verification gated it — or `None`
 /// on denial. A passkey operation must NEVER proceed without this.
 fn approve_passkey(
     rp_id: &str,
     app: Option<&AppHandle>,
     consent: &mut dyn FnMut(&ConsentContext) -> bool,
 ) -> Option<bool> {
-    // In production on macOS, gate with Touch ID — a genuine user verification,
-    // so we may honestly set UV. (`app` is `None` in unit tests, which take the
-    // injected consent path below instead of prompting.)
+    // macOS: Touch ID — a genuine platform user verification. It's a system
+    // prompt, so it works even though the ceremony is triggered from the
+    // background (the browser).
     #[cfg(target_os = "macos")]
     if app.is_some() {
         return match crate::biometric::authenticate(&format!("approve a passkey for {rp_id}")) {
@@ -777,15 +777,56 @@ fn approve_passkey(
             Err(_) => None,
         };
     }
-    let _ = app;
-    // Tests and non-biometric platforms: the in-app Allow/Deny prompt provides
+    // Windows/Linux: the OS platform-authenticator (Windows Hello) dialog can't
+    // receive keyboard input when invoked from our background bridge thread, so
+    // we do user verification in our OWN window instead — the user re-enters the
+    // master password. A correct password is a genuine user-verification factor
+    // (the very secret that unlocks the vault), so we may honestly set UV=1.
+    #[cfg(not(target_os = "macos"))]
+    if let Some(app) = app {
+        return request_passkey_verification(app, rp_id);
+    }
+    // Tests / headless (no AppHandle): the injected consent closure provides
     // user presence only (user_verified = false).
+    let _ = app;
     let ctx = ConsentContext {
         site: rp_id.to_string(),
         account: String::new(),
         title: format!("passkey for {rp_id}"),
     };
     consent(&ctx).then_some(false)
+}
+
+/// Windows/Linux user verification for a passkey ceremony: emit a request to the
+/// frontend (which prompts for the master password in our own window), bring the
+/// window forward, and block this bridge thread until the password is verified
+/// (`Some(true)`) or the user cancels / it times out (`None`). Reuses the
+/// `PendingConsents` channel; `verify_passkey_approval` only resolves it `true`
+/// after the master password checks out.
+#[cfg(not(target_os = "macos"))]
+fn request_passkey_verification(app: &AppHandle, rp_id: &str) -> Option<bool> {
+    let verify_id = Uuid::new_v4().simple().to_string();
+    let (tx, rx) = std::sync::mpsc::channel::<bool>();
+    {
+        let pending = app.state::<PendingConsents>();
+        let Ok(mut map) = pending.0.lock() else {
+            return None;
+        };
+        map.insert(verify_id.clone(), tx);
+    }
+    let _ = app.emit(
+        "passkey-verify-request",
+        serde_json::json!({ "id": verify_id, "site": rp_id }),
+    );
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+    let verified = rx.recv_timeout(CONSENT_TIMEOUT).unwrap_or(false);
+    if let Ok(mut map) = app.state::<PendingConsents>().0.lock() {
+        map.remove(&verify_id);
+    }
+    verified.then_some(true)
 }
 
 /// Production consent: emit the request to the frontend, bring the window
