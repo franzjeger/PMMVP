@@ -94,6 +94,13 @@ export interface FillConsent {
   title: string;
 }
 
+/** Payload of a `passkey-verify-request` event: the site (rp_id) whose passkey
+ *  ceremony needs the master password to satisfy user verification. */
+export interface PasskeyVerifyRequest {
+  id: string;
+  site: string;
+}
+
 export interface LoginInput {
   id: string | null;
   title: string;
@@ -183,6 +190,18 @@ export const api = {
   resolveAutofillConsent: (id: string, approved: boolean) =>
     invoke<void>("resolve_autofill_consent", { id, approved }),
 
+  /** Verify the master password to approve a pending passkey ceremony
+   *  (Windows/Linux). Resolves to `true` if the password was correct (and the
+   *  ceremony is approved); `false` lets the dialog show a retry hint. */
+  verifyPasskeyApproval: (id: string, masterPassword: string) =>
+    invoke<boolean>("verify_passkey_approval", { id, masterPassword }),
+
+  /** Cancel a pending passkey verification (user dismissed the dialog). Uses a
+   *  dedicated command — NOT resolveAutofillConsent — so the passkey UV channel
+   *  is never touched by the presence-only consent path. */
+  cancelPasskeyVerification: (id: string) =>
+    invoke<void>("cancel_passkey_verification", { id }),
+
   openExternal: (url: string) => openUrl(url),
 
   /**
@@ -260,4 +279,17 @@ export function onFillConsentRequest(
   cb: (req: FillConsent) => void,
 ): Promise<UnlistenFn> {
   return listen<FillConsent>("fill-consent-request", (e) => cb(e.payload));
+}
+
+/**
+ * Fired (Windows/Linux) when a passkey ceremony needs user verification. Show a
+ * master-password prompt and answer with `api.verifyPasskeyApproval(id, pw)`;
+ * cancel with `api.cancelPasskeyVerification(id)`.
+ */
+export function onPasskeyVerifyRequest(
+  cb: (req: PasskeyVerifyRequest) => void,
+): Promise<UnlistenFn> {
+  return listen<PasskeyVerifyRequest>("passkey-verify-request", (e) =>
+    cb(e.payload),
+  );
 }

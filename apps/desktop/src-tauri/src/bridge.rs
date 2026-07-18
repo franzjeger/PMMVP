@@ -46,6 +46,17 @@ const CONSENT_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Default)]
 pub struct PendingConsents(pub Mutex<HashMap<String, Sender<bool>>>);
 
+/// Pending passkey user-verification requests, keyed by request id. Kept in a
+/// SEPARATE map from [`PendingConsents`] on purpose: an autofill consent is a
+/// presence-only Allow/Deny (resolved by `resolve_autofill_consent` with no
+/// password check), whereas a passkey verification may only be satisfied `true`
+/// after `verify_passkey_approval` has checked the master password. Sharing one
+/// map would let a presence-only resolver set the WebAuthn UV flag without any
+/// verification. Only `resolve_verification` (from the password-checked command,
+/// or a cancel that always sends `false`) drains this map.
+#[derive(Default)]
+pub struct PendingVerifications(pub Mutex<HashMap<String, Sender<bool>>>);
+
 /// What the user is being asked to approve for a single fill.
 pub struct ConsentContext {
     pub site: String,
@@ -149,6 +160,10 @@ struct LoginMatch {
     id: String,
     title: String,
     username: String,
+    /// Credential type for the picker UI: "password" for a stored login,
+    /// "passkey" for a WebAuthn credential. A passkey row is informational (it
+    /// signs in via the site's own passkey ceremony, not by filling a field).
+    kind: String,
 }
 
 /// Port + token, written for the native host to read.
@@ -293,20 +308,41 @@ fn handle_request(
             if let Ok(summaries) = vault.list_items(false) {
                 for s in summaries {
                     if let Ok(item) = vault.get_item(s.id) {
-                        if let VaultItem::Login {
-                            url: u,
-                            username,
-                            title,
-                            ..
-                        } = &item.data
-                        {
-                            if domain_matches(u, &url) {
+                        match &item.data {
+                            VaultItem::Login {
+                                url: u,
+                                username,
+                                title,
+                                ..
+                            } if domain_matches(u, &url) => {
                                 items.push(LoginMatch {
                                     id: item.id.to_string(),
                                     title: title.clone(),
                                     username: username.clone(),
+                                    kind: "password".into(),
                                 });
                             }
+                            // Passkeys for this site: surfaced so the picker can
+                            // show the user a passkey exists. Matched by the same
+                            // rp_id<->origin rule the ceremony uses, so e.g. a
+                            // login.microsoft.com passkey does NOT show on a
+                            // login.microsoftonline.com page (distinct domains).
+                            VaultItem::Passkey {
+                                rp_id,
+                                user_name,
+                                title,
+                                ..
+                            } if rp_id_matches_origin(rp_id, &url) => {
+                                items.push(LoginMatch {
+                                    id: item.id.to_string(),
+                                    title: title.clone(),
+                                    username: user_name.clone(),
+                                    kind: "passkey".into(),
+                                });
+                            }
+                            // Non-matching logins/passkeys and other item kinds
+                            // (SSH keys, secure notes) are not autofillable here.
+                            _ => {}
                         }
                     }
                 }
@@ -415,26 +451,43 @@ fn handle_request(
                         message: "locked".into(),
                     };
                 };
-                // excludeCredentials: if we already hold one of the listed
-                // credentials for this RP, refuse BEFORE any prompt. The page
-                // surfaces InvalidStateError and the site stops re-asking.
-                if !exclude_credentials.is_empty() {
-                    if let Ok(summaries) = vault.list_items(false) {
-                        for sum in summaries {
-                            let Ok(item) = vault.get_item(sum.id) else {
+                // Refuse a create WITHOUT prompting when we already hold a
+                // passkey for this relying party — this is the loop killer.
+                // Sites like GitHub re-fire `create` on nearly every sign-in;
+                // if we serviced each one we'd pop a Touch ID prompt and pile up
+                // a duplicate credential every single time (exactly the reported
+                // bug). Refusing here makes the page see InvalidStateError, the
+                // spec's "you already have a credential" signal, so it stops.
+                //
+                // Two conditions trigger the refusal, both BEFORE any prompt:
+                //   1. The site listed a credential we hold in excludeCredentials
+                //      (the polite, spec-driven path), OR
+                //   2. we hold ANY passkey for this rp_id with the same
+                //      user_handle — even when the site sent no exclude list.
+                //      Byte-equal handle so a genuinely different account can
+                //      still register once. (An RP that legitimately wants to
+                //      re-register must first remove the old passkey in Arca.)
+                if let Ok(summaries) = vault.list_items(false) {
+                    for sum in summaries {
+                        let Ok(item) = vault.get_item(sum.id) else {
+                            continue;
+                        };
+                        if let VaultItem::Passkey {
+                            rp_id: r,
+                            credential_id: cid,
+                            user_handle: uh,
+                            ..
+                        } = &item.data
+                        {
+                            if *r != rp_id {
                                 continue;
-                            };
-                            if let VaultItem::Passkey {
-                                rp_id: r,
-                                credential_id: cid,
-                                ..
-                            } = &item.data
-                            {
-                                if *r == rp_id && exclude_credentials.iter().any(|e| e == cid) {
-                                    return Response::Error {
-                                        message: "excluded".into(),
-                                    };
-                                }
+                            }
+                            let in_exclude = exclude_credentials.iter().any(|e| e == cid);
+                            let same_account = *uh == user_handle;
+                            if in_exclude || same_account {
+                                return Response::Error {
+                                    message: "excluded".into(),
+                                };
                             }
                         }
                     }
@@ -760,16 +813,16 @@ fn handle_request(
 }
 
 /// Mandatory user approval for a passkey create/get. Returns `Some(user_verified)`
-/// on approval — `true` when a real biometric verification gated it — or `None`
+/// on approval — `true` when a genuine user verification gated it — or `None`
 /// on denial. A passkey operation must NEVER proceed without this.
 fn approve_passkey(
     rp_id: &str,
     app: Option<&AppHandle>,
     consent: &mut dyn FnMut(&ConsentContext) -> bool,
 ) -> Option<bool> {
-    // In production on macOS, gate with Touch ID — a genuine user verification,
-    // so we may honestly set UV. (`app` is `None` in unit tests, which take the
-    // injected consent path below instead of prompting.)
+    // macOS: Touch ID — a genuine platform user verification. It's a system
+    // prompt, so it works even though the ceremony is triggered from the
+    // background (the browser).
     #[cfg(target_os = "macos")]
     if app.is_some() {
         return match crate::biometric::authenticate(&format!("approve a passkey for {rp_id}")) {
@@ -777,15 +830,58 @@ fn approve_passkey(
             Err(_) => None,
         };
     }
-    let _ = app;
-    // Tests and non-biometric platforms: the in-app Allow/Deny prompt provides
+    // Windows/Linux: the OS platform-authenticator (Windows Hello) dialog can't
+    // receive keyboard input when invoked from our background bridge thread, so
+    // we do user verification in our OWN window instead — the user re-enters the
+    // master password. A correct password is a genuine user-verification factor
+    // (the very secret that unlocks the vault), so we may honestly set UV=1.
+    #[cfg(not(target_os = "macos"))]
+    if let Some(app) = app {
+        return request_passkey_verification(app, rp_id);
+    }
+    // Tests / headless (no AppHandle): the injected consent closure provides
     // user presence only (user_verified = false).
+    let _ = app;
     let ctx = ConsentContext {
         site: rp_id.to_string(),
         account: String::new(),
         title: format!("passkey for {rp_id}"),
     };
     consent(&ctx).then_some(false)
+}
+
+/// Windows/Linux user verification for a passkey ceremony: emit a request to the
+/// frontend (which prompts for the master password in our own window), bring the
+/// window forward, and block this bridge thread until the password is verified
+/// (`Some(true)`) or the user cancels / it times out (`None`). Reuses the
+/// `PendingConsents` channel; `verify_passkey_approval` only resolves it `true`
+/// after the master password checks out.
+#[cfg(not(target_os = "macos"))]
+fn request_passkey_verification(app: &AppHandle, rp_id: &str) -> Option<bool> {
+    let verify_id = Uuid::new_v4().simple().to_string();
+    let (tx, rx) = std::sync::mpsc::channel::<bool>();
+    {
+        // Dedicated verification map — never the shared consent map — so only a
+        // password-checked resolve can satisfy this `true`.
+        let pending = app.state::<PendingVerifications>();
+        let Ok(mut map) = pending.0.lock() else {
+            return None;
+        };
+        map.insert(verify_id.clone(), tx);
+    }
+    let _ = app.emit(
+        "passkey-verify-request",
+        serde_json::json!({ "id": verify_id, "site": rp_id }),
+    );
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+    let verified = rx.recv_timeout(CONSENT_TIMEOUT).unwrap_or(false);
+    if let Ok(mut map) = app.state::<PendingVerifications>().0.lock() {
+        map.remove(&verify_id);
+    }
+    verified.then_some(true)
 }
 
 /// Production consent: emit the request to the frontend, bring the window
@@ -826,6 +922,18 @@ fn request_consent(app: &AppHandle, ctx: &ConsentContext) -> bool {
 /// Deliver a user's Allow/Deny decision to the parked bridge thread.
 pub fn resolve_consent(app: &AppHandle, id: &str, approved: bool) {
     if let Ok(mut map) = app.state::<PendingConsents>().0.lock() {
+        if let Some(tx) = map.remove(id) {
+            let _ = tx.send(approved);
+        }
+    }
+}
+
+/// Resolve a pending passkey user-verification. Called only from the
+/// password-checked `verify_passkey_approval` command (with `true`) and the
+/// `cancel_passkey_verification` command (always `false`), so the presence-only
+/// autofill-consent path can never set UV=1.
+pub fn resolve_verification(app: &AppHandle, id: &str, approved: bool) {
+    if let Ok(mut map) = app.state::<PendingVerifications>().0.lock() {
         if let Some(tx) = map.remove(id) {
             let _ = tx.send(approved);
         }
@@ -1123,6 +1231,52 @@ mod tests {
             &mut allow(),
         );
         assert!(matches!(r, Response::Error { message } if message == "locked"));
+    }
+
+    #[test]
+    fn match_labels_passwords_and_passkeys_by_kind() {
+        let dir = TempDir::new().unwrap();
+        let state = unlocked_state(&dir);
+        // A password login and a passkey, both for github.com.
+        add(&state, "GitHub", "frank", "gh-pw", "https://github.com");
+        let mut authed = true;
+        let r = handle_request(
+            Request::PasskeyCreate {
+                origin: "https://github.com".into(),
+                rp_id: "github.com".into(),
+                user_name: "frank".into(),
+                user_handle: vec![1, 2, 3],
+                exclude_credentials: vec![],
+            },
+            &state,
+            "t",
+            &mut authed,
+            None,
+            &mut allow(),
+        );
+        assert!(matches!(r, Response::PasskeyCredential { .. }));
+
+        // Match on a github.com page returns both, each tagged by kind.
+        let r = handle_request(
+            Request::Match {
+                url: "https://github.com/login".into(),
+            },
+            &state,
+            "t",
+            &mut authed,
+            None,
+            &mut allow(),
+        );
+        match r {
+            Response::Logins { items } => {
+                assert_eq!(items.len(), 2);
+                assert!(items
+                    .iter()
+                    .any(|i| i.kind == "password" && i.username == "frank"));
+                assert!(items.iter().any(|i| i.kind == "passkey"));
+            }
+            other => panic!("expected logins, got {other:?}"),
+        }
     }
 
     #[test]

@@ -132,6 +132,15 @@ struct LoginMatch {
     title: String,
     username: String,
     url: String,
+    /// "password" for a stored login, "passkey" for a WebAuthn credential.
+    /// Defaults to "password" so an older desktop app (no `kind`) still lists
+    /// its logins.
+    #[serde(default = "default_kind")]
+    kind: String,
+}
+
+fn default_kind() -> String {
+    "password".to_string()
 }
 
 fn handle(request: Request) -> Response {
@@ -369,6 +378,11 @@ fn query_desktop_app(url: &str) -> Option<Vec<LoginMatch>> {
                     title: i.get("title")?.as_str()?.to_string(),
                     username: i.get("username")?.as_str()?.to_string(),
                     url: url.to_string(),
+                    kind: i
+                        .get("kind")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("password")
+                        .to_string(),
                 })
             })
             .collect(),

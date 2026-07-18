@@ -17,13 +17,13 @@
 //! its safe API, so the crate-wide `#![forbid(unsafe_code)]` still holds.
 
 /// Whether biometric authentication is wired on this platform.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn available() -> bool {
     true
 }
 
 /// Whether biometric authentication is wired on this platform.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn available() -> bool {
     false
 }
@@ -34,7 +34,7 @@ pub fn available() -> bool {
 /// `reason` is shown to the user as "Arca is trying to <reason>".
 /// This call **blocks** until the user responds, so callers must not hold the
 /// app-state lock while invoking it.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn authenticate(reason: &str) -> Result<(), String> {
     use robius_authentication::{
         AndroidText, BiometricStrength, Context, PolicyBuilder, Text, WindowsText,
@@ -50,8 +50,8 @@ pub fn authenticate(reason: &str) -> Result<(), String> {
         .ok_or_else(|| "Biometric authentication is not available on this device.".to_string())?;
 
     let text = Text {
-        // Only `apple` is shown on macOS; the other fields are required by the
-        // struct but unused here.
+        // `apple` is shown on macOS, `windows` on Windows (Windows Hello); the
+        // remaining field is required by the struct but unused on both.
         android: AndroidText {
             title: reason,
             subtitle: None,
@@ -64,12 +64,12 @@ pub fn authenticate(reason: &str) -> Result<(), String> {
 
     Context::new(())
         .blocking_authenticate(text, &policy)
-        .map_err(|e| format!("Touch ID was not confirmed ({e:?})."))
+        .map_err(|e| format!("Verification was not confirmed ({e:?})."))
 }
 
 /// On platforms without a biometric provider wired up yet, this is a no-op so
 /// the existing (non-biometric) quick unlock keeps working unchanged.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn authenticate(_reason: &str) -> Result<(), String> {
     Ok(())
 }

@@ -456,6 +456,44 @@ pub fn resolve_autofill_consent(app: tauri::AppHandle, id: String, approved: boo
     crate::bridge::resolve_consent(&app, &id, approved);
 }
 
+/// User verification for a pending passkey ceremony (Windows/Linux, where the OS
+/// Hello dialog can't take input when invoked from our background bridge thread).
+/// Checks the master password against the unlocked vault; on success, resolves
+/// the parked bridge thread with `true` (UV satisfied). Returns whether the
+/// password was correct so the dialog can show a retry hint — a wrong password
+/// does NOT resolve/deny, letting the user retry until they cancel or it times
+/// out. Cancelling reuses `resolve_autofill_consent(id, false)`.
+#[tauri::command]
+pub fn verify_passkey_approval(
+    app: tauri::AppHandle,
+    state: St<'_>,
+    id: String,
+    master_password: String,
+) -> Result<bool, CmdError> {
+    let ok = {
+        let st = guard(state.inner())?;
+        let vault = st.vault.as_ref().ok_or_else(CmdError::no_vault)?;
+        if !vault.is_unlocked() {
+            return Err(CmdError::new("locked", "Vault is locked"));
+        }
+        vault.verify_master_password(&master_password)
+    };
+    if ok {
+        // Dedicated verification channel: only this password-checked path (or a
+        // cancel, always `false`) can resolve it, so UV=1 can never be set by
+        // the presence-only autofill-consent resolver.
+        crate::bridge::resolve_verification(&app, &id, true);
+    }
+    Ok(ok)
+}
+
+/// Cancel a pending passkey user-verification (the user dismissed the dialog).
+/// Always resolves the parked ceremony as denied.
+#[tauri::command]
+pub fn cancel_passkey_verification(app: tauri::AppHandle, id: String) {
+    crate::bridge::resolve_verification(&app, &id, false);
+}
+
 #[tauri::command]
 pub fn enable_quick_unlock(state: St<'_>) -> Result<(), CmdError> {
     let mut st = guard(state.inner())?;

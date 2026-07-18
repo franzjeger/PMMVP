@@ -97,6 +97,7 @@ fn main() {
             // Shared map of in-flight autofill-consent prompts (used only when
             // the confirm-autofill setting is on).
             app.manage(bridge::PendingConsents::default());
+            app.manage(bridge::PendingVerifications::default());
             // Google Drive sync: shared status + background pull-merge-push loop.
             app.manage(sync::SharedSync::default());
             sync::start_loop(app.handle().clone());
@@ -153,6 +154,8 @@ fn main() {
             commands::sync_now,
             commands::merge_duplicates,
             commands::resolve_autofill_consent,
+            commands::verify_passkey_approval,
+            commands::cancel_passkey_verification,
             commands::lock,
             commands::touch,
             commands::list_items,

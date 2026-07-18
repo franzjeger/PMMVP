@@ -10,9 +10,11 @@ import {
   onFillConsentRequest,
   onLoginSaved,
   onPasskeyChanged,
+  onPasskeyVerifyRequest,
   onSyncMerged,
   onVaultLocked,
   type FillConsent,
+  type PasskeyVerifyRequest,
   type ItemDetail,
   type ItemSummary,
   type SecurityIssue,
@@ -34,6 +36,7 @@ import { LockScreen } from "./components/LockScreen";
 import { EditDialog } from "./components/EditDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { ConsentDialog } from "./components/ConsentDialog";
+import { PasskeyVerifyDialog } from "./components/PasskeyVerifyDialog";
 import { TouchIdBanner } from "./components/TouchIdBanner";
 import { Toast } from "./components/Toast";
 import { KeyIcon } from "./components/icons";
@@ -49,7 +52,11 @@ export default function App() {
   const [editing, setEditing] = useState<{ id: string | null } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [consent, setConsent] = useState<FillConsent | null>(null);
+  const [passkeyVerify, setPasskeyVerify] = useState<PasskeyVerifyRequest | null>(
+    null,
+  );
   const [toast, setToast] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const loadItems = useCallback(async () => {
     try {
@@ -91,14 +98,17 @@ export default function App() {
     const pending: Promise<UnlistenFn>[] = [
       onVaultLocked(() => {
         setSelectedId(null);
+        setSelectedIds(new Set());
         setDetail(null);
         setItems([]);
         setSecurity([]);
+        setPasskeyVerify(null);
         void refreshStatus();
       }),
       onClipboardCleared(() => setToast("Clipboard cleared")),
       onAutofilled((what) => setToast(`Autofilled ${what}`)),
       onFillConsentRequest((req) => setConsent(req)),
+      onPasskeyVerifyRequest((req) => setPasskeyVerify(req)),
       onPasskeyChanged((rp, kind) => {
         if (kind === "created") {
           setToast(`Passkey saved for ${rp}`);
@@ -174,6 +184,54 @@ export default function App() {
         i.subtitle.toLowerCase().includes(q),
     );
   }, [items, category, search, issuesById]);
+
+  // ---- multi-select (bulk restore / delete) --------------------------------
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  // Header checkbox: select every visible item, or clear if all already picked.
+  const selectAllVisible = useCallback(() => {
+    setSelectedIds((prev) =>
+      prev.size >= visible.length && visible.every((i) => prev.has(i.id))
+        ? new Set()
+        : new Set(visible.map((i) => i.id)),
+    );
+  }, [visible]);
+
+  // Run a per-item action over the current selection, in small parallel
+  // batches so hundreds of items don't fire hundreds of IPC calls at once.
+  const runBulk = useCallback(
+    async (fn: (id: string) => Promise<void>, verb: string) => {
+      const ids = [...selectedIds];
+      if (ids.length === 0) return;
+      let ok = 0;
+      const CHUNK = 20;
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        const results = await Promise.allSettled(
+          ids.slice(i, i + CHUNK).map((id) => fn(id)),
+        );
+        ok += results.filter((r) => r.status === "fulfilled").length;
+      }
+      await loadItems();
+      clearSelection();
+      // Surface partial failures instead of silently under-reporting.
+      const failed = ids.length - ok;
+      setToast(
+        failed > 0
+          ? `${verb} ${ok} of ${ids.length} (${failed} failed)`
+          : `${verb} ${ok} item${ok === 1 ? "" : "s"}`,
+      );
+    },
+    [selectedIds, loadItems, clearSelection],
+  );
 
   // Keep a sensible selection as the visible list changes. Pick the item the
   // list actually renders first (grouped + sorted order), not backend order.
@@ -264,9 +322,17 @@ export default function App() {
           onSelect={(c) => {
             setCategory(c);
             setSelectedId(null);
+            clearSelection();
           }}
           search={search}
-          onSearch={setSearch}
+          // Clear the multi-selection when the search narrows/changes, so a
+          // bulk action can never hit items scrolled out of view by a filter
+          // (the confirm count and the acted-on set would otherwise diverge —
+          // irreversible for a Trash purge). Mirrors the category switch above.
+          onSearch={(q) => {
+            setSearch(q);
+            if (selectedIds.size) clearSelection();
+          }}
           onLock={handleLock}
           onOpenSettings={() => setSettingsOpen(true)}
         />
@@ -278,6 +344,24 @@ export default function App() {
           onAdd={() => setEditing({ id: null })}
           emptyHint={emptyHint}
           issuesById={category === "security" ? issuesById : undefined}
+          selectedIds={selectedIds}
+          onToggleSelect={toggleSelect}
+          onSelectAll={selectAllVisible}
+          onClearSelection={clearSelection}
+          onSelectRange={(ids) => setSelectedIds(new Set(ids))}
+          isDeletedView={category === "deleted"}
+          onBulkDelete={() => void runBulk(api.deleteItem, "Deleted")}
+          onBulkRestore={() => void runBulk(api.restoreItem, "Restored")}
+          onBulkPurge={() => {
+            if (
+              confirm(
+                `Permanently delete ${selectedIds.size} item${
+                  selectedIds.size === 1 ? "" : "s"
+                }? This cannot be undone.`,
+              )
+            )
+              void runBulk(api.purgeItem, "Permanently deleted");
+          }}
         />
         {detail ? (
           <DetailPane
@@ -310,6 +394,13 @@ export default function App() {
         <ConsentDialog
           request={consent}
           onResolved={() => setConsent(null)}
+          onToast={setToast}
+        />
+      )}
+      {passkeyVerify && (
+        <PasskeyVerifyDialog
+          request={passkeyVerify}
+          onResolved={() => setPasskeyVerify(null)}
           onToast={setToast}
         />
       )}
