@@ -440,26 +440,43 @@ fn handle_request(
                         message: "locked".into(),
                     };
                 };
-                // excludeCredentials: if we already hold one of the listed
-                // credentials for this RP, refuse BEFORE any prompt. The page
-                // surfaces InvalidStateError and the site stops re-asking.
-                if !exclude_credentials.is_empty() {
-                    if let Ok(summaries) = vault.list_items(false) {
-                        for sum in summaries {
-                            let Ok(item) = vault.get_item(sum.id) else {
+                // Refuse a create WITHOUT prompting when we already hold a
+                // passkey for this relying party — this is the loop killer.
+                // Sites like GitHub re-fire `create` on nearly every sign-in;
+                // if we serviced each one we'd pop a Touch ID prompt and pile up
+                // a duplicate credential every single time (exactly the reported
+                // bug). Refusing here makes the page see InvalidStateError, the
+                // spec's "you already have a credential" signal, so it stops.
+                //
+                // Two conditions trigger the refusal, both BEFORE any prompt:
+                //   1. The site listed a credential we hold in excludeCredentials
+                //      (the polite, spec-driven path), OR
+                //   2. we hold ANY passkey for this rp_id with the same
+                //      user_handle — even when the site sent no exclude list.
+                //      Byte-equal handle so a genuinely different account can
+                //      still register once. (An RP that legitimately wants to
+                //      re-register must first remove the old passkey in Arca.)
+                if let Ok(summaries) = vault.list_items(false) {
+                    for sum in summaries {
+                        let Ok(item) = vault.get_item(sum.id) else {
+                            continue;
+                        };
+                        if let VaultItem::Passkey {
+                            rp_id: r,
+                            credential_id: cid,
+                            user_handle: uh,
+                            ..
+                        } = &item.data
+                        {
+                            if *r != rp_id {
                                 continue;
-                            };
-                            if let VaultItem::Passkey {
-                                rp_id: r,
-                                credential_id: cid,
-                                ..
-                            } = &item.data
-                            {
-                                if *r == rp_id && exclude_credentials.iter().any(|e| e == cid) {
-                                    return Response::Error {
-                                        message: "excluded".into(),
-                                    };
-                                }
+                            }
+                            let in_exclude = exclude_credentials.iter().any(|e| e == cid);
+                            let same_account = *uh == user_handle;
+                            if in_exclude || same_account {
+                                return Response::Error {
+                                    message: "excluded".into(),
+                                };
                             }
                         }
                     }
