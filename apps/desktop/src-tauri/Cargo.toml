@@ -50,3 +50,8 @@ unsafe_code = "forbid"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 robius-authentication = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+# ssh-agent named-pipe transport (\\.\pipe\openssh-ssh-agent). Safe wrapper, so
+# the crate-wide #![forbid(unsafe_code)] still holds.
+interprocess = "1.2"
