@@ -17,7 +17,7 @@ export interface VaultStatus {
   biometricAvailable: boolean;
 }
 
-export type ItemKind = "login" | "passkey" | "sshKey" | "secureNote";
+export type ItemKind = "login" | "passkey" | "sshKey" | "wifi" | "secureNote";
 
 export interface SyncStatus {
   connected: boolean;
@@ -52,6 +52,21 @@ export interface ItemDetail {
   isDeleted: boolean;
   createdAt: number;
   modifiedAt: number;
+  /** Wi-Fi only (empty/false for other kinds). */
+  ssid: string;
+  security: string;
+  hidden: boolean;
+}
+
+export interface WifiInput {
+  id: string | null;
+  title: string;
+  ssid: string;
+  password: string;
+  /** "WPA" | "WEP" | "nopass". */
+  security: string;
+  hidden: boolean;
+  notes: string;
 }
 
 export type PasswordStrength = "weak" | "fair" | "strong";
@@ -173,6 +188,10 @@ export const api = {
   copyToClipboard: (text: string) => invoke<void>("copy_to_clipboard", { text }),
 
   upsertItem: (input: LoginInput) => invoke<string>("upsert_item", { input }),
+  upsertWifi: (input: WifiInput) => invoke<string>("upsert_wifi", { input }),
+  /** SVG string of a "join this network" QR code (passphrase encoded in Rust,
+   *  never crossing to the webview as readable text). */
+  wifiQr: (id: string) => invoke<string>("wifi_qr", { id }),
   deleteItem: (id: string) => invoke<void>("delete_item", { id }),
   restoreItem: (id: string) => invoke<void>("restore_item", { id }),
   purgeItem: (id: string) => invoke<void>("purge_item", { id }),

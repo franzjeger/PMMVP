@@ -35,7 +35,7 @@ export function filterByCategory(
     case "codes":
       return items.filter((i) => !i.isDeleted && i.hasTotp);
     case "wifi":
-      return []; // TODO(phase-2): Wi-Fi network items
+      return items.filter((i) => !i.isDeleted && i.kind === "wifi");
     case "security":
       return []; // TODO(phase-2): weak / reused / breached audit
     case "deleted":

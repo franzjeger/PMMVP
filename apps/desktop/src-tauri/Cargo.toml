@@ -31,6 +31,9 @@ psl.workspace = true
 arboard = "3"
 # RFC 4180 CSV parsing for importing exports from other password managers.
 csv = "1"
+# Wi-Fi join QR codes, rendered to SVG in Rust (keeps the plaintext
+# passphrase out of the webview — only the image crosses).
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 # Google Drive sync: blocking HTTP client (runs on the dedicated sync thread).
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 # PKCE code-challenge hashing + verifier randomness for the OAuth flow.

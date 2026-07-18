@@ -16,6 +16,7 @@ pub enum ItemKind {
     Login,
     Passkey,
     SshKey,
+    Wifi,
     SecureNote,
 }
 
@@ -99,8 +100,63 @@ pub enum VaultItem {
         fingerprint: String,
     },
 
+    /// A saved Wi-Fi network. The passphrase is secret (zeroized with the rest
+    /// of the payload). New fields are `#[serde(default)]` so the tagged-CBOR
+    /// payload stays backward-compatible.
+    Wifi {
+        title: String,
+        /// Network name.
+        #[serde(default)]
+        ssid: String,
+        /// Passphrase. Secret. Empty for an open network.
+        #[serde(default)]
+        password: String,
+        /// Auth token used in the join QR: "WPA" (covers WPA/WPA2/WPA3), "WEP",
+        /// or "nopass" (open). Empty is treated as "WPA".
+        #[serde(default)]
+        security: String,
+        /// Whether the SSID is hidden (not broadcast).
+        #[serde(default)]
+        hidden: bool,
+        #[serde(default)]
+        notes: String,
+    },
+
     /// TODO(phase-2): free-form secure note (title + encrypted body). Stubbed.
     SecureNote { title: String },
+}
+
+/// Build the standard Wi-Fi join string that network QR codes encode
+/// (`WIFI:T:<auth>;S:<ssid>;P:<pass>;H:<hidden>;;`). Special characters in the
+/// SSID/password are backslash-escaped per the de-facto spec. Kept in the I/O-
+/// free core so the actual QR rendering can happen wherever, from the secret.
+pub fn wifi_qr_payload(ssid: &str, password: &str, security: &str, hidden: bool) -> String {
+    fn esc(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for c in s.chars() {
+            if matches!(c, '\\' | ';' | ',' | ':' | '"') {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+        out
+    }
+    let auth = if security.eq_ignore_ascii_case("nopass") {
+        "nopass"
+    } else if security.eq_ignore_ascii_case("wep") {
+        "WEP"
+    } else {
+        "WPA"
+    };
+    let mut out = format!("WIFI:T:{auth};S:{};", esc(ssid));
+    if auth != "nopass" {
+        out.push_str(&format!("P:{};", esc(password)));
+    }
+    if hidden {
+        out.push_str("H:true;");
+    }
+    out.push(';');
+    out
 }
 
 impl VaultItem {
@@ -109,6 +165,7 @@ impl VaultItem {
             VaultItem::Login { .. } => ItemKind::Login,
             VaultItem::Passkey { .. } => ItemKind::Passkey,
             VaultItem::SshKey { .. } => ItemKind::SshKey,
+            VaultItem::Wifi { .. } => ItemKind::Wifi,
             VaultItem::SecureNote { .. } => ItemKind::SecureNote,
         }
     }
@@ -119,6 +176,7 @@ impl VaultItem {
             VaultItem::Login { title, .. }
             | VaultItem::Passkey { title, .. }
             | VaultItem::SshKey { title, .. }
+            | VaultItem::Wifi { title, .. }
             | VaultItem::SecureNote { title } => title,
         }
     }
@@ -130,6 +188,8 @@ impl VaultItem {
             VaultItem::Passkey { user_name, .. } => user_name,
             // The comment (conventionally user@host) is the recognizable label.
             VaultItem::SshKey { comment, .. } => comment,
+            // The network name is the recognizable label.
+            VaultItem::Wifi { ssid, .. } => ssid,
             VaultItem::SecureNote { .. } => "",
         }
     }
@@ -149,6 +209,7 @@ impl VaultItem {
             VaultItem::Passkey { rp_id, .. } => rp_id,
             // SSH keys are not tied to a web site; they group under their kind.
             VaultItem::SshKey { .. } => "",
+            VaultItem::Wifi { .. } => "",
             VaultItem::SecureNote { .. } => "",
         }
     }
@@ -203,6 +264,21 @@ impl std::fmt::Debug for VaultItem {
                 .field("fingerprint", fingerprint)
                 .field("private_key", &REDACTED)
                 .finish_non_exhaustive(),
+            VaultItem::Wifi {
+                title,
+                ssid,
+                security,
+                hidden,
+                ..
+            } => f
+                .debug_struct("Wifi")
+                .field("title", title)
+                .field("ssid", ssid)
+                .field("security", security)
+                .field("hidden", hidden)
+                .field("password", &REDACTED)
+                .field("notes", &REDACTED)
+                .finish(),
             VaultItem::SecureNote { title } => {
                 f.debug_struct("SecureNote").field("title", title).finish()
             }
@@ -315,5 +391,25 @@ mod tests {
         // Non-secret metadata is still visible (keeps logs useful).
         assert!(format!("{login:?}").contains("frank"));
         assert!(format!("{ssh:?}").contains("SHA256:abc"));
+    }
+}
+
+#[cfg(test)]
+mod wifi_tests {
+    use super::*;
+
+    #[test]
+    fn wifi_qr_payload_encodes_and_escapes() {
+        let p = wifi_qr_payload("Home;Net", "p@ss:word", "WPA2", false);
+        // Auth normalizes to WPA; ';' and ':' are backslash-escaped.
+        assert_eq!(p, r"WIFI:T:WPA;S:Home\;Net;P:p@ss\:word;;");
+
+        // Open network: no password segment.
+        let open = wifi_qr_payload("Cafe", "ignored", "nopass", false);
+        assert_eq!(open, "WIFI:T:nopass;S:Cafe;;");
+
+        // Hidden network adds H:true.
+        let hidden = wifi_qr_payload("Secret", "pw", "WPA", true);
+        assert_eq!(hidden, "WIFI:T:WPA;S:Secret;P:pw;H:true;;");
     }
 }

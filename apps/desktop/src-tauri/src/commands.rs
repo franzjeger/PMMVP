@@ -80,6 +80,13 @@ pub struct ItemDetailDto {
     pub is_deleted: bool,
     pub created_at: i64,
     pub modified_at: i64,
+    // ---- Wi-Fi fields (empty/false for other kinds) ----
+    /// Network name.
+    pub ssid: String,
+    /// Auth token: "WPA" | "WEP" | "nopass".
+    pub security: String,
+    /// Hidden SSID.
+    pub hidden: bool,
 }
 
 #[derive(Serialize)]
@@ -151,6 +158,7 @@ fn kind_str(kind: ItemKind) -> &'static str {
         ItemKind::Login => "login",
         ItemKind::Passkey => "passkey",
         ItemKind::SshKey => "sshKey",
+        ItemKind::Wifi => "wifi",
         ItemKind::SecureNote => "secureNote",
     }
 }
@@ -324,6 +332,8 @@ fn secret_field(item: &Item, field: &str) -> Result<String, CmdError> {
             Ok(totp_secret.clone().unwrap_or_default())
         }
         (VaultItem::Login { notes, .. }, "notes") => Ok(notes.clone()),
+        (VaultItem::Wifi { password, .. }, "password") => Ok(password.clone()),
+        (VaultItem::Wifi { notes, .. }, "notes") => Ok(notes.clone()),
         _ => Err(CmdError::new(
             "invalid_field",
             "Unknown or unavailable field.",
@@ -676,6 +686,24 @@ fn do_get_item(state: &Mutex<AppState>, id: &str) -> Result<ItemDetailDto, CmdEr
                 Some(strength_str(estimate_strength(password)).to_string())
             },
         ),
+        VaultItem::Wifi {
+            title,
+            password,
+            notes,
+            ..
+        } => (
+            title.clone(),
+            String::new(),
+            String::new(),
+            notes.clone(),
+            !password.is_empty(),
+            false,
+            if password.is_empty() {
+                None
+            } else {
+                Some(strength_str(estimate_strength(password)).to_string())
+            },
+        ),
         // Stub kinds expose only their title for now.
         other => (
             other.title().to_string(),
@@ -686,6 +714,16 @@ fn do_get_item(state: &Mutex<AppState>, id: &str) -> Result<ItemDetailDto, CmdEr
             false,
             None,
         ),
+    };
+    // Wi-Fi-only metadata (empty/false for every other kind).
+    let (ssid, security, hidden) = match &item.data {
+        VaultItem::Wifi {
+            ssid,
+            security,
+            hidden,
+            ..
+        } => (ssid.clone(), security.clone(), *hidden),
+        _ => (String::new(), String::new(), false),
     };
     Ok(ItemDetailDto {
         id: item.id.to_string(),
@@ -700,6 +738,9 @@ fn do_get_item(state: &Mutex<AppState>, id: &str) -> Result<ItemDetailDto, CmdEr
         is_deleted: item.is_deleted(),
         created_at: item.created_at,
         modified_at: item.modified_at,
+        ssid,
+        security,
+        hidden,
     })
 }
 
@@ -1000,6 +1041,92 @@ pub(crate) fn do_upsert_item(
     };
     persist(&mut st)?;
     Ok(id.to_string())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WifiInput {
+    pub id: Option<String>,
+    pub title: String,
+    pub ssid: String,
+    pub password: String,
+    /// "WPA" | "WEP" | "nopass".
+    pub security: String,
+    pub hidden: bool,
+    pub notes: String,
+}
+
+/// Create or update a Wi-Fi network item.
+#[tauri::command]
+pub fn upsert_wifi(state: St<'_>, input: WifiInput) -> Result<String, CmdError> {
+    let mut st = guard(state.inner())?;
+    st.touch();
+    let now = now_millis();
+    // Title defaults to the SSID when left blank.
+    let title = if input.title.trim().is_empty() {
+        input.ssid.clone()
+    } else {
+        input.title
+    };
+    let data = VaultItem::Wifi {
+        title,
+        ssid: input.ssid,
+        password: input.password,
+        security: input.security,
+        hidden: input.hidden,
+        notes: input.notes,
+    };
+    let id = match input.id {
+        Some(id_str) => {
+            let uuid = parse_id(&id_str)?;
+            let mut existing = st.vault()?.get_item(uuid)?;
+            existing.data = data;
+            existing.modified_at = now;
+            st.vault_mut()?.upsert_item(existing)?;
+            uuid
+        }
+        None => {
+            let item = Item::new(data, now);
+            let new_id = item.id;
+            st.vault_mut()?.upsert_item(item)?;
+            new_id
+        }
+    };
+    persist(&mut st)?;
+    Ok(id.to_string())
+}
+
+/// Render a "join this network" QR code (SVG) for a Wi-Fi item. The passphrase
+/// is encoded into the QR here in Rust, so the plaintext never crosses to the
+/// webview as readable text — only the SVG image does.
+#[tauri::command]
+pub fn wifi_qr(state: St<'_>, id: String) -> Result<String, CmdError> {
+    let st = guard(state.inner())?;
+    let item = st.vault()?.get_item(parse_id(&id)?)?;
+    let VaultItem::Wifi {
+        ssid,
+        password,
+        security,
+        hidden,
+        ..
+    } = &item.data
+    else {
+        return Err(CmdError::new(
+            "not_wifi",
+            "This item is not a Wi-Fi network.",
+        ));
+    };
+    let payload = vault_core::wifi_qr_payload(ssid, password, security, *hidden);
+    let code = qrcode::QrCode::new(payload.as_bytes())
+        .map_err(|_| CmdError::new("qr_failed", "Could not build the QR code."))?;
+    let svg = code
+        .render::<qrcode::render::svg::Color>()
+        .min_dimensions(200, 200)
+        .quiet_zone(true)
+        .dark_color(qrcode::render::svg::Color("#111111"))
+        .light_color(qrcode::render::svg::Color("#ffffff"))
+        .build();
+    Ok(svg)
 }
 
 #[tauri::command]

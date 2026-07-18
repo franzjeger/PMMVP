@@ -164,6 +164,8 @@ fn main() {
             commands::copy_field,
             commands::copy_to_clipboard,
             commands::upsert_item,
+            commands::upsert_wifi,
+            commands::wifi_qr,
             commands::delete_item,
             commands::restore_item,
             commands::purge_item,

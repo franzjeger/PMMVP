@@ -34,6 +34,7 @@ import { EntryList } from "./components/EntryList";
 import { DetailPane } from "./components/DetailPane";
 import { LockScreen } from "./components/LockScreen";
 import { EditDialog } from "./components/EditDialog";
+import { WifiEditDialog } from "./components/WifiEditDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { ConsentDialog } from "./components/ConsentDialog";
 import { PasskeyVerifyDialog } from "./components/PasskeyVerifyDialog";
@@ -49,7 +50,10 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<ItemDetail | null>(null);
-  const [editing, setEditing] = useState<{ id: string | null } | null>(null);
+  const [editing, setEditing] = useState<{
+    id: string | null;
+    kind: "login" | "wifi";
+  } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [consent, setConsent] = useState<FillConsent | null>(null);
   const [passkeyVerify, setPasskeyVerify] = useState<PasskeyVerifyRequest | null>(
@@ -303,7 +307,7 @@ export default function App() {
     CATEGORIES.find((c) => c.id === category)?.label ?? "All";
   const emptyHint =
     category === "wifi"
-      ? "Coming in a later phase."
+      ? "No Wi-Fi networks yet — click + to add one."
       : category === "security"
         ? "No weak or reused passwords. Nice."
         : category === "deleted"
@@ -341,7 +345,12 @@ export default function App() {
           items={visible}
           selectedId={selectedId}
           onSelect={setSelectedId}
-          onAdd={() => setEditing({ id: null })}
+          onAdd={() =>
+            setEditing({
+              id: null,
+              kind: category === "wifi" ? "wifi" : "login",
+            })
+          }
           emptyHint={emptyHint}
           issuesById={category === "security" ? issuesById : undefined}
           selectedIds={selectedIds}
@@ -366,7 +375,12 @@ export default function App() {
         {detail ? (
           <DetailPane
             detail={detail}
-            onEdit={() => setEditing({ id: detail.id })}
+            onEdit={() =>
+              setEditing({
+                id: detail.id,
+                kind: detail.kind === "wifi" ? "wifi" : "login",
+              })
+            }
             onChanged={handleChanged}
             onCopy={setToast}
           />
@@ -383,13 +397,20 @@ export default function App() {
           onToast={setToast}
         />
       )}
-      {editing && (
-        <EditDialog
-          itemId={editing.id}
-          onClose={() => setEditing(null)}
-          onSaved={handleSaved}
-        />
-      )}
+      {editing &&
+        (editing.kind === "wifi" ? (
+          <WifiEditDialog
+            itemId={editing.id}
+            onClose={() => setEditing(null)}
+            onSaved={handleSaved}
+          />
+        ) : (
+          <EditDialog
+            itemId={editing.id}
+            onClose={() => setEditing(null)}
+            onSaved={handleSaved}
+          />
+        ))}
       {consent && (
         <ConsentDialog
           request={consent}

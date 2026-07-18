@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type { ItemSummary, SecurityTag } from "../lib/api";
 import { buildSections } from "../lib/grouping";
-import { ClockIcon, PasskeyIcon, PlusIcon, TrashIcon } from "./icons";
+import { ClockIcon, PasskeyIcon, PlusIcon, TrashIcon, WifiIcon } from "./icons";
 import { Tile } from "./Tile";
 
 const ISSUE_LABEL: Record<SecurityTag, string> = {
@@ -315,6 +315,7 @@ function Row({
         >
           {item.hasTotp && <ClockIcon className="h-4 w-4" />}
           {item.kind === "passkey" && <PasskeyIcon className="h-4 w-4" />}
+          {item.kind === "wifi" && <WifiIcon className="h-4 w-4" />}
         </div>
       </button>
     </div>

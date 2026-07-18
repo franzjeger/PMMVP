@@ -231,7 +231,88 @@ export function DetailPane({
           </>
         )}
 
-        {detail.kind !== "login" && (
+        {detail.kind === "wifi" && (
+          <>
+            <Row label="Network">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate">{detail.ssid || "—"}</span>
+                {detail.ssid && (
+                  <IconButton
+                    title="Copy network name"
+                    onClick={() =>
+                      api
+                        .copyToClipboard(detail.ssid)
+                        .then(() => onCopy("Network name copied"))
+                    }
+                  >
+                    <CopyIcon className="h-4 w-4" />
+                  </IconButton>
+                )}
+              </div>
+            </Row>
+
+            <Row label="Security">
+              <span className="text-neutral-300">
+                {securityLabel(detail.security)}
+              </span>
+            </Row>
+
+            {detail.hasPassword && (
+              <Row label="Password">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="truncate font-mono">
+                      {revealed !== null ? revealed : "••••••••••••••"}
+                    </span>
+                    {detail.passwordStrength && (
+                      <StrengthPill strength={detail.passwordStrength} />
+                    )}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <IconButton
+                      title={revealed !== null ? "Hide" : "Reveal"}
+                      onClick={toggleReveal}
+                    >
+                      {revealed !== null ? (
+                        <EyeOffIcon className="h-4 w-4" />
+                      ) : (
+                        <EyeIcon className="h-4 w-4" />
+                      )}
+                    </IconButton>
+                    <IconButton
+                      title="Copy password"
+                      onClick={() =>
+                        api
+                          .copyField(detail.id, "password")
+                          .then(() => onCopy("Password copied"))
+                      }
+                    >
+                      <CopyIcon className="h-4 w-4" />
+                    </IconButton>
+                  </div>
+                </div>
+              </Row>
+            )}
+
+            {detail.hidden && (
+              <Row label="Hidden">
+                <span className="text-neutral-400">SSID not broadcast</span>
+              </Row>
+            )}
+
+            {detail.notes && (
+              <Row label="Notes">
+                <p className="whitespace-pre-wrap break-words">{detail.notes}</p>
+              </Row>
+            )}
+
+            <Row label="Join">
+              <WifiQr id={detail.id} onError={onCopy} />
+            </Row>
+          </>
+        )}
+
+        {detail.kind !== "login" && detail.kind !== "wifi" && (
           <Row label="Type">
             <span className="text-neutral-400">
               {detail.kind} — viewing/editing arrives in a later phase.
@@ -252,6 +333,66 @@ export function DetailPane({
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+function securityLabel(s: string): string {
+  switch (s) {
+    case "nopass":
+      return "Open (no password)";
+    case "WEP":
+      return "WEP";
+    default:
+      return "WPA / WPA2 / WPA3";
+  }
+}
+
+/** "Join this network" QR code, kept behind a button so the passphrase-encoding
+ *  image isn't shown until asked (the SVG is generated in Rust from the secret;
+ *  its markup contains only QR rectangles, no user-controlled HTML). */
+function WifiQr({ id, onError }: { id: string; onError: (m: string) => void }) {
+  const [svg, setSvg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const show = async () => {
+    setBusy(true);
+    try {
+      setSvg(await api.wifiQr(id));
+    } catch (e) {
+      onError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (svg === null) {
+    return (
+      <button
+        onClick={() => void show()}
+        disabled={busy}
+        className="rounded-lg border border-hairline px-3 py-1.5 text-[13px] text-neutral-200 hover:bg-fill/5 disabled:opacity-50"
+      >
+        {busy ? "…" : "Show QR code"}
+      </button>
+    );
+  }
+  return (
+    <div className="flex flex-col items-start gap-2">
+      <div
+        className="h-44 w-44 rounded-lg bg-white p-2 [&>svg]:h-full [&>svg]:w-full"
+        // eslint-disable-next-line react/no-danger
+        dangerouslySetInnerHTML={{ __html: svg }}
+      />
+      <p className="text-[11px] text-neutral-600">
+        Scan with a phone camera to join.
+      </p>
+      <button
+        onClick={() => setSvg(null)}
+        className="text-[12px] text-neutral-500 hover:text-neutral-300"
+      >
+        Hide
+      </button>
     </div>
   );
 }

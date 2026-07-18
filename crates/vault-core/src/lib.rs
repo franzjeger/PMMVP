@@ -41,7 +41,7 @@ pub mod vault;
 
 pub use error::{Error, Result};
 pub use header::{KdfAlgorithm, KdfParams, VaultHeader};
-pub use item::{Item, ItemKind, ItemSummary, VaultItem};
+pub use item::{wifi_qr_payload, Item, ItemKind, ItemSummary, VaultItem};
 pub use password::{generate_password, PasswordOptions};
 pub use secret::{SymmetricKey, KEY_LEN};
 pub use security::{audit, estimate_strength, ItemSecurity, PasswordStrength, SecurityIssue};
