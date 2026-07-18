@@ -395,6 +395,29 @@ fn do_unlock(state: &Mutex<AppState>, master_password: &str) -> Result<(), CmdEr
         st.vault = Some(st.store.load()?);
     }
     st.vault_mut()?.unlock(master_password)?;
+
+    // Self-heal quick unlock: if the header says it's enabled but the keychain
+    // device key is gone (e.g. an older build stored it in the data-protection
+    // keychain, which this build no longer reads), re-establish it now that the
+    // vault is unlocked — so the NEXT unlock is Touch ID, without the user
+    // having to toggle the setting off/on. Best-effort: any failure just leaves
+    // quick unlock off.
+    let needs_heal = st
+        .vault
+        .as_ref()
+        .map(Vault::has_device_unlock)
+        .unwrap_or(false)
+        && !st.store.quick_unlock_available();
+    if needs_heal {
+        {
+            let AppState { store, vault, .. } = &mut *st;
+            if let Some(v) = vault.as_mut() {
+                let _ = store.enable_quick_unlock(v);
+            }
+        }
+        let _ = persist(&mut st);
+    }
+
     st.touch();
     Ok(())
 }
@@ -403,14 +426,13 @@ fn do_unlock(state: &Mutex<AppState>, master_password: &str) -> Result<(), CmdEr
 /// biometric (Touch ID) prompt where available.
 #[tauri::command]
 pub fn quick_unlock(app: tauri::AppHandle, state: St<'_>) -> Result<(), CmdError> {
-    // Prompt for Touch ID *before* taking the state lock — the prompt blocks on
-    // user interaction, and we must not freeze other commands meanwhile.
-    //
-    // On macOS the device key itself carries a biometric access control, so
-    // reading it (in `store.quick_unlock` below) already prompts Touch ID; a
-    // second app-level prompt here would double it. On Windows/Linux the key is
-    // not OS-gated, so this app-level biometric prompt is the gate.
-    #[cfg(not(target_os = "macos"))]
+    // Prompt for Touch ID / Windows Hello *before* taking the state lock — the
+    // prompt blocks on user interaction, and we must not freeze other commands
+    // meanwhile. This app-layer biometric is the single gate on ALL platforms:
+    // the device key is now a plain keychain item (reliably readable), so the
+    // biometric is enforced here rather than by a per-item keychain access
+    // control (that macOS variant broke unlock under dev signing — see
+    // vault-store::keychain). No-op on platforms without a biometric provider.
     crate::biometric::authenticate("unlock your password vault")
         .map_err(|m| CmdError::new("biometric_failed", &m))?;
 

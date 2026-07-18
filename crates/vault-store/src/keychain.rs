@@ -38,15 +38,31 @@ fn decode_key(encoded: &str) -> Result<SymmetricKey> {
     Ok(SymmetricKey::from_bytes(arr))
 }
 
-// ---- macOS / iOS: security-framework, shared group + biometric AC ----------
+// ---- macOS / iOS: security-framework, plain login-keychain item ------------
+//
+// The device key is stored as a PLAIN generic password (no per-item access
+// control, no named access group), exactly like the Google refresh token in
+// `secrets.rs`. This keeps it in the file-based login keychain, where access is
+// governed by the app's code-signing identity — reliably readable across dev
+// re-signs.
+//
+// An earlier design used `USER_PRESENCE` + the shared access group so the item
+// carried its own Touch ID gate and the AutoFill extension could read it. That
+// forces the item into the *data-protection* keychain, where a
+// provisioning-profile mismatch makes the DATA unreadable even though the
+// metadata search still finds it — so Touch ID fired, the read failed, and the
+// app fell back to the master password on every unlock. Touch ID is now
+// enforced at the app layer (`biometric::authenticate` in the `quick_unlock`
+// command) on all platforms instead. When the sandboxed AutoFill extension
+// ships (needs a real provisioning profile anyway), the shared-group variant
+// can be reintroduced behind that entitlement.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod backend {
     use super::*;
     use security_framework::item::{ItemClass, ItemSearchOptions};
     use security_framework::passwords::{
-        delete_generic_password, get_generic_password, set_generic_password_options,
+        delete_generic_password, get_generic_password, set_generic_password,
     };
-    use security_framework::passwords_options::{AccessControlOptions, PasswordOptions};
 
     /// `errSecItemNotFound` — a missing item, not a failure.
     const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
@@ -55,16 +71,12 @@ mod backend {
         // Replace any existing entry (add rejects a duplicate).
         let _ = delete(service, account);
         let encoded = Zeroizing::new(data_encoding::BASE64_NOPAD.encode(key.as_bytes()));
-        let mut opts = PasswordOptions::new_generic_password(service, account);
-        // Keychain-enforced Touch ID / passcode on every read of the key.
-        opts.set_access_control_options(AccessControlOptions::USER_PRESENCE);
-        // No access group named: the single entitlement group is the default,
-        // shared with the extension.
-        set_generic_password_options(encoded.as_bytes(), opts).map_err(|_| Error::Keychain)
+        set_generic_password(service, account, encoded.as_bytes()).map_err(|_| Error::Keychain)
     }
 
     pub fn get(service: &str, account: &str) -> Result<Option<SymmetricKey>> {
-        // Reading the data triggers the biometric prompt (the AC above).
+        // Plain read from the login keychain (no biometric prompt here; Touch ID
+        // is gated at the app layer before this is called).
         match get_generic_password(service, account) {
             Ok(bytes) => {
                 let encoded =
