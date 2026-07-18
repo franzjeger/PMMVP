@@ -502,8 +502,9 @@ fn handle_request(
                 }
             }
             // Registration ALWAYS requires an explicit user approval; a silent
-            // create must never register a credential.
-            let Some(user_verified) = approve_passkey(&rp_id, app, consent) else {
+            // create must never register a credential. `true` = this is a NEW
+            // passkey, so the prompt says "create" (not "sign in").
+            let Some(user_verified) = approve_passkey(&rp_id, true, app, consent) else {
                 return Response::Error {
                     message: "denied".into(),
                 };
@@ -651,8 +652,9 @@ fn handle_request(
 
             // An assertion ALWAYS requires an explicit user approval — otherwise
             // the authenticator would falsely claim user presence/verification,
-            // which relying parties trust for step-up defenses.
-            let Some(user_verified) = approve_passkey(&rp_id, app, consent) else {
+            // which relying parties trust for step-up defenses. `false` = this
+            // is a sign-in, so the prompt says "sign in" (not "create").
+            let Some(user_verified) = approve_passkey(&rp_id, false, app, consent) else {
                 return Response::Error {
                     message: "denied".into(),
                 };
@@ -852,47 +854,53 @@ const PASSKEY_DECLINE_COOLDOWN: Duration = Duration::from_secs(90);
 static PASSKEY_DECLINED_AT: LazyLock<Mutex<HashMap<String, Instant>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn passkey_recently_declined(rp_id: &str) -> bool {
+fn passkey_recently_declined(key: &str) -> bool {
     let map = match PASSKEY_DECLINED_AT.lock() {
         Ok(m) => m,
         Err(e) => e.into_inner(),
     };
-    map.get(rp_id)
+    map.get(key)
         .is_some_and(|at| at.elapsed() < PASSKEY_DECLINE_COOLDOWN)
 }
 
-fn record_passkey_decline(rp_id: &str) {
+fn record_passkey_decline(key: &str) {
     if let Ok(mut map) = PASSKEY_DECLINED_AT.lock() {
-        map.insert(rp_id.to_string(), Instant::now());
+        map.insert(key.to_string(), Instant::now());
     }
 }
 
-/// Reset the decline cooldown for a relying party (after a successful approval,
-/// so a later genuine ceremony is not suppressed).
-fn clear_passkey_decline(rp_id: &str) {
+/// Reset the decline cooldown for a key (after a successful approval, so a later
+/// genuine ceremony is not suppressed).
+fn clear_passkey_decline(key: &str) {
     if let Ok(mut map) = PASSKEY_DECLINED_AT.lock() {
-        map.remove(rp_id);
+        map.remove(key);
     }
 }
 
+/// Approve a passkey ceremony. `is_create` distinguishes registering a NEW
+/// passkey from signing in with an existing one — the user sees a different
+/// prompt for each, so accepting a background "create a passkey" can never be
+/// mistaken for a login. The decline cooldown is keyed per (site, action) so a
+/// declined create never suppresses a real sign-in.
 fn approve_passkey(
     rp_id: &str,
+    is_create: bool,
     app: Option<&AppHandle>,
     consent: &mut dyn FnMut(&ConsentContext) -> bool,
 ) -> Option<bool> {
-    // If the user just declined a prompt for this site, a background tab is
-    // almost certainly re-firing the same ceremony — suppress it silently
-    // instead of nagging again. (Only active in production, where `app` drives
-    // a real prompt; unit tests inject their own consent and must run every
-    // time.)
-    if app.is_some() && passkey_recently_declined(rp_id) {
+    let cooldown_key = format!("{rp_id}/{}", if is_create { "create" } else { "get" });
+    // If the user just declined this same action for this site, a background tab
+    // is almost certainly re-firing it — suppress silently instead of nagging.
+    // (Only active in production, where `app` drives a real prompt; unit tests
+    // inject their own consent and must run every time.)
+    if app.is_some() && passkey_recently_declined(&cooldown_key) {
         return None;
     }
-    let result = approve_passkey_inner(rp_id, app, consent);
+    let result = approve_passkey_inner(rp_id, is_create, app, consent);
     if app.is_some() {
         match result {
-            None => record_passkey_decline(rp_id),
-            Some(_) => clear_passkey_decline(rp_id),
+            None => record_passkey_decline(&cooldown_key),
+            Some(_) => clear_passkey_decline(&cooldown_key),
         }
     }
     result
@@ -900,15 +908,23 @@ fn approve_passkey(
 
 fn approve_passkey_inner(
     rp_id: &str,
+    is_create: bool,
     app: Option<&AppHandle>,
     consent: &mut dyn FnMut(&ConsentContext) -> bool,
 ) -> Option<bool> {
+    // The reason string the user reads — clearly different for registering a new
+    // passkey vs signing in, so a create can't be mistaken for a login.
+    let reason = if is_create {
+        format!("create a NEW passkey for {rp_id}")
+    } else {
+        format!("sign in to {rp_id}")
+    };
     // macOS: Touch ID — a genuine platform user verification. It's a system
     // prompt, so it works even though the ceremony is triggered from the
     // background (the browser).
     #[cfg(target_os = "macos")]
     if app.is_some() {
-        return match crate::biometric::authenticate(&format!("approve a passkey for {rp_id}")) {
+        return match crate::biometric::authenticate(&reason) {
             Ok(()) => Some(true),
             Err(_) => None,
         };
@@ -920,7 +936,7 @@ fn approve_passkey_inner(
     // (the very secret that unlocks the vault), so we may honestly set UV=1.
     #[cfg(not(target_os = "macos"))]
     if let Some(app) = app {
-        return request_passkey_verification(app, rp_id);
+        return request_passkey_verification(app, rp_id, is_create);
     }
     // Tests / headless (no AppHandle): the injected consent closure provides
     // user presence only (user_verified = false).
@@ -928,7 +944,7 @@ fn approve_passkey_inner(
     let ctx = ConsentContext {
         site: rp_id.to_string(),
         account: String::new(),
-        title: format!("passkey for {rp_id}"),
+        title: reason,
     };
     consent(&ctx).then_some(false)
 }
@@ -940,7 +956,7 @@ fn approve_passkey_inner(
 /// `PendingConsents` channel; `verify_passkey_approval` only resolves it `true`
 /// after the master password checks out.
 #[cfg(not(target_os = "macos"))]
-fn request_passkey_verification(app: &AppHandle, rp_id: &str) -> Option<bool> {
+fn request_passkey_verification(app: &AppHandle, rp_id: &str, is_create: bool) -> Option<bool> {
     let verify_id = Uuid::new_v4().simple().to_string();
     let (tx, rx) = std::sync::mpsc::channel::<bool>();
     {
@@ -954,7 +970,7 @@ fn request_passkey_verification(app: &AppHandle, rp_id: &str) -> Option<bool> {
     }
     let _ = app.emit(
         "passkey-verify-request",
-        serde_json::json!({ "id": verify_id, "site": rp_id }),
+        serde_json::json!({ "id": verify_id, "site": rp_id, "isCreate": is_create }),
     );
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.show();

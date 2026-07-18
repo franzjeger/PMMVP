@@ -126,6 +126,8 @@ export interface FillConsent {
 export interface PasskeyVerifyRequest {
   id: string;
   site: string;
+  /** True when the ceremony registers a NEW passkey (vs signing in). */
+  isCreate: boolean;
 }
 
 export interface LoginInput {

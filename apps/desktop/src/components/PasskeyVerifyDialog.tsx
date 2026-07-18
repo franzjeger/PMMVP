@@ -56,11 +56,30 @@ export function PasskeyVerifyDialog({
             <KeyIcon className="h-6 w-6 text-accent" />
           </div>
           <h2 className="text-[15px] font-semibold text-neutral-100">
-            Verify to use your passkey
+            {request.isCreate
+              ? "Create a new passkey?"
+              : "Sign in with your passkey"}
           </h2>
           <p className="text-[13px] leading-relaxed text-neutral-400">
-            Enter your master password to approve the passkey for{" "}
-            <span className="font-medium text-neutral-100">{request.site}</span>.
+            {request.isCreate ? (
+              <>
+                Enter your master password to register a{" "}
+                <span className="font-medium text-amber-300">brand-new</span>{" "}
+                passkey for{" "}
+                <span className="font-medium text-neutral-100">
+                  {request.site}
+                </span>
+                .
+              </>
+            ) : (
+              <>
+                Enter your master password to sign in to{" "}
+                <span className="font-medium text-neutral-100">
+                  {request.site}
+                </span>
+                .
+              </>
+            )}
           </p>
         </div>
 
