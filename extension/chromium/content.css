@@ -77,12 +77,38 @@
 .sybr-row:hover {
   background: rgba(255, 255, 255, 0.06);
 }
+.sybr-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
 .sybr-title {
   font-weight: 600;
 }
 .sybr-user {
   color: #8e8e93;
   font-size: 12px;
+}
+/* Credential-type pill, right-aligned on the title line. */
+.sybr-kind {
+  margin-left: auto;
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 1px 7px;
+  border-radius: 999px;
+  line-height: 1.6;
+}
+.sybr-kind-password {
+  background: rgba(142, 142, 147, 0.24);
+  color: #c7c7cc;
+}
+.sybr-kind-passkey {
+  background: rgba(100, 168, 255, 0.22);
+  color: #64a8ff;
 }
 
 /* Save-on-submit prompt: a small bar pinned bottom-right. */

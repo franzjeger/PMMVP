@@ -132,10 +132,29 @@
   function buildRow(item, anchor, isIdentifier) {
     const row = document.createElement("button");
     row.className = "sybr-row";
-    row.innerHTML = `<span class="sybr-title"></span><span class="sybr-user"></span>`;
+    const isPasskey = item.kind === "passkey";
+    row.innerHTML =
+      `<span class="sybr-line"><span class="sybr-title"></span>` +
+      `<span class="sybr-kind"></span></span><span class="sybr-user"></span>`;
     row.querySelector(".sybr-title").textContent = item.title || item.url;
     row.querySelector(".sybr-user").textContent = item.username || "";
+    const kindEl = row.querySelector(".sybr-kind");
+    kindEl.textContent = isPasskey ? "Passkey" : "Password";
+    kindEl.classList.add(isPasskey ? "sybr-kind-passkey" : "sybr-kind-password");
     row.addEventListener("click", async () => {
+      // A passkey isn't typed into a field — it signs in through the site's own
+      // passkey ceremony, which Arca approves via the WebAuthn shim. So a passkey
+      // row is informational, not a fill action.
+      if (isPasskey) {
+        openPanel(
+          anchor,
+          note(
+            `Passkey for ${item.title || item.username || "this site"} — choose ` +
+              `“Sign in with a passkey” on the page and Arca will approve it.`,
+          ),
+        );
+        return;
+      }
       const pwField = isIdentifier ? visiblePasswordField() : anchor;
       if (isIdentifier && !pwField) {
         // Pure identifier step (no password field yet): fill just the username.
