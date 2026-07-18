@@ -85,12 +85,12 @@
   navigator.credentials.create = async function (options) {
     const pk = options && options.publicKey;
     if (!pk) return realCreate(options);
+    const mediation = options && options.mediation;
     // Conditional/silent CREATE is the browser's background "upgrade this
     // password login to a passkey" flow (sites like GitHub fire it after every
     // password sign-in). Servicing it would pop an approval + register a fresh
     // passkey on each login — endless prompts and duplicate keys. Only handle
     // the explicit, user-initiated (modal) registration.
-    const mediation = options && options.mediation;
     if (mediation === "conditional" || mediation === "silent") {
       return realCreate(options);
     }
@@ -141,13 +141,13 @@
   navigator.credentials.get = async function (options) {
     const pk = options && options.publicKey;
     if (!pk) return realGet(options);
+    const mediation = options && options.mediation;
     // Conditional / silent mediation is *passive* passkey autofill: the page
     // probes on load or field-focus to offer credentials, it is NOT an explicit
     // "use my passkey" action. Servicing it ourselves would pop an approval /
     // Touch ID prompt just for visiting the page — and again every time the page
     // re-arms autofill. Defer these to the browser's native handler; Arca only
     // answers the modal flow the user actively triggers (default/required).
-    const mediation = options && options.mediation;
     if (mediation === "conditional" || mediation === "silent") {
       return realGet(options);
     }
