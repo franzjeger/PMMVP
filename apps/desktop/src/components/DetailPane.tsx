@@ -317,9 +317,34 @@ export function DetailPane({
 
         {detail.kind === "sshKey" && <SshDetail id={detail.id} onCopy={onCopy} />}
 
+        {detail.kind === "secureNote" && (
+          <Row label="Note">
+            {detail.notes ? (
+              <div className="flex items-start justify-between gap-2">
+                <p className="min-w-0 whitespace-pre-wrap break-words">
+                  {detail.notes}
+                </p>
+                <IconButton
+                  title="Copy note"
+                  onClick={() =>
+                    api
+                      .copyField(detail.id, "notes")
+                      .then(() => onCopy("Note copied"))
+                  }
+                >
+                  <CopyIcon className="h-4 w-4" />
+                </IconButton>
+              </div>
+            ) : (
+              <span className="text-neutral-500">(empty)</span>
+            )}
+          </Row>
+        )}
+
         {detail.kind !== "login" &&
           detail.kind !== "wifi" &&
-          detail.kind !== "sshKey" && (
+          detail.kind !== "sshKey" &&
+          detail.kind !== "secureNote" && (
             <Row label="Type">
               <span className="text-neutral-400">
                 {detail.kind} — viewing/editing arrives in a later phase.

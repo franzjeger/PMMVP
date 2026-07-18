@@ -260,6 +260,7 @@ mod tests {
         let note = Item::new(
             VaultItem::SecureNote {
                 title: "Recovery codes".into(),
+                body: "8f3a-92kd-7712".into(),
             },
             2,
         );

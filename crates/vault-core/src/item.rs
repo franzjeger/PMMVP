@@ -122,8 +122,14 @@ pub enum VaultItem {
         notes: String,
     },
 
-    /// TODO(phase-2): free-form secure note (title + encrypted body). Stubbed.
-    SecureNote { title: String },
+    /// A free-form secure note: a title plus an encrypted body. The body is
+    /// secret (zeroized with the payload, redacted in Debug). `body` is
+    /// `#[serde(default)]` so notes written before it existed still load.
+    SecureNote {
+        title: String,
+        #[serde(default)]
+        body: String,
+    },
 }
 
 /// Build the standard Wi-Fi join string that network QR codes encode
@@ -177,7 +183,7 @@ impl VaultItem {
             | VaultItem::Passkey { title, .. }
             | VaultItem::SshKey { title, .. }
             | VaultItem::Wifi { title, .. }
-            | VaultItem::SecureNote { title } => title,
+            | VaultItem::SecureNote { title, .. } => title,
         }
     }
 
@@ -279,9 +285,11 @@ impl std::fmt::Debug for VaultItem {
                 .field("password", &REDACTED)
                 .field("notes", &REDACTED)
                 .finish(),
-            VaultItem::SecureNote { title } => {
-                f.debug_struct("SecureNote").field("title", title).finish()
-            }
+            VaultItem::SecureNote { title, .. } => f
+                .debug_struct("SecureNote")
+                .field("title", title)
+                .field("body", &REDACTED)
+                .finish(),
         }
     }
 }

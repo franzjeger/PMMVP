@@ -69,6 +69,12 @@ export interface WifiInput {
   notes: string;
 }
 
+export interface SecureNoteInput {
+  id: string | null;
+  title: string;
+  body: string;
+}
+
 export interface SshPublicKey {
   authorizedKey: string;
   fingerprint: string;
@@ -203,6 +209,8 @@ export const api = {
 
   upsertItem: (input: LoginInput) => invoke<string>("upsert_item", { input }),
   upsertWifi: (input: WifiInput) => invoke<string>("upsert_wifi", { input }),
+  upsertSecureNote: (input: SecureNoteInput) =>
+    invoke<string>("upsert_secure_note", { input }),
   /** SVG string of a "join this network" QR code (passphrase encoded in Rust,
    *  never crossing to the webview as readable text). */
   wifiQr: (id: string) => invoke<string>("wifi_qr", { id }),

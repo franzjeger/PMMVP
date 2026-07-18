@@ -36,6 +36,7 @@ import { LockScreen } from "./components/LockScreen";
 import { EditDialog } from "./components/EditDialog";
 import { WifiEditDialog } from "./components/WifiEditDialog";
 import { SshKeyDialog } from "./components/SshKeyDialog";
+import { NoteEditDialog } from "./components/NoteEditDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { ConsentDialog } from "./components/ConsentDialog";
 import { PasskeyVerifyDialog } from "./components/PasskeyVerifyDialog";
@@ -53,7 +54,7 @@ export default function App() {
   const [detail, setDetail] = useState<ItemDetail | null>(null);
   const [editing, setEditing] = useState<{
     id: string | null;
-    kind: "login" | "wifi" | "ssh";
+    kind: "login" | "wifi" | "ssh" | "note";
   } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [consent, setConsent] = useState<FillConsent | null>(null);
@@ -311,7 +312,9 @@ export default function App() {
       ? "No Wi-Fi networks yet — click + to add one."
       : category === "sshKeys"
         ? "No SSH keys yet — click + to generate one."
-        : category === "security"
+        : category === "notes"
+          ? "No notes yet — click + to write one."
+          : category === "security"
         ? "No weak or reused passwords. Nice."
         : category === "deleted"
           ? "Trash is empty."
@@ -356,7 +359,9 @@ export default function App() {
                   ? "wifi"
                   : category === "sshKeys"
                     ? "ssh"
-                    : "login",
+                    : category === "notes"
+                      ? "note"
+                      : "login",
             })
           }
           emptyHint={emptyHint}
@@ -386,7 +391,12 @@ export default function App() {
             onEdit={() =>
               setEditing({
                 id: detail.id,
-                kind: detail.kind === "wifi" ? "wifi" : "login",
+                kind:
+                  detail.kind === "wifi"
+                    ? "wifi"
+                    : detail.kind === "secureNote"
+                      ? "note"
+                      : "login",
               })
             }
             onChanged={handleChanged}
@@ -408,6 +418,12 @@ export default function App() {
       {editing &&
         (editing.kind === "ssh" ? (
           <SshKeyDialog
+            onClose={() => setEditing(null)}
+            onSaved={handleSaved}
+          />
+        ) : editing.kind === "note" ? (
+          <NoteEditDialog
+            itemId={editing.id}
             onClose={() => setEditing(null)}
             onSaved={handleSaved}
           />

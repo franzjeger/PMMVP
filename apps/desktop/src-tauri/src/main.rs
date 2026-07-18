@@ -169,6 +169,7 @@ fn main() {
             commands::copy_to_clipboard,
             commands::upsert_item,
             commands::upsert_wifi,
+            commands::upsert_secure_note,
             commands::wifi_qr,
             commands::generate_ssh_key,
             commands::ssh_public_key,

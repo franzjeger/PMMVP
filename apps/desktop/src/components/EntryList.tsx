@@ -3,6 +3,7 @@ import type { ItemSummary, SecurityTag } from "../lib/api";
 import { buildSections } from "../lib/grouping";
 import {
   ClockIcon,
+  NoteIcon,
   PasskeyIcon,
   PlusIcon,
   SshIcon,
@@ -324,6 +325,7 @@ function Row({
           {item.kind === "passkey" && <PasskeyIcon className="h-4 w-4" />}
           {item.kind === "wifi" && <WifiIcon className="h-4 w-4" />}
           {item.kind === "sshKey" && <SshIcon className="h-4 w-4" />}
+          {item.kind === "secureNote" && <NoteIcon className="h-4 w-4" />}
         </div>
       </button>
     </div>

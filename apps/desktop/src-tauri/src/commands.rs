@@ -334,6 +334,7 @@ fn secret_field(item: &Item, field: &str) -> Result<String, CmdError> {
         (VaultItem::Login { notes, .. }, "notes") => Ok(notes.clone()),
         (VaultItem::Wifi { password, .. }, "password") => Ok(password.clone()),
         (VaultItem::Wifi { notes, .. }, "notes") => Ok(notes.clone()),
+        (VaultItem::SecureNote { body, .. }, "notes") => Ok(body.clone()),
         _ => Err(CmdError::new(
             "invalid_field",
             "Unknown or unavailable field.",
@@ -703,6 +704,17 @@ fn do_get_item(state: &Mutex<AppState>, id: &str) -> Result<ItemDetailDto, CmdEr
             } else {
                 Some(strength_str(estimate_strength(password)).to_string())
             },
+        ),
+        // Secure note: the body rides in `notes` (shown directly in the detail
+        // pane, like a login's notes; the vault is unlocked to view it).
+        VaultItem::SecureNote { title, body } => (
+            title.clone(),
+            String::new(),
+            String::new(),
+            body.clone(),
+            false,
+            false,
+            None,
         ),
         // Stub kinds expose only their title for now.
         other => (
@@ -1127,6 +1139,49 @@ pub fn wifi_qr(state: St<'_>, id: String) -> Result<String, CmdError> {
         .light_color(qrcode::render::svg::Color("#ffffff"))
         .build();
     Ok(svg)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecureNoteInput {
+    pub id: Option<String>,
+    pub title: String,
+    pub body: String,
+}
+
+/// Create or update a secure note (title + free-form encrypted body).
+#[tauri::command]
+pub fn upsert_secure_note(state: St<'_>, input: SecureNoteInput) -> Result<String, CmdError> {
+    let mut st = guard(state.inner())?;
+    st.touch();
+    let now = now_millis();
+    let title = if input.title.trim().is_empty() {
+        "Untitled note".to_string()
+    } else {
+        input.title
+    };
+    let data = VaultItem::SecureNote {
+        title,
+        body: input.body,
+    };
+    let id = match input.id {
+        Some(id_str) => {
+            let uuid = parse_id(&id_str)?;
+            let mut existing = st.vault()?.get_item(uuid)?;
+            existing.data = data;
+            existing.modified_at = now;
+            st.vault_mut()?.upsert_item(existing)?;
+            uuid
+        }
+        None => {
+            let item = Item::new(data, now);
+            let new_id = item.id;
+            st.vault_mut()?.upsert_item(item)?;
+            new_id
+        }
+    };
+    persist(&mut st)?;
+    Ok(id.to_string())
 }
 
 /// Generate a fresh Ed25519 SSH key inside the vault. The private seed never
