@@ -18,6 +18,18 @@
   const realCreate = creds.create.bind(creds);
   const realGet = creds.get.bind(creds);
 
+  // Whether this call was triggered by a real user gesture (WebAuthn transient
+  // activation). A genuine "sign in / add a passkey" click carries it; a
+  // page-load, timer, or background auto-fire does not. We only route a
+  // ceremony to Arca (which pops Touch ID) when the user actually initiated it,
+  // so a site auto-firing get()/create() on load can never nag. Conservative:
+  // if the API is unavailable (older browser), treat as user-initiated so we
+  // don't silently drop real ceremonies.
+  function userInitiated() {
+    const ua = navigator.userActivation;
+    return !ua || ua.isActive;
+  }
+
   // Request/response correlation with the isolated content script.
   let seq = 0;
   const pending = new Map();
@@ -94,6 +106,12 @@
     if (mediation === "conditional" || mediation === "silent") {
       return realCreate(options);
     }
+    // Only a user-initiated registration (a real "add a passkey" click) reaches
+    // Arca; a page-load / background auto-fired create() defers to the browser
+    // so it can never surprise-register a passkey.
+    if (!userInitiated()) {
+      return realCreate(options);
+    }
     try {
       // We only implement ES256. If the RP requires something else, defer.
       const algs = (pk.pubKeyCredParams || []).map((p) => p.alg);
@@ -149,6 +167,15 @@
     // re-arms autofill. Defer these to the browser's native handler; Arca only
     // answers the modal flow the user actively triggers (default/required).
     if (mediation === "conditional" || mediation === "silent") {
+      return realGet(options);
+    }
+    // Even a default-mediation get() must NOT prompt unless the user actually
+    // initiated it. GitHub's login page auto-fires a default get() on page load
+    // (not conditional), which reaching Arca pops a Touch ID prompt while the
+    // user is just visiting — the reported nag. Require a live user gesture
+    // (transient activation): a real "sign in with a passkey" click has it; a
+    // page-load / background auto-fire does not, and defers to the browser.
+    if (!userInitiated()) {
       return realGet(options);
     }
     try {
