@@ -1,13 +1,22 @@
 import { useMemo } from "react";
 import type { ItemSummary, SecurityTag } from "../lib/api";
 import { buildSections } from "../lib/grouping";
-import { ClockIcon, PasskeyIcon, PlusIcon } from "./icons";
+import { ClockIcon, PasskeyIcon, PlusIcon, TrashIcon } from "./icons";
 import { Tile } from "./Tile";
 
 const ISSUE_LABEL: Record<SecurityTag, string> = {
   weak: "Weak",
   reused: "Reused",
 };
+
+/** A small check glyph for the selection checkbox. */
+function CheckMark() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M5 12.5 10 17l9-10" />
+    </svg>
+  );
+}
 
 export function EntryList({
   title,
@@ -17,6 +26,14 @@ export function EntryList({
   onAdd,
   emptyHint,
   issuesById,
+  selectedIds,
+  onToggleSelect,
+  onSelectAll,
+  onClearSelection,
+  isDeletedView,
+  onBulkDelete,
+  onBulkRestore,
+  onBulkPurge,
 }: {
   title: string;
   items: ItemSummary[];
@@ -26,8 +43,22 @@ export function EntryList({
   emptyHint?: string;
   /** When present (Security view), renders issue badges per item. */
   issuesById?: Map<string, SecurityTag[]>;
+  /** Ids currently checked for a bulk action. */
+  selectedIds: Set<string>;
+  onToggleSelect: (id: string) => void;
+  onSelectAll: () => void;
+  onClearSelection: () => void;
+  /** Deleted (trash) view: bulk actions are Restore + Delete Forever. */
+  isDeletedView: boolean;
+  onBulkDelete: () => void;
+  onBulkRestore: () => void;
+  onBulkPurge: () => void;
 }) {
   const sections = useMemo(() => buildSections(items), [items]);
+  const selCount = selectedIds.size;
+  const selectionActive = selCount > 0;
+  const allSelected =
+    items.length > 0 && items.every((i) => selectedIds.has(i.id));
 
   return (
     <div className="flex w-[340px] shrink-0 flex-col border-r border-hairline bg-panel">
@@ -41,6 +72,54 @@ export function EntryList({
           <PlusIcon className="h-5 w-5" />
         </button>
       </div>
+
+      {/* Bulk-action bar: appears once one or more items are checked. */}
+      {selectionActive && (
+        <div className="flex items-center gap-2 border-y border-hairline bg-fill/[0.03] px-3 py-2 text-[12px]">
+          <span className="font-semibold text-neutral-100">
+            {selCount} selected
+          </span>
+          <button
+            onClick={onSelectAll}
+            className="text-accent hover:underline"
+            title="Select or clear all items in this view"
+          >
+            {allSelected ? "Clear all" : "Select all"}
+          </button>
+          <button
+            onClick={onClearSelection}
+            className="text-neutral-400 hover:text-neutral-200"
+          >
+            Cancel
+          </button>
+          <div className="ml-auto flex items-center gap-1.5">
+            {isDeletedView ? (
+              <>
+                <button
+                  onClick={onBulkRestore}
+                  className="rounded-md border border-hairline px-2.5 py-1 text-neutral-200 hover:bg-fill/5"
+                >
+                  Restore
+                </button>
+                <button
+                  onClick={onBulkPurge}
+                  className="rounded-md border border-red-500/40 px-2.5 py-1 text-red-400 hover:bg-red-500/10"
+                >
+                  Delete Forever
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={onBulkDelete}
+                className="flex items-center gap-1.5 rounded-md border border-red-500/40 px-2.5 py-1 text-red-400 hover:bg-red-500/10"
+              >
+                <TrashIcon className="h-3.5 w-3.5" />
+                Delete
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto px-2 pb-2">
         {items.length === 0 ? (
@@ -56,6 +135,9 @@ export function EntryList({
                 isSel={section.item.id === selectedId}
                 onSelect={onSelect}
                 issuesById={issuesById}
+                checked={selectedIds.has(section.item.id)}
+                onToggleSelect={onToggleSelect}
+                selectionActive={selectionActive}
               />
             ) : (
               <div key={`host:${section.host}`} className="mt-1">
@@ -75,6 +157,9 @@ export function EntryList({
                       isSel={item.id === selectedId}
                       onSelect={onSelect}
                       issuesById={issuesById}
+                      checked={selectedIds.has(item.id)}
+                      onToggleSelect={onToggleSelect}
+                      selectionActive={selectionActive}
                     />
                   ))}
                 </div>
@@ -92,71 +177,106 @@ function Row({
   isSel,
   onSelect,
   issuesById,
+  checked,
+  onToggleSelect,
+  selectionActive,
 }: {
   item: ItemSummary;
   isSel: boolean;
   onSelect: (id: string) => void;
   issuesById?: Map<string, SecurityTag[]>;
+  checked: boolean;
+  onToggleSelect: (id: string) => void;
+  selectionActive: boolean;
 }) {
   return (
-    <button
-      onClick={() => onSelect(item.id)}
-      className={`flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors ${
+    <div
+      className={`group flex w-full items-center gap-1.5 rounded-lg pr-2 transition-colors ${
         isSel ? "bg-accent/90" : "hover:bg-fill/5"
       }`}
     >
-      <Tile letter={item.letter} seed={item.title || item.id} />
-      <div className="min-w-0 flex-1">
-        <div
-          className={`truncate text-[13px] font-semibold ${
-            isSel ? "text-white" : "text-neutral-100"
-          }`}
-        >
-          {item.title || "Untitled"}
-        </div>
-        {item.subtitle && (
-          <div
-            className={`truncate text-[12px] ${
-              isSel ? "text-white/80" : "text-neutral-500"
-            }`}
-          >
-            {item.subtitle}
-          </div>
-        )}
-        {(item.kind === "passkey" || (issuesById && issuesById.get(item.id))) && (
-          <div className="mt-1 flex flex-wrap gap-1">
-            {item.kind === "passkey" && (
-              <span
-                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                  isSel ? "bg-white/20 text-white" : "bg-accent/15 text-accent"
-                }`}
-              >
-                Passkey
-              </span>
-            )}
-            {(issuesById?.get(item.id) ?? []).map((tag) => (
-              <span
-                key={tag}
-                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                  isSel
-                    ? "bg-white/20 text-white"
-                    : "bg-amber-500/15 text-amber-400"
-                }`}
-              >
-                {ISSUE_LABEL[tag]}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-      <div
-        className={`flex items-center gap-1.5 ${
-          isSel ? "text-white/80" : "text-neutral-600"
+      {/* Checkbox: hidden until row hover, forced visible once a selection is
+          active or this row is checked. Stops propagation so ticking a box
+          never changes the detail-pane selection. */}
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggleSelect(item.id);
+        }}
+        title={checked ? "Deselect" : "Select"}
+        aria-pressed={checked}
+        className={`ml-1 flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[5px] border transition ${
+          checked
+            ? "border-accent bg-accent text-white"
+            : isSel
+              ? "border-white/60 text-white"
+              : "border-neutral-600 text-transparent"
+        } ${
+          checked || selectionActive
+            ? "opacity-100"
+            : "opacity-0 group-hover:opacity-100"
         }`}
       >
-        {item.hasTotp && <ClockIcon className="h-4 w-4" />}
-        {item.kind === "passkey" && <PasskeyIcon className="h-4 w-4" />}
-      </div>
-    </button>
+        {checked && <CheckMark />}
+      </button>
+
+      <button
+        onClick={() => onSelect(item.id)}
+        className="flex min-w-0 flex-1 items-center gap-3 py-2 text-left"
+      >
+        <Tile letter={item.letter} seed={item.title || item.id} />
+        <div className="min-w-0 flex-1">
+          <div
+            className={`truncate text-[13px] font-semibold ${
+              isSel ? "text-white" : "text-neutral-100"
+            }`}
+          >
+            {item.title || "Untitled"}
+          </div>
+          {item.subtitle && (
+            <div
+              className={`truncate text-[12px] ${
+                isSel ? "text-white/80" : "text-neutral-500"
+              }`}
+            >
+              {item.subtitle}
+            </div>
+          )}
+          {(item.kind === "passkey" || (issuesById && issuesById.get(item.id))) && (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {item.kind === "passkey" && (
+                <span
+                  className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                    isSel ? "bg-white/20 text-white" : "bg-accent/15 text-accent"
+                  }`}
+                >
+                  Passkey
+                </span>
+              )}
+              {(issuesById?.get(item.id) ?? []).map((tag) => (
+                <span
+                  key={tag}
+                  className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                    isSel
+                      ? "bg-white/20 text-white"
+                      : "bg-amber-500/15 text-amber-400"
+                  }`}
+                >
+                  {ISSUE_LABEL[tag]}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+        <div
+          className={`flex items-center gap-1.5 ${
+            isSel ? "text-white/80" : "text-neutral-600"
+          }`}
+        >
+          {item.hasTotp && <ClockIcon className="h-4 w-4" />}
+          {item.kind === "passkey" && <PasskeyIcon className="h-4 w-4" />}
+        </div>
+      </button>
+    </div>
   );
 }

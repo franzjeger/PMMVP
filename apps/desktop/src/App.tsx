@@ -50,6 +50,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [consent, setConsent] = useState<FillConsent | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const loadItems = useCallback(async () => {
     try {
@@ -91,6 +92,7 @@ export default function App() {
     const pending: Promise<UnlistenFn>[] = [
       onVaultLocked(() => {
         setSelectedId(null);
+        setSelectedIds(new Set());
         setDetail(null);
         setItems([]);
         setSecurity([]);
@@ -174,6 +176,48 @@ export default function App() {
         i.subtitle.toLowerCase().includes(q),
     );
   }, [items, category, search, issuesById]);
+
+  // ---- multi-select (bulk restore / delete) --------------------------------
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  // Header checkbox: select every visible item, or clear if all already picked.
+  const selectAllVisible = useCallback(() => {
+    setSelectedIds((prev) =>
+      prev.size >= visible.length && visible.every((i) => prev.has(i.id))
+        ? new Set()
+        : new Set(visible.map((i) => i.id)),
+    );
+  }, [visible]);
+
+  // Run a per-item action over the current selection, in small parallel
+  // batches so hundreds of items don't fire hundreds of IPC calls at once.
+  const runBulk = useCallback(
+    async (fn: (id: string) => Promise<void>, verb: string) => {
+      const ids = [...selectedIds];
+      if (ids.length === 0) return;
+      let ok = 0;
+      const CHUNK = 20;
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        const results = await Promise.allSettled(
+          ids.slice(i, i + CHUNK).map((id) => fn(id)),
+        );
+        ok += results.filter((r) => r.status === "fulfilled").length;
+      }
+      await loadItems();
+      clearSelection();
+      setToast(`${verb} ${ok} item${ok === 1 ? "" : "s"}`);
+    },
+    [selectedIds, loadItems, clearSelection],
+  );
 
   // Keep a sensible selection as the visible list changes. Pick the item the
   // list actually renders first (grouped + sorted order), not backend order.
@@ -264,6 +308,7 @@ export default function App() {
           onSelect={(c) => {
             setCategory(c);
             setSelectedId(null);
+            clearSelection();
           }}
           search={search}
           onSearch={setSearch}
@@ -278,6 +323,23 @@ export default function App() {
           onAdd={() => setEditing({ id: null })}
           emptyHint={emptyHint}
           issuesById={category === "security" ? issuesById : undefined}
+          selectedIds={selectedIds}
+          onToggleSelect={toggleSelect}
+          onSelectAll={selectAllVisible}
+          onClearSelection={clearSelection}
+          isDeletedView={category === "deleted"}
+          onBulkDelete={() => void runBulk(api.deleteItem, "Deleted")}
+          onBulkRestore={() => void runBulk(api.restoreItem, "Restored")}
+          onBulkPurge={() => {
+            if (
+              confirm(
+                `Permanently delete ${selectedIds.size} item${
+                  selectedIds.size === 1 ? "" : "s"
+                }? This cannot be undone.`,
+              )
+            )
+              void runBulk(api.purgeItem, "Permanently deleted");
+          }}
         />
         {detail ? (
           <DetailPane
