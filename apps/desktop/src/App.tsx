@@ -222,7 +222,13 @@ export default function App() {
       }
       await loadItems();
       clearSelection();
-      setToast(`${verb} ${ok} item${ok === 1 ? "" : "s"}`);
+      // Surface partial failures instead of silently under-reporting.
+      const failed = ids.length - ok;
+      setToast(
+        failed > 0
+          ? `${verb} ${ok} of ${ids.length} (${failed} failed)`
+          : `${verb} ${ok} item${ok === 1 ? "" : "s"}`,
+      );
     },
     [selectedIds, loadItems, clearSelection],
   );
@@ -319,7 +325,14 @@ export default function App() {
             clearSelection();
           }}
           search={search}
-          onSearch={setSearch}
+          // Clear the multi-selection when the search narrows/changes, so a
+          // bulk action can never hit items scrolled out of view by a filter
+          // (the confirm count and the acted-on set would otherwise diverge —
+          // irreversible for a Trash purge). Mirrors the category switch above.
+          onSearch={(q) => {
+            setSearch(q);
+            if (selectedIds.size) clearSelection();
+          }}
           onLock={handleLock}
           onOpenSettings={() => setSettingsOpen(true)}
         />

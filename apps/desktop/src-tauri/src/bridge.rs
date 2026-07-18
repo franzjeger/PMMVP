@@ -46,6 +46,17 @@ const CONSENT_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Default)]
 pub struct PendingConsents(pub Mutex<HashMap<String, Sender<bool>>>);
 
+/// Pending passkey user-verification requests, keyed by request id. Kept in a
+/// SEPARATE map from [`PendingConsents`] on purpose: an autofill consent is a
+/// presence-only Allow/Deny (resolved by `resolve_autofill_consent` with no
+/// password check), whereas a passkey verification may only be satisfied `true`
+/// after `verify_passkey_approval` has checked the master password. Sharing one
+/// map would let a presence-only resolver set the WebAuthn UV flag without any
+/// verification. Only `resolve_verification` (from the password-checked command,
+/// or a cancel that always sends `false`) drains this map.
+#[derive(Default)]
+pub struct PendingVerifications(pub Mutex<HashMap<String, Sender<bool>>>);
+
 /// What the user is being asked to approve for a single fill.
 pub struct ConsentContext {
     pub site: String,
@@ -850,7 +861,9 @@ fn request_passkey_verification(app: &AppHandle, rp_id: &str) -> Option<bool> {
     let verify_id = Uuid::new_v4().simple().to_string();
     let (tx, rx) = std::sync::mpsc::channel::<bool>();
     {
-        let pending = app.state::<PendingConsents>();
+        // Dedicated verification map — never the shared consent map — so only a
+        // password-checked resolve can satisfy this `true`.
+        let pending = app.state::<PendingVerifications>();
         let Ok(mut map) = pending.0.lock() else {
             return None;
         };
@@ -865,7 +878,7 @@ fn request_passkey_verification(app: &AppHandle, rp_id: &str) -> Option<bool> {
         let _ = win.set_focus();
     }
     let verified = rx.recv_timeout(CONSENT_TIMEOUT).unwrap_or(false);
-    if let Ok(mut map) = app.state::<PendingConsents>().0.lock() {
+    if let Ok(mut map) = app.state::<PendingVerifications>().0.lock() {
         map.remove(&verify_id);
     }
     verified.then_some(true)
@@ -909,6 +922,18 @@ fn request_consent(app: &AppHandle, ctx: &ConsentContext) -> bool {
 /// Deliver a user's Allow/Deny decision to the parked bridge thread.
 pub fn resolve_consent(app: &AppHandle, id: &str, approved: bool) {
     if let Ok(mut map) = app.state::<PendingConsents>().0.lock() {
+        if let Some(tx) = map.remove(id) {
+            let _ = tx.send(approved);
+        }
+    }
+}
+
+/// Resolve a pending passkey user-verification. Called only from the
+/// password-checked `verify_passkey_approval` command (with `true`) and the
+/// `cancel_passkey_verification` command (always `false`), so the presence-only
+/// autofill-consent path can never set UV=1.
+pub fn resolve_verification(app: &AppHandle, id: &str, approved: bool) {
+    if let Ok(mut map) = app.state::<PendingVerifications>().0.lock() {
         if let Some(tx) = map.remove(id) {
             let _ = tx.send(approved);
         }

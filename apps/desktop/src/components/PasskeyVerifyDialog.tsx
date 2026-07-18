@@ -22,7 +22,7 @@ export function PasskeyVerifyDialog({
   const [error, setError] = useState<string | null>(null);
 
   const cancel = () => {
-    api.resolveAutofillConsent(request.id, false).catch(() => {});
+    api.cancelPasskeyVerification(request.id).catch(() => {});
     onResolved();
   };
 

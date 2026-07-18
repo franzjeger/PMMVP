@@ -196,6 +196,12 @@ export const api = {
   verifyPasskeyApproval: (id: string, masterPassword: string) =>
     invoke<boolean>("verify_passkey_approval", { id, masterPassword }),
 
+  /** Cancel a pending passkey verification (user dismissed the dialog). Uses a
+   *  dedicated command — NOT resolveAutofillConsent — so the passkey UV channel
+   *  is never touched by the presence-only consent path. */
+  cancelPasskeyVerification: (id: string) =>
+    invoke<void>("cancel_passkey_verification", { id }),
+
   openExternal: (url: string) => openUrl(url),
 
   /**
@@ -278,7 +284,7 @@ export function onFillConsentRequest(
 /**
  * Fired (Windows/Linux) when a passkey ceremony needs user verification. Show a
  * master-password prompt and answer with `api.verifyPasskeyApproval(id, pw)`;
- * cancel with `api.resolveAutofillConsent(id, false)`.
+ * cancel with `api.cancelPasskeyVerification(id)`.
  */
 export function onPasskeyVerifyRequest(
   cb: (req: PasskeyVerifyRequest) => void,

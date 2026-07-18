@@ -479,9 +479,19 @@ pub fn verify_passkey_approval(
         vault.verify_master_password(&master_password)
     };
     if ok {
-        crate::bridge::resolve_consent(&app, &id, true);
+        // Dedicated verification channel: only this password-checked path (or a
+        // cancel, always `false`) can resolve it, so UV=1 can never be set by
+        // the presence-only autofill-consent resolver.
+        crate::bridge::resolve_verification(&app, &id, true);
     }
     Ok(ok)
+}
+
+/// Cancel a pending passkey user-verification (the user dismissed the dialog).
+/// Always resolves the parked ceremony as denied.
+#[tauri::command]
+pub fn cancel_passkey_verification(app: tauri::AppHandle, id: String) {
+    crate::bridge::resolve_verification(&app, &id, false);
 }
 
 #[tauri::command]
