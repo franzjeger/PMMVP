@@ -1205,7 +1205,7 @@ pub fn ssh_agent_info(app: tauri::AppHandle) -> SshAgentInfo {
     let path = crate::agent::socket_path(&app);
     let socket = path.to_string_lossy().to_string();
     SshAgentInfo {
-        available: cfg!(unix) && !socket.is_empty(),
+        available: cfg!(any(unix, windows)) && !socket.is_empty(),
         socket,
     }
 }

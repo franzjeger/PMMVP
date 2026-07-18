@@ -458,31 +458,60 @@ function SshDetail({ id, onCopy }: { id: string; onCopy: (m: string) => void }) 
         </div>
       </Row>
 
-      {agent?.available && (
-        <Row label="Agent">
-          <div className="flex flex-col gap-1.5">
-            <p className="text-[12px] leading-relaxed text-neutral-500">
-              Point ssh/git at Arca's agent, then this key signs without the
-              private key ever leaving the vault (unlock Arca first):
-            </p>
-            <div className="flex items-center justify-between gap-2 rounded-lg bg-fill/5 px-3 py-2 ring-1 ring-line/10">
-              <code className="min-w-0 break-all font-mono text-[12px] text-neutral-200">
-                export SSH_AUTH_SOCK="{agent.socket}"
-              </code>
-              <IconButton
-                title="Copy"
-                onClick={() =>
-                  api
-                    .copyToClipboard(`export SSH_AUTH_SOCK="${agent.socket}"`)
-                    .then(() => onCopy("Command copied"))
-                }
-              >
-                <CopyIcon className="h-4 w-4" />
-              </IconButton>
+      {agent?.available &&
+        (agent.socket.startsWith("\\\\.\\pipe") ? (
+          <Row label="Agent">
+            <div className="flex flex-col gap-1.5">
+              <p className="text-[12px] leading-relaxed text-neutral-500">
+                Windows OpenSSH (ssh / git) uses Arca's agent automatically — no
+                setup — as long as Arca is unlocked. If keys don't appear, stop
+                the built-in agent so Arca can own the pipe:
+              </p>
+              <div className="flex items-center justify-between gap-2 rounded-lg bg-fill/5 px-3 py-2 ring-1 ring-line/10">
+                <code className="min-w-0 break-all font-mono text-[12px] text-neutral-200">
+                  Stop-Service ssh-agent; Set-Service ssh-agent -StartupType
+                  Disabled
+                </code>
+                <IconButton
+                  title="Copy"
+                  onClick={() =>
+                    api
+                      .copyToClipboard(
+                        "Stop-Service ssh-agent; Set-Service ssh-agent -StartupType Disabled",
+                      )
+                      .then(() => onCopy("Command copied"))
+                  }
+                >
+                  <CopyIcon className="h-4 w-4" />
+                </IconButton>
+              </div>
             </div>
-          </div>
-        </Row>
-      )}
+          </Row>
+        ) : (
+          <Row label="Agent">
+            <div className="flex flex-col gap-1.5">
+              <p className="text-[12px] leading-relaxed text-neutral-500">
+                Point ssh/git at Arca's agent, then this key signs without the
+                private key ever leaving the vault (unlock Arca first):
+              </p>
+              <div className="flex items-center justify-between gap-2 rounded-lg bg-fill/5 px-3 py-2 ring-1 ring-line/10">
+                <code className="min-w-0 break-all font-mono text-[12px] text-neutral-200">
+                  export SSH_AUTH_SOCK="{agent.socket}"
+                </code>
+                <IconButton
+                  title="Copy"
+                  onClick={() =>
+                    api
+                      .copyToClipboard(`export SSH_AUTH_SOCK="${agent.socket}"`)
+                      .then(() => onCopy("Command copied"))
+                  }
+                >
+                  <CopyIcon className="h-4 w-4" />
+                </IconButton>
+              </div>
+            </div>
+          </Row>
+        ))}
     </>
   );
 }
