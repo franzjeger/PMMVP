@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![forbid(unsafe_code)]
 
+mod agent;
 mod biometric;
 mod bridge;
 mod clipboard;
@@ -109,6 +110,9 @@ fn main() {
                 eprintln!("autofill bridge unavailable: {e}");
             }
 
+            // ssh-agent: expose vault SSH keys to ssh/git (Unix socket).
+            agent::start(app.handle().clone());
+
             // Background idle-timeout auto-lock.
             let handle = app.handle().clone();
             std::thread::spawn(move || idle_watcher(handle));
@@ -166,6 +170,9 @@ fn main() {
             commands::upsert_item,
             commands::upsert_wifi,
             commands::wifi_qr,
+            commands::generate_ssh_key,
+            commands::ssh_public_key,
+            commands::ssh_agent_info,
             commands::delete_item,
             commands::restore_item,
             commands::purge_item,

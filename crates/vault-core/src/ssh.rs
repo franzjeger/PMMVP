@@ -144,6 +144,13 @@ pub fn authorized_key(private_seed: &[u8], comment: &str) -> Result<String> {
     authorized_key_line(&public_blob(private_seed)?, comment)
 }
 
+/// A ready-to-paste `authorized_keys` line from a public-key blob (no secret
+/// needed — used to display a stored key's public half). Errors if the comment
+/// contains control characters (see [`authorized_key_line`]).
+pub fn authorized_key_from_blob(public_blob: &[u8], comment: &str) -> Result<String> {
+    authorized_key_line(public_blob, comment)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

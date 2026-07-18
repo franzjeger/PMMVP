@@ -69,6 +69,17 @@ export interface WifiInput {
   notes: string;
 }
 
+export interface SshPublicKey {
+  authorizedKey: string;
+  fingerprint: string;
+  comment: string;
+}
+
+export interface SshAgentInfo {
+  socket: string;
+  available: boolean;
+}
+
 export type PasswordStrength = "weak" | "fair" | "strong";
 
 export type SecurityTag = "weak" | "reused";
@@ -193,6 +204,10 @@ export const api = {
   /** SVG string of a "join this network" QR code (passphrase encoded in Rust,
    *  never crossing to the webview as readable text). */
   wifiQr: (id: string) => invoke<string>("wifi_qr", { id }),
+  generateSshKey: (comment: string) =>
+    invoke<string>("generate_ssh_key", { comment }),
+  sshPublicKey: (id: string) => invoke<SshPublicKey>("ssh_public_key", { id }),
+  sshAgentInfo: () => invoke<SshAgentInfo>("ssh_agent_info"),
   deleteItem: (id: string) => invoke<void>("delete_item", { id }),
   restoreItem: (id: string) => invoke<void>("restore_item", { id }),
   purgeItem: (id: string) => invoke<void>("purge_item", { id }),

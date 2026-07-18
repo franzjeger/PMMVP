@@ -13,6 +13,23 @@ const base = (className?: string) => ({
   strokeLinejoin: "round" as const,
 });
 
+export const SshIcon = ({ className }: P) => (
+  <svg
+    className={className}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="m7 9 3 3-3 3" />
+    <path d="M13 15h4" />
+  </svg>
+);
+
 export const KeyIcon = ({ className }: P) => (
   <svg {...base(className)}>
     <circle cx="8" cy="15" r="4" />

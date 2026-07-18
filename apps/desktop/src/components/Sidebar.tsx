@@ -8,6 +8,7 @@ import {
   PasskeyIcon,
   SearchIcon,
   ShieldIcon,
+  SshIcon,
   TrashIcon,
   WifiIcon,
 } from "./icons";
@@ -17,6 +18,7 @@ const ICONS: Record<CategoryId, ComponentType<{ className?: string }>> = {
   passkeys: PasskeyIcon,
   codes: ClockIcon,
   wifi: WifiIcon,
+  sshKeys: SshIcon,
   security: ShieldIcon,
   deleted: TrashIcon,
 };

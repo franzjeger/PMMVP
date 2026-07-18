@@ -1129,6 +1129,87 @@ pub fn wifi_qr(state: St<'_>, id: String) -> Result<String, CmdError> {
     Ok(svg)
 }
 
+/// Generate a fresh Ed25519 SSH key inside the vault. The private seed never
+/// leaves; only the public identity is derived for display / authorized_keys.
+#[tauri::command]
+pub fn generate_ssh_key(state: St<'_>, comment: String) -> Result<String, CmdError> {
+    let new_key =
+        vault_core::ssh::generate(&comment).map_err(|_| CmdError::new("ssh", "Bad comment."))?;
+    let mut st = guard(state.inner())?;
+    st.touch();
+    let title = if comment.trim().is_empty() {
+        "SSH key".to_string()
+    } else {
+        comment.trim().to_string()
+    };
+    let data = VaultItem::SshKey {
+        title,
+        comment: comment.trim().to_string(),
+        key_type: vault_core::ssh::ALGORITHM.to_string(),
+        public_key: new_key.public_blob,
+        private_key: new_key.private_key.to_vec(),
+        fingerprint: new_key.fingerprint,
+    };
+    let item = Item::new(data, now_millis());
+    let id = item.id;
+    st.vault_mut()?.upsert_item(item)?;
+    persist(&mut st)?;
+    Ok(id.to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshPublicKey {
+    /// Ready-to-paste `authorized_keys` line.
+    pub authorized_key: String,
+    /// OpenSSH SHA-256 fingerprint.
+    pub fingerprint: String,
+    pub comment: String,
+}
+
+/// The non-secret public material of an SSH key (for display / copy).
+#[tauri::command]
+pub fn ssh_public_key(state: St<'_>, id: String) -> Result<SshPublicKey, CmdError> {
+    let st = guard(state.inner())?;
+    let item = st.vault()?.get_item(parse_id(&id)?)?;
+    let VaultItem::SshKey {
+        public_key,
+        comment,
+        fingerprint,
+        ..
+    } = &item.data
+    else {
+        return Err(CmdError::new("not_ssh", "This item is not an SSH key."));
+    };
+    let authorized_key = vault_core::ssh::authorized_key_from_blob(public_key, comment)
+        .map_err(|_| CmdError::new("ssh", "Could not render the public key."))?;
+    Ok(SshPublicKey {
+        authorized_key,
+        fingerprint: fingerprint.clone(),
+        comment: comment.clone(),
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshAgentInfo {
+    /// The agent's Unix-socket path (empty on platforms without it yet).
+    pub socket: String,
+    /// True where the ssh-agent transport is implemented (Unix today).
+    pub available: bool,
+}
+
+/// Where the ssh-agent listens, for the "export SSH_AUTH_SOCK=..." hint.
+#[tauri::command]
+pub fn ssh_agent_info(app: tauri::AppHandle) -> SshAgentInfo {
+    let path = crate::agent::socket_path(&app);
+    let socket = path.to_string_lossy().to_string();
+    SshAgentInfo {
+        available: cfg!(unix) && !socket.is_empty(),
+        socket,
+    }
+}
+
 #[tauri::command]
 pub fn delete_item(state: St<'_>, id: String) -> Result<(), CmdError> {
     do_delete_item(state.inner(), &id)

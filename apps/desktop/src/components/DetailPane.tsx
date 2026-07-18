@@ -133,12 +133,15 @@ export function DetailPane({
             </button>
           </div>
         ) : (
-          <button
-            onClick={onEdit}
-            className="rounded-lg border border-hairline px-4 py-1 text-[13px] font-medium text-neutral-200 hover:bg-fill/5"
-          >
-            Edit
-          </button>
+          // SSH keys are create-only (the private key can't change), so no Edit.
+          detail.kind !== "sshKey" && (
+            <button
+              onClick={onEdit}
+              className="rounded-lg border border-hairline px-4 py-1 text-[13px] font-medium text-neutral-200 hover:bg-fill/5"
+            >
+              Edit
+            </button>
+          )
         )}
       </div>
 
@@ -312,13 +315,17 @@ export function DetailPane({
           </>
         )}
 
-        {detail.kind !== "login" && detail.kind !== "wifi" && (
-          <Row label="Type">
-            <span className="text-neutral-400">
-              {detail.kind} — viewing/editing arrives in a later phase.
-            </span>
-          </Row>
-        )}
+        {detail.kind === "sshKey" && <SshDetail id={detail.id} onCopy={onCopy} />}
+
+        {detail.kind !== "login" &&
+          detail.kind !== "wifi" &&
+          detail.kind !== "sshKey" && (
+            <Row label="Type">
+              <span className="text-neutral-400">
+                {detail.kind} — viewing/editing arrives in a later phase.
+              </span>
+            </Row>
+          )}
       </div>
 
       <div className="mt-4 flex items-center justify-between px-8 pb-8 text-[12px] text-neutral-600">
@@ -394,5 +401,88 @@ function WifiQr({ id, onError }: { id: string; onError: (m: string) => void }) {
         Hide
       </button>
     </div>
+  );
+}
+
+/** SSH key detail: fingerprint, the ready-to-paste public key, and how to point
+ *  ssh/git at Arca's agent. Loads the (non-secret) public material on mount. */
+function SshDetail({ id, onCopy }: { id: string; onCopy: (m: string) => void }) {
+  const [pub, setPub] = useState<{
+    authorizedKey: string;
+    fingerprint: string;
+  } | null>(null);
+  const [agent, setAgent] = useState<{ socket: string; available: boolean } | null>(
+    null,
+  );
+
+  useEffect(() => {
+    let alive = true;
+    void api
+      .sshPublicKey(id)
+      .then((p) => alive && setPub(p))
+      .catch((e) => alive && onCopy(errorMessage(e)));
+    void api
+      .sshAgentInfo()
+      .then((a) => alive && setAgent(a))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [id, onCopy]);
+
+  return (
+    <>
+      <Row label="Fingerprint">
+        <span className="truncate font-mono text-[13px]">
+          {pub?.fingerprint ?? "…"}
+        </span>
+      </Row>
+
+      <Row label="Public key">
+        <div className="flex items-start justify-between gap-2">
+          <span className="min-w-0 break-all font-mono text-[12px] text-neutral-300">
+            {pub?.authorizedKey ?? "…"}
+          </span>
+          {pub && (
+            <IconButton
+              title="Copy public key (authorized_keys line)"
+              onClick={() =>
+                api
+                  .copyToClipboard(pub.authorizedKey)
+                  .then(() => onCopy("Public key copied"))
+              }
+            >
+              <CopyIcon className="h-4 w-4" />
+            </IconButton>
+          )}
+        </div>
+      </Row>
+
+      {agent?.available && (
+        <Row label="Agent">
+          <div className="flex flex-col gap-1.5">
+            <p className="text-[12px] leading-relaxed text-neutral-500">
+              Point ssh/git at Arca's agent, then this key signs without the
+              private key ever leaving the vault (unlock Arca first):
+            </p>
+            <div className="flex items-center justify-between gap-2 rounded-lg bg-fill/5 px-3 py-2 ring-1 ring-line/10">
+              <code className="min-w-0 break-all font-mono text-[12px] text-neutral-200">
+                export SSH_AUTH_SOCK="{agent.socket}"
+              </code>
+              <IconButton
+                title="Copy"
+                onClick={() =>
+                  api
+                    .copyToClipboard(`export SSH_AUTH_SOCK="${agent.socket}"`)
+                    .then(() => onCopy("Command copied"))
+                }
+              >
+                <CopyIcon className="h-4 w-4" />
+              </IconButton>
+            </div>
+          </div>
+        </Row>
+      )}
+    </>
   );
 }

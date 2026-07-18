@@ -35,6 +35,7 @@ import { DetailPane } from "./components/DetailPane";
 import { LockScreen } from "./components/LockScreen";
 import { EditDialog } from "./components/EditDialog";
 import { WifiEditDialog } from "./components/WifiEditDialog";
+import { SshKeyDialog } from "./components/SshKeyDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { ConsentDialog } from "./components/ConsentDialog";
 import { PasskeyVerifyDialog } from "./components/PasskeyVerifyDialog";
@@ -52,7 +53,7 @@ export default function App() {
   const [detail, setDetail] = useState<ItemDetail | null>(null);
   const [editing, setEditing] = useState<{
     id: string | null;
-    kind: "login" | "wifi";
+    kind: "login" | "wifi" | "ssh";
   } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [consent, setConsent] = useState<FillConsent | null>(null);
@@ -308,7 +309,9 @@ export default function App() {
   const emptyHint =
     category === "wifi"
       ? "No Wi-Fi networks yet — click + to add one."
-      : category === "security"
+      : category === "sshKeys"
+        ? "No SSH keys yet — click + to generate one."
+        : category === "security"
         ? "No weak or reused passwords. Nice."
         : category === "deleted"
           ? "Trash is empty."
@@ -348,7 +351,12 @@ export default function App() {
           onAdd={() =>
             setEditing({
               id: null,
-              kind: category === "wifi" ? "wifi" : "login",
+              kind:
+                category === "wifi"
+                  ? "wifi"
+                  : category === "sshKeys"
+                    ? "ssh"
+                    : "login",
             })
           }
           emptyHint={emptyHint}
@@ -398,7 +406,12 @@ export default function App() {
         />
       )}
       {editing &&
-        (editing.kind === "wifi" ? (
+        (editing.kind === "ssh" ? (
+          <SshKeyDialog
+            onClose={() => setEditing(null)}
+            onSaved={handleSaved}
+          />
+        ) : editing.kind === "wifi" ? (
           <WifiEditDialog
             itemId={editing.id}
             onClose={() => setEditing(null)}
