@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import type { ItemSummary, SecurityTag } from "../lib/api";
 import { buildSections } from "../lib/grouping";
 import {
@@ -15,6 +15,7 @@ import { Tile } from "./Tile";
 const ISSUE_LABEL: Record<SecurityTag, string> = {
   weak: "Weak",
   reused: "Reused",
+  breached: "Breached",
 };
 
 /** A small check glyph for the selection checkbox. */
@@ -33,6 +34,7 @@ export function EntryList({
   onSelect,
   onAdd,
   emptyHint,
+  banner,
   issuesById,
   selectedIds,
   onToggleSelect,
@@ -50,6 +52,8 @@ export function EntryList({
   onSelect: (id: string) => void;
   onAdd: () => void;
   emptyHint?: string;
+  /** Optional bar shown under the header (e.g. the Security "check breaches"). */
+  banner?: ReactNode;
   /** When present (Security view), renders issue badges per item. */
   issuesById?: Map<string, SecurityTag[]>;
   /** Ids currently checked for a bulk action. */
@@ -120,6 +124,8 @@ export function EntryList({
           <PlusIcon className="h-5 w-5" />
         </button>
       </div>
+
+      {banner}
 
       {/* Bulk-action bar: appears once one or more items are checked. */}
       {selectionActive && (
@@ -307,7 +313,9 @@ function Row({
                   className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
                     isSel
                       ? "bg-white/20 text-white"
-                      : "bg-amber-500/15 text-amber-400"
+                      : tag === "breached"
+                        ? "bg-red-500/15 text-red-400"
+                        : "bg-amber-500/15 text-amber-400"
                   }`}
                 >
                   {ISSUE_LABEL[tag]}

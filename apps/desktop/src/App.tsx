@@ -63,6 +63,8 @@ export default function App() {
   );
   const [toast, setToast] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [breaches, setBreaches] = useState<Map<string, number>>(new Map());
+  const [breachBusy, setBreachBusy] = useState(false);
 
   const loadItems = useCallback(async () => {
     try {
@@ -105,6 +107,7 @@ export default function App() {
       onVaultLocked(() => {
         setSelectedId(null);
         setSelectedIds(new Set());
+        setBreaches(new Map());
         setDetail(null);
         setItems([]);
         setSecurity([]);
@@ -161,9 +164,14 @@ export default function App() {
   // Map of item id -> security issue tags, for the Security view + badges.
   const issuesById = useMemo(() => {
     const m = new Map<string, SecurityTag[]>();
-    for (const s of security) m.set(s.id, s.issues);
+    for (const s of security) m.set(s.id, [...s.issues]);
+    for (const id of breaches.keys()) {
+      const tags = m.get(id) ?? [];
+      if (!tags.includes("breached")) tags.push("breached");
+      m.set(id, tags);
+    }
     return m;
-  }, [security]);
+  }, [security, breaches]);
 
   // Per-category counts shown in the sidebar.
   const counts = useMemo(() => {
@@ -193,6 +201,24 @@ export default function App() {
 
   // ---- multi-select (bulk restore / delete) --------------------------------
   const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+
+  // On-demand HaveIBeenPwned k-anonymity check over all login passwords.
+  const runBreachCheck = useCallback(async () => {
+    setBreachBusy(true);
+    try {
+      const hits = await api.checkBreaches();
+      setBreaches(new Map(hits.map((h) => [h.id, h.count])));
+      setToast(
+        hits.length
+          ? `${hits.length} password${hits.length === 1 ? "" : "s"} found in known breaches`
+          : "No breached passwords found",
+      );
+    } catch (e) {
+      setToast(errorMessage(e));
+    } finally {
+      setBreachBusy(false);
+    }
+  }, []);
 
   const toggleSelect = useCallback((id: string) => {
     setSelectedIds((prev) => {
@@ -351,6 +377,26 @@ export default function App() {
           items={visible}
           selectedId={selectedId}
           onSelect={setSelectedId}
+          banner={
+            category === "security" ? (
+              <div className="flex items-center gap-2 border-y border-hairline bg-fill/[0.03] px-3 py-2 text-[12px]">
+                <button
+                  onClick={() => void runBreachCheck()}
+                  disabled={breachBusy}
+                  className="rounded-md border border-hairline px-2.5 py-1 text-neutral-200 hover:bg-fill/5 disabled:opacity-50"
+                >
+                  {breachBusy
+                    ? "Checking breaches…"
+                    : breaches.size
+                      ? "Re-check breaches"
+                      : "Check passwords for breaches"}
+                </button>
+                <span className="text-neutral-500">
+                  via HaveIBeenPwned (only a hash prefix is sent)
+                </span>
+              </div>
+            ) : undefined
+          }
           onAdd={() =>
             setEditing({
               id: null,

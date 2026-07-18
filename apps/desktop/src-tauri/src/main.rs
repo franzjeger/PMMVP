@@ -179,6 +179,7 @@ fn main() {
             commands::purge_item,
             commands::current_totp,
             commands::security_report,
+            commands::check_breaches,
             commands::import_logins,
             commands::open_passwords_app,
             commands::generate,

@@ -756,6 +756,103 @@ fn do_get_item(state: &Mutex<AppState>, id: &str) -> Result<ItemDetailDto, CmdEr
     })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BreachHit {
+    pub id: String,
+    /// How many times the password appears in known breaches.
+    pub count: u64,
+}
+
+/// Check every login password against HaveIBeenPwned using k-anonymity: only the
+/// 5-char SHA-1 prefix leaves the device, never the password or its full hash.
+/// The password plaintext is touched only briefly under the state lock (to hash
+/// it); the network calls run afterward with just the hashes.
+#[tauri::command]
+pub async fn check_breaches(state: St<'_>) -> Result<Vec<BreachHit>, CmdError> {
+    // (id, prefix, suffix) for every login, computed under the lock.
+    let entries: Vec<(String, String, String)> = {
+        let st = guard(state.inner())?;
+        let vault = st.vault.as_ref().ok_or_else(CmdError::no_vault)?;
+        if !vault.is_unlocked() {
+            return Err(CmdError::new("locked", "Unlock the vault first."));
+        }
+        let mut out = Vec::new();
+        if let Ok(summaries) = vault.list_items(false) {
+            for s in summaries {
+                if let Ok(item) = vault.get_item(s.id) {
+                    if let VaultItem::Login { password, .. } = &item.data {
+                        if !password.is_empty() {
+                            let (p, suf) = vault_core::breach::prefix_suffix(password);
+                            out.push((item.id.to_string(), p, suf));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    };
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::collections::HashMap;
+        const WORKERS: usize = 8;
+        let chunk = entries.len().div_ceil(WORKERS).max(1);
+        let mut handles = Vec::new();
+        for part in entries.chunks(chunk).map(<[_]>::to_vec) {
+            handles.push(std::thread::spawn(move || {
+                let client = match reqwest::blocking::Client::builder()
+                    .timeout(std::time::Duration::from_secs(20))
+                    .build()
+                {
+                    Ok(c) => c,
+                    Err(_) => return Vec::new(),
+                };
+                // Cache range bodies within this worker to skip repeat fetches.
+                let mut ranges: HashMap<String, String> = HashMap::new();
+                let mut hits = Vec::new();
+                for (id, prefix, suffix) in part {
+                    let body = match ranges.get(&prefix) {
+                        Some(b) => b.clone(),
+                        None => {
+                            // `Add-Padding` makes every response a uniform size,
+                            // so an on-path observer can't infer the prefix.
+                            let fetched = client
+                                .get(format!("https://api.pwnedpasswords.com/range/{prefix}"))
+                                .header("Add-Padding", "true")
+                                .send()
+                                .and_then(reqwest::blocking::Response::text)
+                                .ok();
+                            match fetched {
+                                Some(b) => {
+                                    ranges.insert(prefix.clone(), b.clone());
+                                    b
+                                }
+                                None => continue, // network hiccup: skip this one
+                            }
+                        }
+                    };
+                    if let Some(count) = vault_core::breach::count_in_range(&suffix, &body) {
+                        hits.push(BreachHit { id, count });
+                    }
+                }
+                hits
+            }));
+        }
+        let mut all = Vec::new();
+        for h in handles {
+            if let Ok(hits) = h.join() {
+                all.extend(hits);
+            }
+        }
+        Ok(all)
+    })
+    .await
+    .map_err(|_| CmdError::new("internal", "breach-check task failed"))?
+}
+
 /// Password-health audit (weak/reused) over the active login items.
 #[tauri::command]
 pub fn security_report(state: St<'_>) -> Result<Vec<SecurityIssueDto>, CmdError> {

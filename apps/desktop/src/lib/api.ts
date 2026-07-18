@@ -88,7 +88,12 @@ export interface SshAgentInfo {
 
 export type PasswordStrength = "weak" | "fair" | "strong";
 
-export type SecurityTag = "weak" | "reused";
+export type SecurityTag = "weak" | "reused" | "breached";
+
+export interface BreachHit {
+  id: string;
+  count: number;
+}
 
 export interface SecurityIssue {
   id: string;
@@ -224,6 +229,7 @@ export const api = {
 
   currentTotp: (id: string) => invoke<Totp>("current_totp", { id }),
   securityReport: () => invoke<SecurityIssue[]>("security_report"),
+  checkBreaches: () => invoke<BreachHit[]>("check_breaches"),
   generate: (options: PasswordOptions) => invoke<string>("generate", { options }),
 
   importLogins: (path: string) => invoke<ImportSummary>("import_logins", { path }),
