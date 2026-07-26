@@ -22,17 +22,17 @@ failed=0
 total=0
 
 build() {
-    local dir="$1" scheme="$2" destination="$3"
+    local dir="$1" scheme="$2" destination="$3" action="$4"
     local log="$LOGS/$scheme.log" diag="$LOGS/$scheme.diag"
     local status=0 count
 
-    echo "==> $scheme ($destination)"
+    echo "==> $scheme ($destination) [$action]"
     # No -quiet: the full log is wanted in the file. Only the filtered lines and
     # the count are printed, so the console stays readable either way.
     ( cd "$ROOT/$dir" \
         && xcodegen generate \
         && xcodebuild -scheme "$scheme" -destination "$destination" \
-            CODE_SIGNING_ALLOWED=NO -derivedDataPath build build ) \
+            CODE_SIGNING_ALLOWED=NO -derivedDataPath build "$action" ) \
         > "$log" 2>&1 || status=$?
 
     # A compiler diagnostic is  /path/To/File.swift:12:5: warning: message
@@ -47,15 +47,19 @@ build() {
     fi
 
     if [ "$status" -ne 0 ]; then
-        echo "    BUILD FAILED (exit $status). Last 60 lines:"
+        echo "    $action FAILED (exit $status). Last 60 lines:"
         tail -60 "$log" | sed 's/^/    /'
         failed=1
     fi
     return 0
 }
 
-build apps/macos ArcaHost "platform=macOS"
-build apps/ios   Arca     "generic/platform=iOS Simulator"
+# macOS runs `test`: the ArcaHost scheme carries ArcaBridgeTests, and `test`
+# builds everything `build` would first. iOS only builds — a generic simulator
+# destination cannot run tests, and the tests are of the shared bridge anyway,
+# which the macOS target compiles from the same file.
+build apps/macos ArcaHost "platform=macOS"                     test
+build apps/ios   Arca     "generic/platform=iOS Simulator"     build
 
 echo
 echo "==> $total compiler diagnostics across both schemes"

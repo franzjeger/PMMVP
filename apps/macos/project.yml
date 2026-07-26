@@ -70,6 +70,11 @@ targets:
   ArcaHost:
     type: application
     platform: macOS
+    scheme:
+      # Attached here rather than given its own scheme, so `xcodebuild test
+      # -scheme ArcaHost` both builds the app and runs the bridge tests.
+      testTargets:
+        - ArcaBridgeTests
     sources:
       - ArcaHost
       # The Swift/Rust bridge is platform-agnostic and shared with apps/ios.
@@ -101,5 +106,25 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: no.sybr.vault.autofill-host.autofill
         INFOPLIST_FILE: ArcaAutoFill/Info.plist
         CODE_SIGN_ENTITLEMENTS: ArcaAutoFill/ArcaAutoFill.entitlements
+    preBuildScripts:
+      - *buildFfi
+
+  # The repository's first Swift tests. Standalone — no host application —
+  # because everything they touch is pure logic or a C ABI call that needs no
+  # vault, no keychain and no user. It links vault-ffi like the other targets,
+  # which is what lets it check the ABI version against the real library.
+  ArcaBridgeTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: ../apple-shared/VaultBridge.swift
+        group: Shared
+      - path: ../apple-shared/VaultBridgeTests.swift
+        group: Shared
+    settings:
+      base:
+        PRODUCT_NAME: ArcaBridgeTests
+        PRODUCT_BUNDLE_IDENTIFIER: no.sybr.vault.bridge-tests
+        GENERATE_INFOPLIST_FILE: "YES"
     preBuildScripts:
       - *buildFfi
