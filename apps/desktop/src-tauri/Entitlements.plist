@@ -1,9 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- macOS entitlements for the Tauri Arca app. Shares the vault + device key
-     with the AutoFill extension:
-     - application-groups: the shared container holding the encrypted vault file.
-     - keychain-access-groups: the shared group holding the device key. The team
-       prefix is written literally (raw codesign does not substitute the Xcode
+<!-- DEV-ONLY entitlements, applied by scripts/install-app-macos.sh when it
+     re-signs a locally installed build. They are deliberately NOT in
+     tauri.conf.json, so a plain `tauri build` produces a bundle that can be
+     Developer ID signed and notarized: these are RESTRICTED entitlements, and
+     macOS (AMFI) kills an app that carries them without a provisioning profile
+     that authorizes them.
+
+     Their only remaining job is reading the App Group container to migrate a
+     vault left there by the shelved AutoFill work back into app data (see
+     resolve_vault_path). Once that migration has run everywhere, this file and
+     the dev-signing path can go.
+
+     - application-groups: the shared container that briefly held the vault.
+     - keychain-access-groups: the shared group for the device key. The team
+       prefix is literal (raw codesign does not substitute the Xcode
        $(AppIdentifierPrefix) variable the extension uses); both resolve to
        LY6LJ395B8.no.sybr.vault.shared. -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
