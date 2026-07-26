@@ -17,6 +17,7 @@ it is platform-agnostic and [`apps/ios`](../ios/) links the same file.
 |--------|------|---------|
 | `ArcaHost` | app | Dev/debug **container** for the extension, plus a screen that publishes the vault's logins to `ASCredentialIdentityStore`. The shipping container will be the Tauri `Arca.app` (the `.appex` gets injected there before release); this host is a harness. |
 | `ArcaAutoFill` | app-extension | The `ASCredentialProviderViewController` the OS loads. `ProvidesPasswords = true`. |
+| `ArcaBridgeTests` | unit-test | The repo's only Swift tests, over the shared bridge. Attached to the `ArcaHost` scheme, so `xcodebuild test -scheme ArcaHost` runs them; CI does. |
 
 ## Two invariants that are easy to break
 
@@ -35,10 +36,11 @@ it is platform-agnostic and [`apps/ios`](../ios/) links the same file.
   "Reinstall Arca"; bumping neither, after a signature change, is worse — the
   wrong bytes get filled into someone's login form.
 
-  Nothing enforces this one: there is no Swift test target. The *other* half of
-  the same contract is enforced — `cargo test -p vault-ffi` checks that
+  Both halves are now enforced. `ArcaBridgeTests` asserts
+  `VaultShared.requiredAbiVersion == vault_ffi_abi_version()` against the
+  actually-linked library, and `cargo test -p vault-ffi` checks that
   `include/vault_ffi.h` names the current `ABI_VERSION` and declares every
-  exported symbol, because that header sat claiming v2 for a v3 library.
+  exported symbol — that header sat claiming v2 for a v3 library.
 
 ## Status — M2
 
