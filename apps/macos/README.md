@@ -15,7 +15,7 @@ it is platform-agnostic and [`apps/ios`](../ios/) links the same file.
 
 | Target | Type | Purpose |
 |--------|------|---------|
-| `ArcaHost` | app | Dev/debug **container** for the extension + a screen to register a test identity. The shipping container will be the Tauri `Arca.app` (the `.appex` gets injected there before release); this host is a harness. |
+| `ArcaHost` | app | Dev/debug **container** for the extension, plus a screen that publishes the vault's logins to `ASCredentialIdentityStore`. The shipping container will be the Tauri `Arca.app` (the `.appex` gets injected there before release); this host is a harness. |
 | `ArcaAutoFill` | app-extension | The `ASCredentialProviderViewController` the OS loads. `ProvidesPasswords = true`. |
 
 ## Two invariants that are easy to break
@@ -40,18 +40,22 @@ it is platform-agnostic and [`apps/ios`](../ios/) links the same file.
   `include/vault_ffi.h` names the current `ABI_VERSION` and declares every
   exported symbol, because that header sat claiming v2 for a v3 library.
 
-## Status — M1 (this commit)
+## Status — M2
 
-Skeleton that proves the OS integration end to end, **no vault yet**:
+The extension fills real passwords. There is no placeholder credential left:
 
-- Extension serves ONE hardcoded credential (`arca-test` / a placeholder
-  password). No real secret, no `vault-ffi`, no App Group.
-- Host publishes a test identity (for a domain you choose) to
-  `ASCredentialIdentityStore`.
+- `ArcaAutoFill` opens the shared vault through `vault-ffi` — Touch ID reads the
+  device key from the shared keychain group — and returns the selected
+  credential, copied straight into `ASPasswordCredential` and never retained.
+- `ArcaHost` publishes the vault's login identities to
+  `ASCredentialIdentityStore`: metadata only, domain and username, never a
+  password.
 
-M2 adds the real vault: the passwords `vault-ffi` surface, an App Group +
-shared-keychain device key, Touch ID unlock in the extension, and populating the
-store from the actual vault.
+**Shelved rather than shipped**, for the reason the root README gives: Touch ID
+on every fill and a fight with Apple's own password menu made it worse than the
+browser extension. The source is kept because the App Group, keychain-group and
+provisioning pattern it proved is exactly what [`apps/ios/`](../ios/) now uses —
+where the same OS integration is the good one.
 
 ## Build & try it
 
@@ -62,24 +66,24 @@ open Arca.xcodeproj
 ```
 
 1. Select the **ArcaHost** scheme. In **Signing & Capabilities**, confirm the
-   Team. `project.yml` defaults to `RYS5AACGS6` (the local Apple Development
-   cert); switch to your team if Xcode complains. Automatic signing provisions
-   the `authentication-services.autofill-credential-provider` capability — no
-   Apple portal step needed.
+   Team. `project.yml` sets `LY6LJ395B8`, which must match `apps/ios` — App
+   Groups and keychain groups are team-scoped. Automatic signing provisions the
+   `authentication-services.autofill-credential-provider` capability, so there
+   is no Apple portal step.
 2. **Run** (⌘R). The host window opens (this also registers the extension with
    the OS).
 3. **System Settings ▸ General ▸ AutoFill & Passwords** and toggle **Arca** on
    (the host's "Open AutoFill Settings" button jumps there). This alone confirms
    the extension loaded and the entitlement is valid.
-4. Back in the host: **Refresh**, type a domain that has a login form (e.g. a
-   throwaway/test login page — the fixed placeholder password means no real
-   account is touched), then **Register test identity**.
-5. Open that site in **Safari**, focus the username/password field, and pick
-   **arca-test** from the AutoFill suggestion. The field fills.
+4. Back in the host: **Refresh**, then **Sync to AutoFill** — one Touch ID, to
+   read your logins. It publishes domain + username for every login in the
+   vault.
+5. Open one of those sites in **Safari**, focus the username/password field, and
+   pick the Arca suggestion. Touch ID again, and the real password fills.
 
-> AutoFill only offers a credential on a page that both matches the registered
-> domain **and** has a login form, so pick a domain with an actual form in
-> step 4 (a bare page like `example.com` has no field to fill).
+> AutoFill only offers a credential on a page that both matches a published
+> domain **and** has a login form, so a bare page like `example.com` has nothing
+> to fill even if you have a login saved for it.
 
 ## Troubleshooting: Arca doesn't appear in the AutoFill list
 
@@ -108,7 +112,7 @@ Other things the OS silently requires:
   canonical container and registers none — unregister the extras with
   `lsregister -u <path>` so only one `ArcaHost.app` remains.
 
-## Verify without signing (what CI / a headless machine can do)
+## Verify without signing
 
 ```sh
 cd apps/macos && xcodegen generate
@@ -120,6 +124,10 @@ Compiles the host + extension and embeds `ArcaAutoFill.appex` into
 `ArcaHost.app/Contents/PlugIns/`. Running it (and toggling it on in System
 Settings) requires a signed build from your Xcode, since provisioning needs your
 Apple ID account.
+
+CI runs exactly this on the macOS matrix leg, for pull requests and manual
+dispatch — the only machine in CI with Xcode, and the only thing standing
+between the Swift and nobody ever compiling it.
 
 ## Not this (deliberately, for later phases)
 

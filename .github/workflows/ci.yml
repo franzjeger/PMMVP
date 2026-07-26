@@ -6,6 +6,11 @@ name: CI
 # what closes the "compiles/runs on the target platform" gap, including the
 # Tauri desktop crate's deterministic clipboard + command tests.
 #
+# `test-cross` also carries the ONLY compilation the Swift ever gets. It is
+# written on Linux, where SwiftUI, AuthenticationServices, LocalAuthentication
+# and Security do not exist, so the macOS runner is the first and only compiler
+# it meets. Unsigned; running the extensions needs an Apple ID.
+#
 # `linux-smoke` runs the #[ignore]d real-OS smoke tests on an actual X11 session
 # (Xvfb) and D-Bus + gnome-keyring, so the arboard clipboard code path executes
 # on Linux — the platform the clipboard fix targets, which the in-memory tests
@@ -135,17 +140,38 @@ jobs:
       - name: test (all crates)
         run: cargo test --workspace
 
-      # apps/ios links vault-ffi cross-compiled for the phone, and nothing else
-      # in CI would notice if that stopped building. Cheap — vault-ffi pulls in
-      # only vault-core, not Tauri — and it rides the macOS matrix leg already
-      # being paid for rather than adding a job. Compiling the Swift needs Xcode
-      # and is documented in apps/ios/README.md instead.
+      # apps/ios links vault-ffi cross-compiled for the phone. Cheap on its own
+      # (vault-ffi pulls in only vault-core, not Tauri), and separate from the
+      # Swift build below so a Rust cross-compile break reads as one rather than
+      # as a mysterious Xcode failure.
       - name: vault-ffi cross-compiles for iOS
         if: runner.os == 'macOS'
         run: |
           rustup target add aarch64-apple-ios aarch64-apple-ios-sim
           cargo build -p vault-ffi --release --target aarch64-apple-ios
           cargo build -p vault-ffi --release --target aarch64-apple-ios-sim
+
+      # The Swift in apps/ is written and reviewed on Linux, where no toolchain
+      # can build it: SwiftUI, AuthenticationServices, LocalAuthentication and
+      # Security do not exist there. This runner is the only machine in CI with
+      # Xcode, so it is the only place the ~1200 lines across apps/macos,
+      # apps/ios and apps/apple-shared get compiled at all. It rides the macOS
+      # matrix leg already being paid for rather than adding a job.
+      #
+      # Compile only. Running either extension needs provisioning, which needs
+      # an Apple ID; CODE_SIGNING_ALLOWED=NO gets the compiler and the linker
+      # without one. The iOS scheme also exercises scripts/build-ffi-ios.sh,
+      # so the xcframework packaging is covered by the same step.
+      - name: Build the Swift targets, unsigned (macOS + iOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install xcodegen
+          (cd apps/macos && xcodegen generate && \
+            xcodebuild -quiet -scheme ArcaHost -destination 'platform=macOS' \
+              CODE_SIGNING_ALLOWED=NO -derivedDataPath build build)
+          (cd apps/ios && xcodegen generate && \
+            xcodebuild -quiet -scheme Arca -destination 'generic/platform=iOS Simulator' \
+              CODE_SIGNING_ALLOWED=NO -derivedDataPath build build)
 
   linux-smoke:
     name: linux real-clipboard & keychain smoke

@@ -1,9 +1,11 @@
 # iOS: status and what it would take
 
-**There is an iOS scaffold, and it has never been compiled.** `apps/ios/` holds
-a SwiftUI app and an AutoFill Credential Provider extension over the existing
-Rust core, written on a machine with no Xcode — so the first `xcodebuild` is
-also the first real review. See [`apps/ios/README.md`](../apps/ios/README.md).
+**There is an iOS scaffold, and no human has run it.** `apps/ios/` holds a
+SwiftUI app and an AutoFill Credential Provider extension over the existing Rust
+core, written on Linux where the Apple frameworks do not exist. CI now builds it
+unsigned on the macOS runner for every pull request — the first compiler it has
+met — but nothing has been on a device. See
+[`apps/ios/README.md`](../apps/ios/README.md).
 
 This document is an honest account of how far the groundwork actually reaches,
 what is genuinely missing, and in what order it would have to be built. It
@@ -22,7 +24,7 @@ that makes it a password manager rather than a viewer.
 | Unlock from a fresh device | **Done (was the blocker).** `vault_ffi_vault_open_password` — see below. |
 | Getting the vault onto the phone | **Missing.** The Drive sync client is desktop-only. This is the real work. |
 | Writing from the phone | **Missing.** The FFI is read-only today. |
-| iOS app + AutoFill extension | **Scaffolded, never built.** `apps/ios/`: unlock, search, reveal, copy, and a credential provider. Read-only, and unverified by any compiler. |
+| iOS app + AutoFill extension | **Scaffolded, never run.** `apps/ios/`: unlock, search, reveal, copy, and a credential provider. Read-only. CI compiles it; no device has. |
 | Quick unlock on the phone | **Done.** `vault_ffi_enable_device_unlock` (ABI v4) mints a device key from a password unlock; the app and the extension both use it. |
 | iOS build targets | **Scripted.** [`scripts/build-ffi-ios.sh`](../scripts/build-ffi-ios.sh) adds the targets and packages an xcframework. |
 
@@ -116,7 +118,7 @@ Identities are published to `ASCredentialIdentityStore` on unlock (metadata
 only), which is what puts Arca in the QuickType bar rather than merely installed.
 
 Not done: no TOTP and no item types beyond logins (the ABI exposes neither),
-no app icon, no tests, and no build has ever run.
+no app icon, and no Swift tests — there is no Swift test target in the repo.
 
 ### 5. Distribution
 
@@ -128,14 +130,15 @@ is set up, and the release tooling in
 
 The reusable half is real: crypto, data model, merge, passkeys and a proven
 Swift/Rust bridge are not small things, and none of them have to be rewritten.
-The app shell is now real too — but a shell that has never been compiled is a
-proposal, not a milestone, and it is read-only besides.
+The app shell is now real too — but a shell nobody has run is a proposal, not a
+milestone, and it is read-only besides.
 
 "Reuse the core" is still not the same as "nearly done". Sync alone is a
 substantial refactor plus a new OAuth flow, and the write path is more again.
 
-Order, now that the shell exists and quick unlock is in: **build it once** and
-fix what the compiler says — none of the Swift has ever been through one. Then
+Order, now that the shell exists and quick unlock is in: **open a pull request**
+and fix what the macOS runner says — that is the first compiler this Swift has
+met, and it will have opinions. Then
 §1, sync, because until the vault can reach the phone by itself every user is
 AirDropping a file. §2, writing, last: it is the largest, and the one that needs
 the merge semantics thought through rather than typed.
