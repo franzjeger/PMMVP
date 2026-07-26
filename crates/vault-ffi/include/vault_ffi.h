@@ -51,6 +51,15 @@ int32_t vault_ffi_vault_open(const uint8_t *vault_bytes, size_t vault_len,
                              const uint8_t *device_key, size_t device_key_len,
                              VaultHandle **out_handle);
 
+/* Open + unlock from the MASTER PASSWORD (NUL-terminated UTF-8). Needed by any
+ * client that has no device key yet - a phone on first launch, a recovery tool.
+ * Runs Argon2id with the header's parameters, so it takes hundreds of ms: call
+ * it off the UI thread. On OK, *out_handle is a handle to release with
+ * vault_ffi_vault_free. */
+int32_t vault_ffi_vault_open_password(const uint8_t *vault_bytes, size_t vault_len,
+                                      const char *password,
+                                      VaultHandle **out_handle);
+
 /* Lock + free a handle (zeroizes the vault key and all decrypted items).
  * Null-safe. */
 void vault_ffi_vault_free(VaultHandle *handle);

@@ -33,7 +33,10 @@ use vault_core::{Error, ItemKind, SymmetricKey, Vault, VaultItem, KEY_LEN};
 /// v2 adds the stateful passwords surface (`vault_ffi_vault_open`,
 /// `vault_ffi_identities`, `vault_ffi_password_for_id`, `vault_ffi_vault_free`)
 /// used by the macOS AutoFill credential provider.
-pub const ABI_VERSION: i32 = 2;
+///
+/// v3 adds `vault_ffi_vault_open_password`, so a client with no device key
+/// (a phone on first launch) can open the vault at all. Purely additive.
+pub const ABI_VERSION: i32 = 3;
 
 // Return codes.
 const OK: i32 = 0;
@@ -337,6 +340,53 @@ pub unsafe extern "C" fn vault_ffi_vault_open(
     }
 }
 
+/// Open + unlock a vault from its raw file bytes using the **master password**.
+///
+/// [`vault_ffi_vault_open`] needs a device key that some *other* process must
+/// already have minted into the keychain. A fresh client — a phone on first
+/// launch, a recovery tool — has no such key and could otherwise never open the
+/// vault at all. This is the entry point that makes the FFI usable on its own.
+///
+/// `password` is a NUL-terminated UTF-8 C string. Deriving the key runs Argon2id
+/// with the parameters stored in the vault header, so this deliberately takes
+/// hundreds of milliseconds; call it off the UI thread. Errors: `ERR_DECRYPT`
+/// (wrong password or tampered file), `ERR_OP_FAILED` (unrecognized format or
+/// non-UTF-8 password).
+///
+/// # Safety
+/// `vault_bytes` must point to a readable buffer of `vault_len`; `password` must
+/// be a valid NUL-terminated string; `out_handle` must be a valid writable
+/// pointer.
+#[no_mangle]
+pub unsafe extern "C" fn vault_ffi_vault_open_password(
+    vault_bytes: *const u8,
+    vault_len: usize,
+    password: *const c_char,
+    out_handle: *mut *mut VaultHandle,
+) -> i32 {
+    if vault_bytes.is_null() || password.is_null() || out_handle.is_null() {
+        return ERR_NULL_ARG;
+    }
+    *out_handle = std::ptr::null_mut();
+    let bytes = slice::from_raw_parts(vault_bytes, vault_len);
+    let Some(password) = cstr(password) else {
+        return ERR_OP_FAILED;
+    };
+
+    let opened = guard_result(|| {
+        let mut vault = Vault::from_bytes(bytes)?;
+        vault.unlock(password)?;
+        Ok(vault)
+    });
+    match opened {
+        Ok(vault) => {
+            *out_handle = Box::into_raw(Box::new(VaultHandle { vault }));
+            OK
+        }
+        Err(code) => code,
+    }
+}
+
 /// Lock + free a handle (zeroizes the vault key and all decrypted items).
 /// Passing null is a no-op.
 ///
@@ -542,9 +592,60 @@ mod tests {
         (v.to_bytes().unwrap(), *device.as_bytes(), id)
     }
 
+    // Pinned deliberately: clients gate features on this number, so a bump has
+    // to be a conscious edit here, not a side effect.
     #[test]
-    fn abi_version_is_2() {
-        assert_eq!(vault_ffi_abi_version(), 2);
+    fn abi_version_is_3() {
+        assert_eq!(vault_ffi_abi_version(), 3);
+    }
+
+    // A client with no device key (a phone on first launch) must still be able
+    // to open the vault. Without this the FFI is unusable on its own: every
+    // caller would depend on some other process having minted a device key
+    // into the keychain first.
+    #[test]
+    fn opens_with_the_master_password_and_rejects_a_wrong_one() {
+        let (bytes, _device, id) = sample_vault();
+
+        let mut handle: *mut VaultHandle = std::ptr::null_mut();
+        let pw = std::ffi::CString::new("pw").unwrap();
+        let rc = unsafe {
+            vault_ffi_vault_open_password(bytes.as_ptr(), bytes.len(), pw.as_ptr(), &mut handle)
+        };
+        assert_eq!(rc, OK);
+        assert!(!handle.is_null());
+
+        // The handle is fully usable, not a half-open shell.
+        let mut out: *mut u8 = std::ptr::null_mut();
+        let mut len = 0usize;
+        let cid = std::ffi::CString::new(id).unwrap();
+        assert_eq!(
+            unsafe { vault_ffi_password_for_id(handle, cid.as_ptr(), &mut out, &mut len) },
+            OK
+        );
+        unsafe { vault_ffi_free(out, len) };
+        unsafe { vault_ffi_vault_free(handle) };
+
+        // A wrong password must fail closed, and leave no handle behind.
+        let mut bad_handle: *mut VaultHandle = std::ptr::null_mut();
+        let bad = std::ffi::CString::new("not-the-password").unwrap();
+        let rc = unsafe {
+            vault_ffi_vault_open_password(
+                bytes.as_ptr(),
+                bytes.len(),
+                bad.as_ptr(),
+                &mut bad_handle,
+            )
+        };
+        assert_eq!(rc, ERR_DECRYPT);
+        assert!(bad_handle.is_null(), "no handle on the error path");
+
+        // Null arguments are rejected, not dereferenced.
+        let mut h: *mut VaultHandle = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { vault_ffi_vault_open_password(std::ptr::null(), 0, pw.as_ptr(), &mut h) },
+            ERR_NULL_ARG
+        );
     }
 
     #[test]
