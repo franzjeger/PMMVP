@@ -5370,8 +5370,6 @@ version = "0.2.0"
 dependencies = [
  "arboard",
  "csv",
- "data-encoding",
- "getrandom 0.2.17",
  "interprocess",
  "psl",
  "qrcode",
@@ -5379,7 +5377,6 @@ dependencies = [
  "robius-authentication",
  "serde",
  "serde_json",
- "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -5389,6 +5386,7 @@ dependencies = [
  "vault-appgroup",
  "vault-core",
  "vault-store",
+ "vault-sync",
  "zeroize",
 ]
 
@@ -5431,6 +5429,19 @@ dependencies = [
  "serde",
  "tempfile",
  "thiserror 2.0.18",
+ "vault-core",
+ "zeroize",
+]
+
+[[package]]
+name = "vault-sync"
+version = "0.2.0"
+dependencies = [
+ "data-encoding",
+ "getrandom 0.2.17",
+ "reqwest 0.12.28",
+ "serde_json",
+ "sha2",
  "vault-core",
  "zeroize",
 ]

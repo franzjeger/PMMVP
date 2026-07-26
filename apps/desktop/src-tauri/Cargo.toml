@@ -37,12 +37,14 @@ csv = "1"
 # Wi-Fi join QR codes, rendered to SVG in Rust (keeps the plaintext
 # passphrase out of the webview — only the image crosses).
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
-# Google Drive sync: blocking HTTP client (runs on the dedicated sync thread).
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-# PKCE code-challenge hashing + verifier randomness for the OAuth flow.
-sha2.workspace = true
-getrandom.workspace = true
-data-encoding.workspace = true
+# Google Drive sync: the transport and the pull→merge→push engine. This crate
+# supplies the desktop's side of it — the loopback OAuth flow, the OS secret
+# store, the app state, and the webview events.
+vault-sync.workspace = true
+# Breach-check lookups (k-anonymity range queries against HIBP).
+reqwest.workspace = true
+# Zeroizing, for the refresh token on its way between the keychain and the
+# sync crate.
 zeroize.workspace = true
 
 [dev-dependencies]

@@ -6,6 +6,7 @@ members = [
     "crates/vault-ffi",
     "crates/vault-secmem",
     "crates/vault-appgroup",
+    "crates/vault-sync",
     "apps/desktop/src-tauri",
     "extension/native-host",
 ]
@@ -18,6 +19,7 @@ default-members = [
     "crates/vault-store",
     "crates/vault-ffi",
     "crates/vault-secmem",
+    "crates/vault-sync",
     "extension/native-host",
 ]
 
@@ -35,6 +37,7 @@ vault-core = { path = "crates/vault-core" }
 vault-store = { path = "crates/vault-store" }
 vault-secmem = { path = "crates/vault-secmem" }
 vault-appgroup = { path = "crates/vault-appgroup" }
+vault-sync = { path = "crates/vault-sync" }
 
 # --- crypto (audited RustCrypto crates only; no custom primitives) ---
 argon2 = "0.5"
@@ -70,6 +73,17 @@ thiserror = "2"
 # Public Suffix List, compiled in — so a page can't scope a passkey to an eTLD
 # (e.g. "github.io", "co.uk") that crosses mutually-distrusting tenants.
 psl = "2"
+
+# --- network ---
+# rustls rather than the platform TLS stack, so certificate verification behaves
+# identically on every target rather than inheriting each OS's quirks. Blocking:
+# sync owns a thread on every platform and the engine stays an ordinary function
+# a test can call.
+reqwest = { version = "0.12", default-features = false, features = [
+    "blocking",
+    "json",
+    "rustls-tls",
+] }
 
 # Release profile: keep symbols light, no debug info leaking secrets via panics.
 [profile.release]
