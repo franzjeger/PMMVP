@@ -49,6 +49,7 @@ struct ContentView: View {
                     .disabled(!isEnabled || busy)
                 Spacer()
                 Button("Refresh") { Task { await refresh() } }
+                    .disabled(busy)
             }
             .padding(.top, 4)
         }
@@ -57,6 +58,7 @@ struct ContentView: View {
         .task { await refresh() }
     }
 
+    @MainActor
     private func refresh() async {
         let state = await ASCredentialIdentityStore.shared.state()
         isEnabled = state.isEnabled
@@ -66,13 +68,16 @@ struct ContentView: View {
     }
 
     // Open the vault (Touch ID) and publish its login identities — metadata only.
+    // Every step is awaited, so the window keeps drawing while the Touch ID
+    // prompt is up and while the vault decrypts.
+    @MainActor
     private func sync() async {
         busy = true
         defer { busy = false }
         do {
-            let vault = try OpenVault.open()
-            let ids = try vault.identities()
-            let identities: [ASPasswordCredentialIdentity] = ids.map {
+            let session = try await VaultSession.openWithDeviceKey(
+                reason: "publish your Arca logins to AutoFill")
+            let identities = try await session.identities().map {
                 ASPasswordCredentialIdentity(
                     serviceIdentifier: ASCredentialServiceIdentifier(identifier: $0.domain, type: .domain),
                     user: $0.user,
@@ -81,10 +86,15 @@ struct ContentView: View {
             try await ASCredentialIdentityStore.shared.replaceCredentialIdentities(identities)
             status = "Synced \(identities.count) logins to AutoFill. Try one in Safari."
         } catch {
-            status = "Sync failed (\(String(describing: error))). Is the vault set up in the shared container, and Touch ID available?"
+            // The bridge's own text says which of the several setup steps is
+            // missing; a raw error dump did not.
+            vaultLog.error("sync failed: \(vaultLogMessage(for: error), privacy: .public)")
+            status = (error as? VaultError)?.errorDescription
+                ?? "Sync failed. Is the vault set up in the shared container, and Touch ID available?"
         }
     }
 
+    @MainActor
     private func openAutoFillSettings() {
         let candidates = [
             "x-apple.systempreferences:com.apple.Passwords-Settings.extension",
