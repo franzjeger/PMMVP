@@ -46,6 +46,20 @@ build() {
         sed 's/^/    /' "$diag"
     fi
 
+    # A `test` action that ran zero tests exits 0 and prints nothing, which is
+    # indistinguishable from one that ran and passed. Surface the count, and
+    # treat its absence as a failure: a scheme that lost its test target would
+    # otherwise go on reporting green forever.
+    if [ "$action" = "test" ] && [ "$status" -eq 0 ]; then
+        if grep -hE '^[[:space:]]*Executed [0-9]+ test' "$log" | tail -1 \
+            | sed 's/^[[:space:]]*/    /'; then
+            :
+        else
+            echo "    NO TEST SUMMARY in the log — did any test actually run?"
+            failed=1
+        fi
+    fi
+
     if [ "$status" -ne 0 ]; then
         echo "    $action FAILED (exit $status). Last 60 lines:"
         tail -60 "$log" | sed 's/^/    /'
