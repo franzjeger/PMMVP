@@ -563,6 +563,55 @@ mod tests {
         assert_eq!(vault_ffi_abi_version(), 3);
     }
 
+    /// include/vault_ffi.h is the contract Swift compiles against, and it is
+    /// maintained by hand — it sat claiming "ABI version 2" for a v3 library,
+    /// which is exactly the drift a client checking the version would trust.
+    #[test]
+    fn the_header_names_the_abi_it_documents() {
+        let header = include_str!("../include/vault_ffi.h");
+        let expected = format!("ABI version {ABI_VERSION}");
+        assert!(
+            header.contains(&expected),
+            "vault_ffi.h does not say {expected:?} — bump it with ABI_VERSION"
+        );
+    }
+
+    /// The other half of the same promise: an export with no declaration is
+    /// invisible to Swift until someone notices, and adding one is precisely
+    /// when this file is easy to forget.
+    #[test]
+    fn every_export_is_declared_in_the_header() {
+        let header = include_str!("../include/vault_ffi.h");
+        let mut checked = 0;
+        for line in include_str!("lib.rs").lines() {
+            let line = line.trim();
+            let Some(rest) = line
+                .strip_prefix("pub extern \"C\" fn ")
+                .or_else(|| line.strip_prefix("pub unsafe extern \"C\" fn "))
+            else {
+                continue;
+            };
+            let name = rest.split('(').next().unwrap_or_default();
+            // Look for an actual declaration line, not the name anywhere: a
+            // bare `contains(name)` matches a prose mention in the header's
+            // comments, and matches `<name>X` too, so a renamed export would
+            // sail past.
+            let declared = header.lines().any(|l| {
+                let l = l.trim_start();
+                (l.starts_with("int32_t ") || l.starts_with("void "))
+                    && l.contains(&format!(" {name}("))
+            });
+            assert!(
+                declared,
+                "{name} is exported but not declared in include/vault_ffi.h"
+            );
+            checked += 1;
+        }
+        // Guard against the scan silently matching nothing (a formatting change
+        // that splits the signature across lines would do it).
+        assert!(checked >= 8, "only found {checked} exports to check");
+    }
+
     // A client with no device key (a phone on first launch) must still be able
     // to open the vault. Without this the FFI is unusable on its own: every
     // caller would depend on some other process having minted a device key

@@ -35,6 +35,11 @@ it is platform-agnostic and [`apps/ios`](../ios/) links the same file.
   "Reinstall Arca"; bumping neither, after a signature change, is worse — the
   wrong bytes get filled into someone's login form.
 
+  Nothing enforces this one: there is no Swift test target. The *other* half of
+  the same contract is enforced — `cargo test -p vault-ffi` checks that
+  `include/vault_ffi.h` names the current `ABI_VERSION` and declares every
+  exported symbol, because that header sat claiming v2 for a v3 library.
+
 ## Status — M1 (this commit)
 
 Skeleton that proves the OS integration end to end, **no vault yet**:

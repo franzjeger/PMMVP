@@ -104,9 +104,11 @@ Done, unverified:
   Swift through an Info.plist key that Xcode expands `$(AppIdentifierPrefix)`
   into, so the team prefix is never a literal in source.
 
+Identities are published to `ASCredentialIdentityStore` on unlock (metadata
+only), which is what puts Arca in the QuickType bar rather than merely installed.
+
 Not done: no TOTP and no item types beyond logins (the ABI exposes neither),
-no `ASCredentialIdentityStore` registration, no app icon, no tests, and no
-build has ever run.
+no app icon, no tests, and no build has ever run.
 
 ### 5. Distribution
 

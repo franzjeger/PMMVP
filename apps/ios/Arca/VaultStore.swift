@@ -30,6 +30,9 @@ final class VaultStore {
     private(set) var identities: [VaultIdentity] = []
     /// The last failure, already phrased for a person.
     private(set) var failure: String?
+    /// Whether AutoFill is switched on for Arca in Settings. `nil` until an
+    /// unlock has actually asked, so the UI can stay quiet rather than guess.
+    private(set) var autoFillEnabled: Bool?
     var query = ""
 
     /// Held only while unlocked.
@@ -69,6 +72,10 @@ final class VaultStore {
                     < ($1.domain.lowercased(), $1.user.lowercased())
             }
             phase = .unlocked
+            // After the phase flip on purpose: this is what puts Arca in the
+            // QuickType bar, and it is metadata only, so nobody should be made
+            // to wait behind it to see their own vault.
+            autoFillEnabled = await CredentialIdentities.replace(with: self.identities)
         } catch {
             log.error("unlock failed: \(vaultLogMessage(for: error), privacy: .public)")
             failure = Self.message(error, fallback: "Couldn't unlock the vault.")
@@ -77,6 +84,11 @@ final class VaultStore {
     }
 
     func lock() {
+        // NOT clearing the credential identity store: it holds no secrets, and
+        // it is what makes iOS offer Arca at all. The extension does its own
+        // unlock when a suggestion is picked, so dropping the identities here
+        // would make Arca invisible while protecting nothing.
+        //
         // Frees the Rust handle on the vault queue, which re-seals and zeroizes.
         session = nil
         identities = []
@@ -105,6 +117,10 @@ final class VaultStore {
         do {
             try VaultFile.replace(with: picked.get())
             lock()
+            // These describe the vault that was just replaced. The next unlock
+            // publishes the new one's.
+            Task { await CredentialIdentities.removeAll() }
+            autoFillEnabled = nil
             failure = nil
         } catch {
             log.error("import failed: \(vaultLogMessage(for: error), privacy: .public)")

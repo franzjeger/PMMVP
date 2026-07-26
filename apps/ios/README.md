@@ -15,7 +15,7 @@ The Xcode project is generated from [`project.yml`](project.yml) with
 | Unlock | Master password → Argon2id → `vault_ffi_vault_open_password`. |
 | Browse | Search logins, see username/site/title, reveal one password. |
 | Copy | `localOnly` (never reaches Universal Clipboard) and cleared by iOS after 30s. |
-| AutoFill | Registers as a password provider; unlock, pick, fill. |
+| AutoFill | Registers as a password provider and publishes identities (metadata only) to `ASCredentialIdentityStore` on unlock, so Arca appears in the QuickType bar. |
 | Lock | On backgrounding, and the app-switcher snapshot is covered. |
 
 ## What it does not do, and why
@@ -90,11 +90,11 @@ AutoFill capability are all team-scoped.
 4. **Settings ▸ General ▸ AutoFill & Passwords** and turn **Arca** on.
 5. In Safari, focus a login field and pick the Arca suggestion.
 
-> Step 5 only offers a credential once identities are registered with
-> `ASCredentialIdentityStore`. The app does not populate it yet — the macOS host
-> does this in `ArcaHost/ArcaHostApp.swift` and the same call belongs here, after
-> unlock. Until then, reach AutoFill through the keyboard's password button,
-> which calls `prepareCredentialList` directly.
+> Step 5 needs step 4 done *and* one unlock afterwards: identities are
+> published to `ASCredentialIdentityStore` at the end of `VaultStore.unlock`,
+> and the store refuses them while Arca is switched off. If AutoFill is off the
+> app says so at the bottom of the list. The keyboard's password button reaches
+> Arca either way — it calls `prepareCredentialList` directly.
 
 ## Layout
 
@@ -106,6 +106,7 @@ apps/ios/
 │   ├── VaultStore.swift       @Observable state: shut / opening / open
 │   ├── VaultFile.swift        the vault in the App Group container + import
 │   ├── Pasteboard.swift       copy with localOnly + expiry
+│   ├── CredentialIdentities.swift  publish metadata to the QuickType bar
 │   └── *View.swift            unlock, import, list, detail
 └── ArcaAutoFill/            the credential provider
     ├── CredentialProviderViewController.swift   OS entry points + containment
@@ -130,7 +131,6 @@ full version.
 
 ## Not done
 
-- `ASCredentialIdentityStore` registration after unlock (see the note above).
 - App icon and launch screen: the target has neither.
 - `ITSAppUsesNonExemptEncryption` is deliberately unset — TestFlight will ask,
   and the answer is an export-compliance judgement, not a build setting to guess.
