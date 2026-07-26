@@ -1,8 +1,14 @@
 /* vault-ffi — C ABI over vault-core for native platform integrations.
  *
- * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 2). All
+ * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 3). All
  * out-buffers are heap-allocated by the library and must be released with
  * vault_ffi_free(ptr, len), which also zeroes them.
+ *
+ * ABI_VERSION in lib.rs is the authority, and vault_ffi_abi_version() reports
+ * it at runtime; clients should refuse to run against a number they were not
+ * written for. Tests in lib.rs check that this file names the same version and
+ * declares every exported symbol, because "hand-maintained" is otherwise a
+ * promise nothing enforces — this comment claimed v2 for a v3 library.
  *
  * Return codes:
  *    0  OK
@@ -51,7 +57,8 @@ int32_t vault_ffi_vault_open(const uint8_t *vault_bytes, size_t vault_len,
                              const uint8_t *device_key, size_t device_key_len,
                              VaultHandle **out_handle);
 
-/* Open + unlock from the MASTER PASSWORD (NUL-terminated UTF-8). Needed by any
+/* ADDED IN ABI v3, purely additive.
+ * Open + unlock from the MASTER PASSWORD (NUL-terminated UTF-8). Needed by any
  * client that has no device key yet - a phone on first launch, a recovery tool.
  * Runs Argon2id with the header's parameters, so it takes hundreds of ms: call
  * it off the UI thread. On OK, *out_handle is a handle to release with

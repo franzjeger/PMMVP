@@ -38,6 +38,11 @@ struct VaultListView: View {
                 }
             }
             .sheet(item: $selected) { ItemDetailView(identity: $0) }
+            // Only after an unlock has actually asked the store — `nil` means
+            // we don't know yet, and guessing would nag people who are set up.
+            .safeAreaInset(edge: .bottom) {
+                if store.autoFillEnabled == false { AutoFillHint() }
+            }
         }
     }
 
@@ -64,5 +69,23 @@ struct VaultListView: View {
     /// login saved without a username shouldn't render as a blank row.
     static func title(for identity: VaultIdentity) -> String {
         [identity.user, identity.label].first { !$0.isEmpty } ?? identity.domain
+    }
+}
+
+/// Shown when the identity store refused the publish because AutoFill is off.
+/// No button: iOS has no public deep link to the AutoFill settings pane, and a
+/// button that opened the wrong page would be worse than saying where to go.
+private struct AutoFillHint: View {
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+            Text("Turn Arca on in Settings ▸ General ▸ AutoFill & Passwords to fill from the keyboard.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(.thinMaterial)
     }
 }
