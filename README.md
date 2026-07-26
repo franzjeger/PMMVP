@@ -55,7 +55,8 @@ Current version: **0.2.0**
 | **macOS** | Daily driver. Signed + notarizable releases, see [`docs/RELEASING.md`](./docs/RELEASING.md). |
 | **Windows** | Working, including the ssh-agent named pipe. Built in CI. |
 | **Linux** | Builds and passes CI (incl. X11/Wayland clipboard smoke tests) but has **never been run by a human**. Treat as untested. |
-| **iOS / Android** | Not built. The blocking gap is closed — see [`docs/IOS.md`](./docs/IOS.md) for what remains. |
+| **iOS** | Scaffolded in `apps/ios/`, **never compiled**. A read-only viewer + AutoFill provider; no sync, no Face ID. See [`docs/IOS.md`](./docs/IOS.md). |
+| **Android** | Not built. |
 | **System-wide macOS AutoFill** | Shelved. It works technically, but Touch ID on every fill and a fight with Apple's own password menu made it worse than the browser extension. Source kept in `apps/macos/`. |
 
 Auto-update is prepared but **not wired up**: the signing key exists, the plugin
@@ -79,7 +80,10 @@ apps/
 ├── desktop/          Tauri 2 app
 │   ├── src-tauri/      Rust shell: commands, state, sync, bridge, ssh-agent.
 │   └── src/            React + TypeScript + Tailwind three-pane UI.
-└── macos/            Shelved AutoFill credential provider (host + extension).
+├── apple-shared/     VaultBridge.swift — the Swift side of vault-ffi, shared
+│                     verbatim by the macOS and iOS targets.
+├── macos/            Shelved AutoFill credential provider (host + extension).
+└── ios/              SwiftUI app + AutoFill extension. Scaffold, never built.
 extension/
 ├── chromium/         Manifest V3 (Chrome/Brave/Edge) + a Firefox manifest.
 └── native-host/      Rust native-messaging bridge to the desktop app.

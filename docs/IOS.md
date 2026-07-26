@@ -1,24 +1,30 @@
 # iOS: status and what it would take
 
-**There is no iOS app.** This document is an honest account of how far the
-groundwork actually reaches, what is genuinely missing, and in what order it
-would have to be built. It exists so the answer to "is iOS ready?" is a fact
-rather than a guess.
+**There is an iOS scaffold, and it has never been compiled.** `apps/ios/` holds
+a SwiftUI app and an AutoFill Credential Provider extension over the existing
+Rust core, written on a machine with no Xcode — so the first `xcodebuild` is
+also the first real review. See [`apps/ios/README.md`](../apps/ios/README.md).
+
+This document is an honest account of how far the groundwork actually reaches,
+what is genuinely missing, and in what order it would have to be built. It
+exists so the answer to "is iOS ready?" is a fact rather than a guess.
 
 ## Where it stands
 
-The hard blocker is gone. Everything else is work that has not started.
+The hard blocker is gone and there is a shell to run. What is left is the part
+that makes it a password manager rather than a viewer.
 
 | Piece | State |
 | --- | --- |
 | Crypto + data model | **Done.** `vault-core` is pure Rust, no I/O, no platform assumptions. Same code an iOS app would use. |
 | C ABI for Swift | **Mostly there.** `vault-ffi` (ABI v3), already proven against Swift in `apps/macos/`. |
-| Swift side of that ABI | **Portable.** `apps/macos/Shared/VaultBridge.swift` has no macOS-only code left (the one difference is behind `#if os(macOS)`), wraps *both* open paths, and keeps the blocking work off the main actor. An iOS target links it unchanged. |
+| Swift side of that ABI | **Portable.** `apps/apple-shared/VaultBridge.swift` has no macOS-only code left (the one difference is behind `#if os(macOS)`), wraps *both* open paths, and keeps the blocking work off the main actor. An iOS target links it unchanged. |
 | Unlock from a fresh device | **Done (was the blocker).** `vault_ffi_vault_open_password` — see below. |
 | Getting the vault onto the phone | **Missing.** The Drive sync client is desktop-only. This is the real work. |
 | Writing from the phone | **Missing.** The FFI is read-only today. |
-| iOS app + AutoFill extension | **Not started.** |
-| iOS build targets | **Not installed.** One `rustup` command. |
+| iOS app + AutoFill extension | **Scaffolded, never built.** `apps/ios/`: unlock, search, reveal, copy, and a credential provider. Read-only, and unverified by any compiler. |
+| Quick unlock on the phone | **Missing, and it hurts.** No device key can be minted on iOS, so the master password is retyped on *every* AutoFill. See below. |
+| iOS build targets | **Scripted.** [`scripts/build-ffi-ios.sh`](../scripts/build-ffi-ios.sh) adds the targets and packages an xcframework. |
 
 ### The blocker that was removed
 
@@ -31,7 +37,7 @@ device key and could never open the vault at all.**
 `vault_ffi_vault_open_password` closes that. It derives the key with Argon2id
 using the parameters in the vault's own header, so it must run off the UI thread.
 
-`VaultSession.openWithMasterPassword` in `apps/macos/Shared/VaultBridge.swift` is
+`VaultSession.openWithMasterPassword` in `apps/apple-shared/VaultBridge.swift` is
 the Swift side of it. Every entry point on that type is `async` and runs on a
 private serial queue for exactly this reason: on iOS an AutoFill extension that
 blocks its main thread is killed by the watchdog, not merely slow. The same queue
@@ -64,12 +70,29 @@ operations. An app that can only read is a viewer, not a password manager. Addin
 items, editing them and re-serialising the vault all need to cross the boundary,
 along with the save path so changes can be pushed back.
 
-### 3. The app itself
+### 3. Quick unlock — small change, largest effect
 
-- `rustup target add aarch64-apple-ios aarch64-apple-ios-sim`, and a build step
-  that produces an `xcframework` rather than the single static lib the macOS
-  targets link today.
-- A SwiftUI app: unlock, search, item detail, copy, TOTP.
+Nothing on iOS can create a device key. `vault-core` has `enable_device_unlock`,
+but `vault-ffi` does not export it, and calling it would mean re-serialising and
+saving the vault — which the read-only ABI cannot do either.
+
+The consequence is not cosmetic. The AutoFill extension is a **separate process**
+and cannot borrow the app's unlocked session, so every single fill asks for the
+master password and runs Argon2id before it can hand back a credential. Exporting
+a mint-and-save path turns that into a Face ID prompt, and it is a prerequisite
+for §2 regardless. Of everything on this list it is the cheapest thing with the
+biggest effect on whether the app is usable.
+
+### 4. The app itself — scaffolded
+
+Done, unverified:
+
+- [`scripts/build-ffi-ios.sh`](../scripts/build-ffi-ios.sh) adds the Rust targets
+  and packages `VaultFFI.xcframework`. Two slices, because device and simulator
+  are different platforms — linking both `.a` files directly fails on the second
+  with duplicate symbols.
+- A SwiftUI app: unlock, search, item detail, copy (pasteboard `localOnly` and
+  expiring), lock on backgrounding, covered app-switcher snapshot.
 - An **AutoFill Credential Provider extension**. Worth saying clearly: this is
   the part that works *well* on iOS. The system was designed for third-party
   password managers, unlike the macOS equivalent, which we shelved because it
@@ -81,7 +104,11 @@ along with the save path so changes can be pushed back.
   Swift through an Info.plist key that Xcode expands `$(AppIdentifierPrefix)`
   into, so the team prefix is never a literal in source.
 
-### 4. Distribution
+Not done: no TOTP and no item types beyond logins (the ABI exposes neither),
+no `ASCredentialIdentityStore` registration, no app icon, no tests, and no
+build has ever run.
+
+### 5. Distribution
 
 TestFlight for personal use; the App Store if it ever ships more widely. Neither
 is set up, and the release tooling in
@@ -91,10 +118,14 @@ is set up, and the release tooling in
 
 The reusable half is real: crypto, data model, merge, passkeys and a proven
 Swift/Rust bridge are not small things, and none of them have to be rewritten.
-But "reuse the core" is not the same as "nearly done". Sync alone is a
-substantial refactor plus a new OAuth flow, and the write path plus a real app
-and extension is more work again.
+The app shell is now real too — but a shell that has never been compiled is a
+proposal, not a milestone, and it is read-only besides.
 
-Anyone estimating this in hours is estimating the wrong problem. Start with
-sync: until the vault can reach the phone, everything else has nothing to
-display.
+"Reuse the core" is still not the same as "nearly done". Sync alone is a
+substantial refactor plus a new OAuth flow, and the write path is more again.
+
+Order, now that the shell exists: **build it once** and fix what the compiler
+says. Then §3, quick unlock — it is small and it decides whether anyone tolerates
+the app. Then §1, sync, because until the vault can reach the phone by itself
+every user is AirDropping a file. §2, writing, last: it is the largest, and it is
+the one that needs the merge semantics thought through rather than typed.

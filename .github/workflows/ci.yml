@@ -135,6 +135,18 @@ jobs:
       - name: test (all crates)
         run: cargo test --workspace
 
+      # apps/ios links vault-ffi cross-compiled for the phone, and nothing else
+      # in CI would notice if that stopped building. Cheap — vault-ffi pulls in
+      # only vault-core, not Tauri — and it rides the macOS matrix leg already
+      # being paid for rather than adding a job. Compiling the Swift needs Xcode
+      # and is documented in apps/ios/README.md instead.
+      - name: vault-ffi cross-compiles for iOS
+        if: runner.os == 'macOS'
+        run: |
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+          cargo build -p vault-ffi --release --target aarch64-apple-ios
+          cargo build -p vault-ffi --release --target aarch64-apple-ios-sim
+
   linux-smoke:
     name: linux real-clipboard & keychain smoke
     runs-on: ubuntu-latest

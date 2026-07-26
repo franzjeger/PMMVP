@@ -32,7 +32,7 @@ settings:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
     # vault-ffi (Rust) linkage, shared by both targets.
-    SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/Arca-Bridging-Header.h"
+    SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/../apple-shared/Arca-Bridging-Header.h"
     HEADER_SEARCH_PATHS: "$(SRCROOT)/../../crates/vault-ffi/include"
     LIBRARY_SEARCH_PATHS: "$(SRCROOT)/libs"
     OTHER_LDFLAGS: "-lvault_ffi"
@@ -72,7 +72,9 @@ targets:
     platform: macOS
     sources:
       - ArcaHost
-      - Shared
+      # The Swift/Rust bridge is platform-agnostic and shared with apps/ios.
+      - path: ../apple-shared/VaultBridge.swift
+        group: Shared
     settings:
       base:
         PRODUCT_NAME: ArcaHost
@@ -91,7 +93,8 @@ targets:
     platform: macOS
     sources:
       - ArcaAutoFill
-      - Shared
+      - path: ../apple-shared/VaultBridge.swift
+        group: Shared
     settings:
       base:
         PRODUCT_NAME: ArcaAutoFill

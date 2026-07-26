@@ -1,0 +1,94 @@
+# XcodeGen project definition — the reviewable source of truth for the iOS
+# Xcode project. Regenerate the .xcodeproj with:  cd apps/ios && xcodegen generate
+#
+# Two targets over the same Rust core the desktop and macOS extension use:
+# a SwiftUI app and an AutoFill Credential Provider extension. Both link
+# VaultFFI.xcframework (built by the pre-build script) and read the encrypted
+# vault from the shared App Group container.
+#
+# SCAFFOLD — see README.md for what actually works. The short version: the FFI is
+# read-only, so this is a viewer plus an AutoFill provider, and there is no sync,
+# so the vault file has to be imported by hand.
+name: Arca
+options:
+  bundleIdPrefix: no.sybr.vault
+  deploymentTarget:
+    # iOS 17: ASCredentialRequest and the modern AutoFill entry points, plus the
+    # Observation framework the app's state layer uses.
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    # Same reasoning as apps/macos/project.yml: a data race here means handing
+    # back the wrong password. `complete` reports them as warnings under the
+    # Swift 5 language mode; SWIFT_VERSION 6.0 turns them into errors.
+    SWIFT_STRICT_CONCURRENCY: complete
+    # Must match apps/macos — App Groups and keychain groups are team-scoped, so
+    # the phone's app, its extension and the Mac app all have to share one team.
+    DEVELOPMENT_TEAM: LY6LJ395B8
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    # vault-ffi (Rust) linkage, shared by both targets. The xcframework carries
+    # its own copy of the header, but pointing at the crate's include directory
+    # is what guarantees the bridging header's #import resolves.
+    SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/../apple-shared/Arca-Bridging-Header.h"
+    HEADER_SEARCH_PATHS: "$(SRCROOT)/../../crates/vault-ffi/include"
+
+# Pre-build step reused by both targets: build the Rust static libs for device +
+# simulator and package them as an xcframework. `basedOnDependencyAnalysis: false`
+# so it always runs (cargo itself is incremental).
+scriptDefaults: &buildFfi
+  name: "Build vault-ffi (Rust xcframework)"
+  basedOnDependencyAnalysis: false
+  script: |
+    set -euo pipefail
+    export PATH="$HOME/.cargo/bin:$PATH"
+    "$SRCROOT/../../scripts/build-ffi-ios.sh"
+
+targets:
+  Arca:
+    type: application
+    platform: iOS
+    sources:
+      - Arca
+      # The Swift/Rust bridge is platform-agnostic and shared with apps/macos.
+      - path: ../apple-shared/VaultBridge.swift
+        group: Shared
+    settings:
+      base:
+        PRODUCT_NAME: Arca
+        PRODUCT_BUNDLE_IDENTIFIER: no.sybr.vault.ios
+        INFOPLIST_FILE: Arca/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Arca/Arca.entitlements
+    preBuildScripts:
+      - *buildFfi
+    dependencies:
+      # A static-library xcframework is linked, never embedded.
+      - framework: libs/VaultFFI.xcframework
+        embed: false
+      # Embeds the .appex into Arca.app/PlugIns, which is how the OS discovers
+      # the credential provider.
+      - target: ArcaAutoFill
+
+  ArcaAutoFill:
+    type: app-extension
+    platform: iOS
+    sources:
+      - ArcaAutoFill
+      - path: ../apple-shared/VaultBridge.swift
+        group: Shared
+    settings:
+      base:
+        PRODUCT_NAME: ArcaAutoFill
+        PRODUCT_BUNDLE_IDENTIFIER: no.sybr.vault.ios.autofill
+        INFOPLIST_FILE: ArcaAutoFill/Info.plist
+        CODE_SIGN_ENTITLEMENTS: ArcaAutoFill/ArcaAutoFill.entitlements
+    preBuildScripts:
+      - *buildFfi
+    dependencies:
+      - framework: libs/VaultFFI.xcframework
+        embed: false
