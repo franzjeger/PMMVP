@@ -161,7 +161,7 @@ jobs:
       # Compile only. Running either extension needs provisioning, which needs
       # an Apple ID; CODE_SIGNING_ALLOWED=NO gets the compiler and the linker
       # without one. The iOS scheme also exercises scripts/build-ffi-ios.sh,
-      # so the xcframework packaging is covered by the same step.
+      # so the cross-compile and staging are covered by the same step.
       - name: Build the Swift targets, unsigned (macOS + iOS)
         if: runner.os == 'macOS'
         run: |
