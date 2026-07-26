@@ -9,6 +9,8 @@ import SwiftUI
 struct VaultListView: View {
     @Environment(VaultStore.self) private var store
     @State private var selected: VaultIdentity?
+    @State private var editing: VaultIdentity?
+    @State private var creating = false
 
     var body: some View {
         @Bindable var store = store
@@ -16,16 +18,28 @@ struct VaultListView: View {
         NavigationStack {
             Group {
                 if store.identities.isEmpty {
-                    ContentUnavailableView(
-                        "No logins",
-                        systemImage: "key",
-                        description: Text("This vault has no login items."))
+                    ContentUnavailableView {
+                        Label("No logins", systemImage: "key")
+                    } description: {
+                        Text("This vault has no login items.")
+                    } actions: {
+                        Button("Add a login") { creating = true }
+                    }
                 } else if store.results.isEmpty {
                     ContentUnavailableView.search(text: store.query)
                 } else {
                     List(store.results) { identity in
                         Button { selected = identity } label: { row(identity) }
                             .buttonStyle(.plain)
+                            .swipeActions(edge: .trailing) {
+                                Button("Delete", systemImage: "trash", role: .destructive) {
+                                    Task { await store.deleteLogin(identity) }
+                                }
+                                Button("Edit", systemImage: "pencil") {
+                                    editing = identity
+                                }
+                                .tint(.accentColor)
+                            }
                     }
                     .listStyle(.plain)
                 }
@@ -35,6 +49,9 @@ struct VaultListView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Lock", systemImage: "lock") { store.lock() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Add login", systemImage: "plus") { creating = true }
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     Menu("Options", systemImage: "ellipsis.circle") {
@@ -51,6 +68,8 @@ struct VaultListView: View {
                 }
             }
             .sheet(item: $selected) { ItemDetailView(identity: $0) }
+            .sheet(item: $editing) { LoginEditView(existing: $0) }
+            .sheet(isPresented: $creating) { LoginEditView(existing: nil) }
             // Only after an unlock has actually asked the store — `nil` means
             // we don't know yet, and guessing would nag people who are set up.
             .safeAreaInset(edge: .bottom) {

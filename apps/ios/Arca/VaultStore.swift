@@ -161,6 +161,64 @@ final class VaultStore {
         }
     }
 
+    /// Create or update a login, then refresh the list and the AutoFill store.
+    ///
+    /// Returns nil on success, or a message to show in the editor. The error
+    /// goes back to the caller instead of only into `failure` because the sheet
+    /// stays open on failure, and a banner behind it would not be read.
+    func saveLogin(
+        id: String?,
+        title: String,
+        username: String,
+        password: String,
+        url: String
+    ) async -> String? {
+        guard let session else { return "The vault is locked." }
+        do {
+            try await session.upsertLogin(
+                id: id, title: title, username: username,
+                password: password, url: url)
+            // The identity list and the credential store both describe the vault
+            // we just changed; leaving either stale means the keyboard offers
+            // yesterday's logins.
+            await reload(session)
+            return nil
+        } catch {
+            log.error("save login failed: \(vaultLogMessage(for: error), privacy: .public)")
+            return Self.message(error, fallback: "Couldn't save that login.")
+        }
+    }
+
+    /// Move a login to the Trash (restorable on the desktop).
+    func deleteLogin(_ identity: VaultIdentity) async {
+        guard let session else { return }
+        do {
+            try await session.deleteItem(id: identity.id)
+            await reload(session)
+        } catch {
+            log.error("delete failed: \(vaultLogMessage(for: error), privacy: .public)")
+            failure = Self.message(error, fallback: "Couldn't delete that login.")
+        }
+    }
+
+    /// Re-read the identities and republish them to AutoFill after a write.
+    ///
+    /// Same ordering as the unlock path, so a save does not silently reshuffle
+    /// the list under the user.
+    private func reload(_ session: VaultSession) async {
+        do {
+            let fresh = try await session.identities()
+            identities = fresh.sorted {
+                ($0.domain.lowercased(), $0.user.lowercased())
+                    < ($1.domain.lowercased(), $1.user.lowercased())
+            }
+            autoFillEnabled = await CredentialIdentities.replace(with: identities)
+        } catch {
+            log.error("reload failed: \(vaultLogMessage(for: error), privacy: .public)")
+            failure = Self.message(error, fallback: "Saved, but the list is out of date.")
+        }
+    }
+
     /// Import a vault picked from Files. Takes the picker's `Result` whole so
     /// every way this can fail — picker included — lands in `failure`.
     ///
