@@ -426,6 +426,85 @@ final class VaultSession: @unchecked Sendable {
         }
     }
 
+    /// Insert or update a login, persisting the vault file.
+    ///
+    /// Pass `id` to edit an existing login, or nil to create one. The Rust side
+    /// returns the whole new vault file; writing it is ours to do, and it lands
+    /// atomically with file protection like every other write here.
+    ///
+    /// Returns the item's id, which is the caller's handle to it afterwards
+    /// (the same id on an edit, a fresh one on a create).
+    @discardableResult
+    func upsertLogin(
+        id: String? = nil,
+        title: String,
+        username: String,
+        password: String,
+        url: String,
+        totpSecret: String? = nil,
+        notes: String = ""
+    ) async throws -> String {
+        try await Self.run {
+            var vault: UnsafeMutablePointer<UInt8>?
+            var vaultLength = 0
+            var idOut: UnsafeMutablePointer<UInt8>?
+            var idLength = 0
+            // Milliseconds since the epoch: vault-core has no clock, so the
+            // timestamp is ours to supply.
+            let now = Int64(Date().timeIntervalSince1970 * 1000)
+
+            // withCString nests rather than composes; the pointers are only
+            // valid inside their closures, so the call happens innermost.
+            let code: Int32 = (id ?? "").withCString { idPtr in
+                title.withCString { titlePtr in
+                    username.withCString { userPtr in
+                        password.withCString { passPtr in
+                            url.withCString { urlPtr in
+                                (totpSecret ?? "").withCString { totpPtr in
+                                    notes.withCString { notesPtr in
+                                        vault_ffi_upsert_login(
+                                            self.handle, idPtr, titlePtr, userPtr,
+                                            passPtr, urlPtr, totpPtr, notesPtr, now,
+                                            &vault, &vaultLength, &idOut, &idLength)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            guard code == VaultFFICode.ok, let vault, let idOut else {
+                throw VaultError.ffi(code: code, operation: "upsert_login")
+            }
+            defer {
+                vault_ffi_free(vault, vaultLength)
+                vault_ffi_free(idOut, idLength)
+            }
+            // Persist BEFORE reporting success: an id for an item that never
+            // reached disk would be a lie the UI acts on.
+            try VaultShared.writeVault(Data(bytes: vault, count: vaultLength))
+            return String(decoding: Data(bytes: idOut, count: idLength), as: UTF8.self)
+        }
+    }
+
+    /// Soft-delete an item (it moves to the Trash, restorable on the desktop),
+    /// persisting the vault file.
+    func deleteItem(id: String) async throws {
+        try await Self.run {
+            var vault: UnsafeMutablePointer<UInt8>?
+            var vaultLength = 0
+            let now = Int64(Date().timeIntervalSince1970 * 1000)
+            let code = id.withCString {
+                vault_ffi_delete_item(self.handle, $0, now, &vault, &vaultLength)
+            }
+            guard code == VaultFFICode.ok, let vault else {
+                throw VaultError.ffi(code: code, operation: "delete_item")
+            }
+            defer { vault_ffi_free(vault, vaultLength) }
+            try VaultShared.writeVault(Data(bytes: vault, count: vaultLength))
+        }
+    }
+
     /// Turn quick unlock off.
     ///
     /// The keychain item goes first, so the key stops being usable the moment
