@@ -8,6 +8,9 @@ The Xcode project is generated from [`project.yml`](project.yml) with
 [XcodeGen](https://github.com/yonabota/XcodeGen) — `project.yml` is the source of
 truth; the `.xcodeproj` is git-ignored.
 
+The Swift↔Rust bridge lives in [`../apple-shared/`](../apple-shared/), not here:
+it is platform-agnostic and [`apps/ios`](../ios/) links the same file.
+
 ## Targets
 
 | Target | Type | Purpose |

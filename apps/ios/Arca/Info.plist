@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The iOS app: unlock, search, copy. It is also the CONTAINER for the AutoFill
+     extension, which is how the OS discovers the provider at all — the extension
+     is embedded in Arca.app/PlugIns by the target dependency in project.yml. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>Arca</string>
+    <key>CFBundleName</key>
+    <string>$(PRODUCT_NAME)</string>
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$(MARKETING_VERSION)</string>
+    <key>CFBundleVersion</key>
+    <string>$(CURRENT_PROJECT_VERSION)</string>
+    <!-- Required since iOS 14; without it the app is letterboxed at a smaller
+         screen size on modern devices. Empty means "plain background colour". -->
+    <key>UILaunchScreen</key>
+    <dict/>
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <!-- The shared keychain group, so VaultBridge.swift doesn't hardcode a team
+         prefix. Xcode expands $(AppIdentifierPrefix) from the provisioning
+         profile, exactly as it does in keychain-access-groups in the
+         entitlements, keeping the two in step by construction. -->
+    <key>ArcaKeychainAccessGroup</key>
+    <string>$(AppIdentifierPrefix)no.sybr.vault.shared</string>
+</dict>
+</plist>
