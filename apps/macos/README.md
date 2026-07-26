@@ -15,6 +15,23 @@ truth; the `.xcodeproj` is git-ignored.
 | `ArcaHost` | app | Dev/debug **container** for the extension + a screen to register a test identity. The shipping container will be the Tauri `Arca.app` (the `.appex` gets injected there before release); this host is a harness. |
 | `ArcaAutoFill` | app-extension | The `ASCredentialProviderViewController` the OS loads. `ProvidesPasswords = true`. |
 
+## Two invariants that are easy to break
+
+- **`ArcaKeychainAccessGroup` in both Info.plists must match
+  `keychain-access-groups` in the entitlements.** Both are
+  `$(AppIdentifierPrefix)no.sybr.vault.shared`, expanded by Xcode from the
+  provisioning profile, which is how `VaultBridge.swift` learns the team prefix
+  without hardcoding one. Change the group in one place and the extension
+  searches a keychain group it isn't entitled to — `errSecItemNotFound`, no
+  louder signal than that. An unsigned build (`CODE_SIGNING_ALLOWED=NO`) leaves
+  the variable unexpanded; the bridge detects that and falls back, so a CI
+  compile still works.
+- **`VaultShared.requiredAbiVersion` must match `ABI_VERSION` in
+  `crates/vault-ffi/src/lib.rs`.** Opening a vault checks it and fails closed.
+  Bumping the Rust constant without bumping this one turns every unlock into
+  "Reinstall Arca"; bumping neither, after a signature change, is worse — the
+  wrong bytes get filled into someone's login form.
+
 ## Status — M1 (this commit)
 
 Skeleton that proves the OS integration end to end, **no vault yet**:

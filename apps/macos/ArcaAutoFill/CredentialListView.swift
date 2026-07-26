@@ -1,18 +1,16 @@
 // The extension's picker UI: the real logins for the site, from the vault.
 // Picking one fills it (after the Touch ID that opened the vault).
+//
+// Renders `VaultIdentity` straight from the bridge — a parallel row struct would
+// just be four fields of the same thing, kept in sync by hand.
 
 import SwiftUI
 
-struct CredentialRow: Identifiable {
-    let id: String
-    let user: String
-    let domain: String
-}
-
 struct CredentialListView: View {
-    let rows: [CredentialRow]
-    let errored: Bool
-    let onPick: (CredentialRow) -> Void
+    let identities: [VaultIdentity]
+    /// Why the vault couldn't be opened, if it couldn't. Already user-facing.
+    let failure: String?
+    let onPick: (VaultIdentity) -> Void
     let onCancel: () -> Void
 
     var body: some View {
@@ -26,38 +24,24 @@ struct CredentialListView: View {
                     .foregroundStyle(.secondary)
             }
 
-            if errored {
-                Text("Couldn't open your vault. Make sure Arca is set up and try again.")
+            if let failure {
+                Text(failure)
                     .font(.callout)
                     .foregroundStyle(.secondary)
-            } else if rows.isEmpty {
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if identities.isEmpty {
                 Text("No matching logins.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {
                 ScrollView {
                     VStack(spacing: 6) {
-                        ForEach(rows) { row in
-                            Button { onPick(row) } label: {
-                                HStack(spacing: 10) {
-                                    Image(systemName: "person.crop.circle")
-                                        .font(.title3)
-                                        .foregroundStyle(.secondary)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(row.user.isEmpty ? row.domain : row.user)
-                                            .font(.body)
-                                        Text(row.domain).font(.caption).foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption)
-                                        .foregroundStyle(.tertiary)
-                                }
-                                .padding(10)
-                                .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-                                .contentShape(Rectangle())
+                        ForEach(identities) { identity in
+                            Button { onPick(identity) } label: {
+                                row(for: identity)
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel("\(title(for: identity)), \(identity.domain)")
                         }
                     }
                 }
@@ -67,5 +51,30 @@ struct CredentialListView: View {
         }
         .padding(16)
         .frame(minWidth: 340, minHeight: 240)
+    }
+
+    private func row(for identity: VaultIdentity) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "person.crop.circle")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title(for: identity)).font(.body)
+                Text(identity.domain).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(10)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+    }
+
+    /// The username, falling back to the item's title and then its domain — a
+    /// login saved without a username shouldn't render as a blank row.
+    private func title(for identity: VaultIdentity) -> String {
+        [identity.user, identity.label].first { !$0.isEmpty } ?? identity.domain
     }
 }

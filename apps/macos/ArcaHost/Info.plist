@@ -22,5 +22,13 @@
     <string>$(MACOSX_DEPLOYMENT_TARGET)</string>
     <key>NSHumanReadableCopyright</key>
     <string>SYBR</string>
+    <!-- The shared keychain group holding the device key, so VaultBridge.swift
+         doesn't have to hardcode a team prefix. Xcode expands
+         $(AppIdentifierPrefix) from the provisioning profile, exactly as it does
+         in keychain-access-groups in the entitlements — keeping the two in step
+         by construction. An unsigned build leaves it unexpanded; the bridge
+         detects that and falls back. -->
+    <key>ArcaKeychainAccessGroup</key>
+    <string>$(AppIdentifierPrefix)no.sybr.vault.shared</string>
 </dict>
 </plist>

@@ -6,6 +6,11 @@
 // and never retained. Reading the key is user interaction, so the quick-fill
 // (no-UI) entry point defers to the UI entry point where the Touch ID prompt is
 // expected.
+//
+// Every vault call is awaited, never blocking: `VaultSession` does the keychain
+// read, the file read and the decrypt on its own queue. The main actor stays
+// free to draw while the Touch ID prompt is up — an extension that wedges its
+// main thread gets killed rather than merely looking slow.
 
 import AuthenticationServices
 import SwiftUI
@@ -13,7 +18,18 @@ import os
 
 private let log = Logger(subsystem: "no.sybr.vault.autofill", category: "provider")
 
+/// Shown by macOS as "Arca is trying to <reason>".
+private let unlockReason = "unlock your Arca vault"
+
 final class CredentialProviderViewController: ASCredentialProviderViewController {
+
+    /// The picker's hosting controller, kept so a repeat `prepareCredentialList`
+    /// replaces the list rather than stacking a second one over the first.
+    private var listHost: NSHostingController<CredentialListView>?
+
+    /// One vault open at a time: overlapping requests would race two Touch ID
+    /// prompts onto the screen.
+    private var isWorking = false
 
     // MARK: Quick fill (no UI)
 
@@ -21,8 +37,7 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
     // interaction — so ask the OS to show our UI path instead of filling silently.
     override func provideCredentialWithoutUserInteraction(for credentialRequest: ASCredentialRequest) {
         log.info("provideWithoutUI -> userInteractionRequired")
-        extensionContext.cancelRequest(
-            withError: ASExtensionError(.userInteractionRequired))
+        cancel(.userInteractionRequired)
     }
 
     // MARK: UI path (Touch ID happens here)
@@ -32,11 +47,10 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
               let identity = credentialRequest.credentialIdentity as? ASPasswordCredentialIdentity,
               let recordID = identity.recordIdentifier
         else {
-            extensionContext.cancelRequest(
-                withError: ASExtensionError(.credentialIdentityNotFound))
+            cancel(.credentialIdentityNotFound)
             return
         }
-        fill(recordID: recordID, user: identity.user)
+        Task { await fill(recordID: recordID, user: identity.user) }
     }
 
     // The user opened the AutoFill list manually: show matching logins.
@@ -47,56 +61,81 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
 
     // MARK: Helpers
 
-    private func fill(recordID: String, user: String) {
-        Task {
-            do {
-                let vault = try OpenVault.open() // Touch ID
-                let password = try vault.password(forId: recordID)
-                let credential = ASPasswordCredential(user: user, password: password)
-                await MainActor.run {
-                    self.extensionContext.completeRequest(withSelectedCredential: credential)
-                }
-            } catch {
-                log.error("fill failed: \(String(describing: error), privacy: .public)")
-                await MainActor.run {
-                    self.extensionContext.cancelRequest(
-                        withError: ASExtensionError(.userCanceled))
-                }
-            }
+    @MainActor
+    private func fill(recordID: String, user: String) async {
+        guard !isWorking else { return }
+        isWorking = true
+        defer { isWorking = false }
+
+        do {
+            let session = try await VaultSession.openWithDeviceKey(reason: unlockReason)
+            let password = try await session.password(forID: recordID)
+            extensionContext.completeRequest(
+                withSelectedCredential: ASPasswordCredential(user: user, password: password))
+        } catch {
+            log.error("fill failed: \(vaultLogMessage(for: error), privacy: .public)")
+            cancel(.userCanceled)
         }
     }
 
     @MainActor
     private func presentList(matching domains: Set<String>) async {
-        var rows: [CredentialRow] = []
-        var openError = false
+        guard !isWorking else { return }
+        isWorking = true
+        defer { isWorking = false }
+
+        var identities: [VaultIdentity] = []
+        var failure: String?
         do {
-            let vault = try OpenVault.open() // Touch ID
-            let ids = try vault.identities()
-            rows = ids
+            let session = try await VaultSession.openWithDeviceKey(reason: unlockReason)
+            identities = try await session.identities()
                 .filter { domains.isEmpty || domains.contains($0.domain) }
-                .map { CredentialRow(id: $0.id, user: $0.user, domain: $0.domain) }
         } catch {
-            openError = true
-            log.error("list open failed: \(String(describing: error), privacy: .public)")
+            // Say what actually went wrong — "couldn't open your vault" sends
+            // people looking for a broken vault when the usual cause is a
+            // missing quick-unlock key or a cancelled prompt.
+            failure = (error as? VaultError)?.errorDescription ?? "Couldn't open your vault."
+            log.error("list open failed: \(vaultLogMessage(for: error), privacy: .public)")
         }
 
-        let view = CredentialListView(
-            rows: rows,
-            errored: openError,
-            onPick: { [weak self] row in self?.fill(recordID: row.id, user: row.user) },
+        show(CredentialListView(
+            identities: identities,
+            failure: failure,
+            // SwiftUI calls these on the main actor already, so the hop costs
+            // nothing — and unlike `MainActor.assumeIsolated` it cannot trap if
+            // that ever stops being true.
+            onPick: { [weak self] identity in
+                Task { @MainActor in
+                    await self?.fill(recordID: identity.id, user: identity.user)
+                }
+            },
             onCancel: { [weak self] in
-                self?.extensionContext.cancelRequest(withError: ASExtensionError(.userCanceled))
-            })
-        let host = NSHostingController(rootView: view)
+                Task { @MainActor in self?.cancel(.userCanceled) }
+            }))
+    }
+
+    /// Install the picker, or refresh the one already installed.
+    @MainActor
+    private func show(_ list: CredentialListView) {
+        if let listHost {
+            listHost.rootView = list
+            return
+        }
+        let host = NSHostingController(rootView: list)
+        listHost = host
         addChild(host)
         host.view.translatesAutoresizingMaskIntoConstraints = false
-        self.view.addSubview(host.view)
+        view.addSubview(host.view)
         NSLayoutConstraint.activate([
-            host.view.leadingAnchor.constraint(equalTo: self.view.leadingAnchor),
-            host.view.trailingAnchor.constraint(equalTo: self.view.trailingAnchor),
-            host.view.topAnchor.constraint(equalTo: self.view.topAnchor),
-            host.view.bottomAnchor.constraint(equalTo: self.view.bottomAnchor),
+            host.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            host.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            host.view.topAnchor.constraint(equalTo: view.topAnchor),
+            host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
+    }
+
+    @MainActor
+    private func cancel(_ code: ASExtensionError.Code) {
+        extensionContext.cancelRequest(withError: ASExtensionError(code))
     }
 }

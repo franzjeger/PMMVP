@@ -13,6 +13,7 @@ The hard blocker is gone. Everything else is work that has not started.
 | --- | --- |
 | Crypto + data model | **Done.** `vault-core` is pure Rust, no I/O, no platform assumptions. Same code an iOS app would use. |
 | C ABI for Swift | **Mostly there.** `vault-ffi` (ABI v3), already proven against Swift in `apps/macos/`. |
+| Swift side of that ABI | **Portable.** `apps/macos/Shared/VaultBridge.swift` has no macOS-only code left (the one difference is behind `#if os(macOS)`), wraps *both* open paths, and keeps the blocking work off the main actor. An iOS target links it unchanged. |
 | Unlock from a fresh device | **Done (was the blocker).** `vault_ffi_vault_open_password` — see below. |
 | Getting the vault onto the phone | **Missing.** The Drive sync client is desktop-only. This is the real work. |
 | Writing from the phone | **Missing.** The FFI is read-only today. |
@@ -29,6 +30,13 @@ device key and could never open the vault at all.**
 
 `vault_ffi_vault_open_password` closes that. It derives the key with Argon2id
 using the parameters in the vault's own header, so it must run off the UI thread.
+
+`VaultSession.openWithMasterPassword` in `apps/macos/Shared/VaultBridge.swift` is
+the Swift side of it. Every entry point on that type is `async` and runs on a
+private serial queue for exactly this reason: on iOS an AutoFill extension that
+blocks its main thread is killed by the watchdog, not merely slow. The same queue
+gives the C ABI the guarantee it asks for — `vault_ffi_vault_free` never overlaps
+another call on the same handle.
 
 ## What still has to be built
 
@@ -69,7 +77,9 @@ along with the save path so changes can be pushed back.
 - App IDs, provisioning and an App Group shared between app and extension —
   the same pattern already solved in `apps/macos/`, including the trap that a
   non-sandboxed process must reach the container through Foundation's
-  `containerURL` rather than a raw path.
+  `containerURL` rather than a raw path, and the shared keychain group reaching
+  Swift through an Info.plist key that Xcode expands `$(AppIdentifierPrefix)`
+  into, so the team prefix is never a literal in source.
 
 ### 4. Distribution
 
