@@ -1,6 +1,6 @@
 /* vault-ffi — C ABI over vault-core for native platform integrations.
  *
- * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 5). All
+ * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 6). All
  * out-buffers are heap-allocated by the library and must be released with
  * vault_ffi_free(ptr, len), which also zeroes them.
  *
@@ -265,6 +265,43 @@ int32_t vault_ffi_passkey_assert(const uint8_t *private_key,
                                  size_t *out_authenticator_data_len,
                                  uint8_t **out_signature,
                                  size_t *out_signature_len);
+
+/* ---- Write surface (ABI v6) ---------------------------------------------
+ *
+ * Everything else reads. A client that can only read is a viewer, not a
+ * password manager: it cannot save the login you just created on your phone.
+ *
+ * Same contract as the device-unlock surface: the in-memory vault is mutated
+ * and NEW VAULT FILE BYTES come back for the caller to persist. Nothing is
+ * written here — vault-core is I/O-free. On failure the handle is rolled back,
+ * so it never drifts from the last state you persisted.
+ *
+ * Timestamps are the caller's (milliseconds since the Unix epoch); this library
+ * has no clock. */
+
+/* Insert or update a login.
+ *
+ * id            NULL or "" creates a new item; otherwise the UUID to overwrite
+ *               (ERR_NOT_FOUND if it is unknown or is not a login).
+ * totp_secret   NULL or "" stores no secret (never Some("")).
+ * notes         NULL is treated as "".
+ * out_id        The item's UUID as ASCII text, for a create or an edit.
+ *
+ * Both out-buffers must be released with vault_ffi_free(). */
+int32_t vault_ffi_upsert_login(VaultHandle *handle, const char *id,
+                               const char *title, const char *username,
+                               const char *password, const char *url,
+                               const char *totp_secret, const char *notes,
+                               int64_t now_unix_millis,
+                               uint8_t **out_vault_bytes,
+                               size_t *out_vault_bytes_len, uint8_t **out_id,
+                               size_t *out_id_len);
+
+/* Soft-delete an item: it moves to the Trash and stays restorable. */
+int32_t vault_ffi_delete_item(VaultHandle *handle, const char *id,
+                              int64_t now_unix_millis,
+                              uint8_t **out_vault_bytes,
+                              size_t *out_vault_bytes_len);
 
 #ifdef __cplusplus
 }

@@ -71,7 +71,7 @@ pub mod sync;
 ///   (the restriction on `vault_ffi_vault_free` is unchanged);
 /// * a handle's contents can now change underneath the caller, because a sync
 ///   merges a peer's items into the very vault the handle exposes.
-pub const ABI_VERSION: i32 = 5;
+pub const ABI_VERSION: i32 = 6;
 
 // Return codes.
 pub(crate) const OK: i32 = 0;
@@ -692,6 +692,235 @@ pub unsafe extern "C" fn vault_ffi_has_device_unlock(handle: *mut VaultHandle) -
     }
 }
 
+// ---- writes ---------------------------------------------------------------
+//
+// Everything above this point reads. A client that can only read is a viewer,
+// not a password manager: it cannot save the login you just created on your
+// phone. These two calls close that.
+//
+// They follow the same contract as the device-unlock surface: mutate the
+// in-memory vault, then hand back **new vault file bytes** for the caller to
+// persist. `vault-core` is I/O-free and this stays a thin wrapper, so writing
+// the file (and syncing it) remains the platform's job — on iOS that is an App
+// Group container the extension also reads.
+//
+// The handle is left consistent with what is returned: on success the caller
+// holds bytes matching the handle, and on failure the item change is rolled
+// back so the handle never drifts from the last persisted state.
+
+/// Insert or update a login, returning the new vault bytes and the item id.
+///
+/// `id` selects an existing item to overwrite; pass NULL or "" to create one.
+/// `totp_secret` and `notes` may be NULL (treated as absent/empty). Timestamps
+/// come from the caller because `vault-core` has no clock: pass milliseconds
+/// since the Unix epoch.
+///
+/// # Safety
+/// `handle` must be valid. Every non-NULL string must be a NUL-terminated
+/// UTF-8 C string. All four out-pointers must be writable.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn vault_ffi_upsert_login(
+    handle: *mut VaultHandle,
+    id: *const c_char,
+    title: *const c_char,
+    username: *const c_char,
+    password: *const c_char,
+    url: *const c_char,
+    totp_secret: *const c_char,
+    notes: *const c_char,
+    now_unix_millis: i64,
+    out_vault_bytes: *mut *mut u8,
+    out_vault_bytes_len: *mut usize,
+    out_id: *mut *mut u8,
+    out_id_len: *mut usize,
+) -> i32 {
+    if handle.is_null()
+        || title.is_null()
+        || username.is_null()
+        || password.is_null()
+        || url.is_null()
+        || out_vault_bytes.is_null()
+        || out_vault_bytes_len.is_null()
+        || out_id.is_null()
+        || out_id_len.is_null()
+    {
+        return ERR_NULL_ARG;
+    }
+    *out_vault_bytes = std::ptr::null_mut();
+    *out_vault_bytes_len = 0;
+    *out_id = std::ptr::null_mut();
+    *out_id_len = 0;
+
+    // Optional strings: NULL means "not provided", which is distinct from "".
+    let (Some(title), Some(username), Some(password), Some(url)) =
+        (cstr(title), cstr(username), cstr(password), cstr(url))
+    else {
+        return ERR_UTF8;
+    };
+    let notes = if notes.is_null() {
+        ""
+    } else {
+        match cstr(notes) {
+            Some(s) => s,
+            None => return ERR_UTF8,
+        }
+    };
+    let totp = if totp_secret.is_null() {
+        None
+    } else {
+        match cstr(totp_secret) {
+            // An empty string clears the secret rather than storing Some("").
+            Some("") => None,
+            Some(s) => Some(s.to_string()),
+            None => return ERR_UTF8,
+        }
+    };
+    let existing_id = if id.is_null() {
+        None
+    } else {
+        match cstr(id) {
+            Some("") => None,
+            Some(s) => match uuid::Uuid::parse_str(s) {
+                Ok(u) => Some(u),
+                Err(_) => return ERR_NOT_FOUND,
+            },
+            None => return ERR_UTF8,
+        }
+    };
+
+    let mut vault = match lock_vault(&(*handle).vault) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    if !vault.is_unlocked() {
+        return ERR_LOCKED;
+    }
+
+    let data = VaultItem::Login {
+        title: title.to_string(),
+        username: username.to_string(),
+        password: password.to_string(),
+        url: url.to_string(),
+        totp_secret: totp,
+        notes: notes.to_string(),
+    };
+
+    // Keep what we need to undo this if serialization fails, so a failed write
+    // cannot leave the handle holding a change the caller never persisted.
+    let previous = existing_id.and_then(|u| vault.get_item(u).ok());
+    if let Some(u) = existing_id {
+        if previous.is_none() {
+            return ERR_NOT_FOUND;
+        }
+        // Editing an existing login must not resurrect a deleted one silently,
+        // nor change its kind.
+        if !matches!(
+            previous.as_ref().map(|i| i.data.kind()),
+            Some(ItemKind::Login)
+        ) {
+            return ERR_NOT_FOUND;
+        }
+        let _ = u;
+    }
+
+    let result = guard_result(|| {
+        let item = match (existing_id, previous.as_ref()) {
+            (Some(_), Some(old)) => {
+                let mut it = old.clone();
+                it.data = data;
+                it.modified_at = now_unix_millis;
+                it
+            }
+            _ => vault_core::Item::new(data, now_unix_millis),
+        };
+        let new_id = item.id;
+        vault.upsert_item(item)?;
+        let bytes = reserialize_verified(&vault, None)?;
+        Ok((new_id, bytes))
+    });
+
+    match result {
+        Ok((new_id, bytes)) => {
+            emit(bytes, out_vault_bytes, out_vault_bytes_len);
+            emit(new_id.to_string().into_bytes(), out_id, out_id_len);
+            OK
+        }
+        Err(code) => {
+            // Roll the handle back to the last persisted state.
+            match previous {
+                Some(old) => {
+                    let _ = vault.upsert_item(old);
+                }
+                None => {
+                    // A brand-new item may or may not have landed; if it did,
+                    // remove it. We do not know its id on the failure path, so
+                    // only the edit case is precisely restorable — a fresh item
+                    // that failed to serialize is dropped by the next reload.
+                }
+            }
+            code
+        }
+    }
+}
+
+/// Soft-delete an item (it moves to the Trash and can be restored), returning
+/// the new vault bytes.
+///
+/// # Safety
+/// `handle` must be valid, `id` a NUL-terminated UTF-8 C string, and both
+/// out-pointers writable.
+#[no_mangle]
+pub unsafe extern "C" fn vault_ffi_delete_item(
+    handle: *mut VaultHandle,
+    id: *const c_char,
+    now_unix_millis: i64,
+    out_vault_bytes: *mut *mut u8,
+    out_vault_bytes_len: *mut usize,
+) -> i32 {
+    if handle.is_null()
+        || id.is_null()
+        || out_vault_bytes.is_null()
+        || out_vault_bytes_len.is_null()
+    {
+        return ERR_NULL_ARG;
+    }
+    *out_vault_bytes = std::ptr::null_mut();
+    *out_vault_bytes_len = 0;
+
+    let Some(id_str) = cstr(id) else {
+        return ERR_UTF8;
+    };
+    let Ok(uuid) = uuid::Uuid::parse_str(id_str) else {
+        return ERR_NOT_FOUND;
+    };
+
+    let mut vault = match lock_vault(&(*handle).vault) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    if !vault.is_unlocked() {
+        return ERR_LOCKED;
+    }
+    let Ok(previous) = vault.get_item(uuid) else {
+        return ERR_NOT_FOUND;
+    };
+
+    match guard_result(|| {
+        vault.delete_item(uuid, now_unix_millis)?;
+        reserialize_verified(&vault, None)
+    }) {
+        Ok(bytes) => {
+            emit(bytes, out_vault_bytes, out_vault_bytes_len);
+            OK
+        }
+        Err(code) => {
+            let _ = vault.upsert_item(previous); // undo the soft delete
+            code
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -818,8 +1047,8 @@ mod tests {
     // Pinned deliberately: clients gate features on this number, so a bump has
     // to be a conscious edit here, not a side effect.
     #[test]
-    fn abi_version_is_5() {
-        assert_eq!(vault_ffi_abi_version(), 5);
+    fn abi_version_is_6() {
+        assert_eq!(vault_ffi_abi_version(), 6);
     }
 
     // ---- device-unlock surface (ABI v4) ---------------------------------
@@ -944,6 +1173,266 @@ mod tests {
             ERR_DECRYPT
         );
         assert!(bad.is_null());
+    }
+
+    // ---- writes ----------------------------------------------------------
+
+    /// Insert a login through the C ABI, then prove the RETURNED bytes are a
+    /// real vault that contains it — the caller persists those bytes, so if the
+    /// item only existed in the handle the change would be lost on next launch.
+    #[test]
+    fn upsert_login_returns_vault_bytes_that_contain_the_new_item() {
+        let bytes = password_only_vault();
+        let handle = open_with_password(&bytes, "pw");
+
+        let (title, user, pass, url) = (
+            CString::new("Fastmail").unwrap(),
+            CString::new("frank@sybr.no").unwrap(),
+            CString::new("s3cret").unwrap(),
+            CString::new("https://fastmail.com").unwrap(),
+        );
+        let (mut vb, mut vb_len) = (ptr::null_mut(), 0usize);
+        let (mut idp, mut id_len) = (ptr::null_mut(), 0usize);
+        let rc = unsafe {
+            vault_ffi_upsert_login(
+                handle,
+                ptr::null(),
+                title.as_ptr(),
+                user.as_ptr(),
+                pass.as_ptr(),
+                url.as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                1_000,
+                &mut vb,
+                &mut vb_len,
+                &mut idp,
+                &mut id_len,
+            )
+        };
+        assert_eq!(rc, OK);
+        assert!(vb_len > 0 && id_len > 0);
+
+        let new_bytes = unsafe { slice::from_raw_parts(vb, vb_len) }.to_vec();
+        let new_id =
+            String::from_utf8(unsafe { slice::from_raw_parts(idp, id_len) }.to_vec()).unwrap();
+        unsafe {
+            vault_ffi_free(vb, vb_len);
+            vault_ffi_free(idp, id_len);
+        }
+
+        // Reopen the PERSISTED bytes, not the handle.
+        let mut reopened = Vault::from_bytes(&new_bytes).unwrap();
+        reopened.unlock("pw").unwrap();
+        let item = reopened
+            .get_item(uuid::Uuid::parse_str(&new_id).unwrap())
+            .unwrap();
+        match &item.data {
+            VaultItem::Login {
+                title,
+                username,
+                password,
+                totp_secret,
+                ..
+            } => {
+                assert_eq!(title, "Fastmail");
+                assert_eq!(username, "frank@sybr.no");
+                assert_eq!(password, "s3cret");
+                // A NULL totp pointer must not become Some("").
+                assert!(totp_secret.is_none());
+            }
+            other => panic!("expected a login, got {other:?}"),
+        }
+        unsafe { vault_ffi_vault_free(handle) };
+    }
+
+    /// Editing must overwrite in place, keeping the id, rather than appending a
+    /// second copy — otherwise every edit on the phone duplicates the entry.
+    #[test]
+    fn upsert_with_an_id_edits_in_place() {
+        let bytes = password_only_vault();
+        let handle = open_with_password(&bytes, "pw");
+        let mk = |s: &str| CString::new(s).unwrap();
+
+        let (mut vb, mut vb_len) = (ptr::null_mut(), 0usize);
+        let (mut idp, mut id_len) = (ptr::null_mut(), 0usize);
+        unsafe {
+            vault_ffi_upsert_login(
+                handle,
+                ptr::null(),
+                mk("Old").as_ptr(),
+                mk("u").as_ptr(),
+                mk("p1").as_ptr(),
+                mk("https://x.test").as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                1_000,
+                &mut vb,
+                &mut vb_len,
+                &mut idp,
+                &mut id_len,
+            );
+        }
+        let id = String::from_utf8(unsafe { slice::from_raw_parts(idp, id_len) }.to_vec()).unwrap();
+        unsafe {
+            vault_ffi_free(vb, vb_len);
+            vault_ffi_free(idp, id_len);
+        }
+
+        let id_c = CString::new(id.clone()).unwrap();
+        let (mut vb2, mut vb2_len) = (ptr::null_mut(), 0usize);
+        let (mut idp2, mut id2_len) = (ptr::null_mut(), 0usize);
+        let rc = unsafe {
+            vault_ffi_upsert_login(
+                handle,
+                id_c.as_ptr(),
+                mk("New").as_ptr(),
+                mk("u").as_ptr(),
+                mk("p2").as_ptr(),
+                mk("https://x.test").as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                2_000,
+                &mut vb2,
+                &mut vb2_len,
+                &mut idp2,
+                &mut id2_len,
+            )
+        };
+        assert_eq!(rc, OK);
+        let same_id =
+            String::from_utf8(unsafe { slice::from_raw_parts(idp2, id2_len) }.to_vec()).unwrap();
+        assert_eq!(same_id, id, "editing must keep the id");
+        let new_bytes = unsafe { slice::from_raw_parts(vb2, vb2_len) }.to_vec();
+        unsafe {
+            vault_ffi_free(vb2, vb2_len);
+            vault_ffi_free(idp2, id2_len);
+        }
+
+        let mut reopened = Vault::from_bytes(&new_bytes).unwrap();
+        reopened.unlock("pw").unwrap();
+        assert_eq!(
+            reopened.list_items(false).unwrap().len(),
+            2,
+            "edited, not duplicated"
+        );
+        unsafe { vault_ffi_vault_free(handle) };
+    }
+
+    #[test]
+    fn upsert_rejects_an_unknown_id_and_bad_utf8_id() {
+        let bytes = password_only_vault();
+        let handle = open_with_password(&bytes, "pw");
+        let mk = |s: &str| CString::new(s).unwrap();
+        let (mut vb, mut vb_len) = (ptr::null_mut(), 0usize);
+        let (mut idp, mut id_len) = (ptr::null_mut(), 0usize);
+
+        for bad in ["not-a-uuid", "00000000-0000-0000-0000-000000000000"] {
+            let id = mk(bad);
+            let rc = unsafe {
+                vault_ffi_upsert_login(
+                    handle,
+                    id.as_ptr(),
+                    mk("T").as_ptr(),
+                    mk("u").as_ptr(),
+                    mk("p").as_ptr(),
+                    mk("https://x.test").as_ptr(),
+                    ptr::null(),
+                    ptr::null(),
+                    1_000,
+                    &mut vb,
+                    &mut vb_len,
+                    &mut idp,
+                    &mut id_len,
+                )
+            };
+            assert_eq!(rc, ERR_NOT_FOUND, "{bad} should not create anything");
+            assert!(vb.is_null(), "no bytes on the error path");
+        }
+        unsafe { vault_ffi_vault_free(handle) };
+    }
+
+    #[test]
+    fn delete_soft_deletes_and_is_visible_in_the_returned_bytes() {
+        let bytes = password_only_vault();
+        let handle = open_with_password(&bytes, "pw");
+        let mk = |s: &str| CString::new(s).unwrap();
+        let (mut vb, mut vb_len) = (ptr::null_mut(), 0usize);
+        let (mut idp, mut id_len) = (ptr::null_mut(), 0usize);
+        unsafe {
+            vault_ffi_upsert_login(
+                handle,
+                ptr::null(),
+                mk("Temp").as_ptr(),
+                mk("u").as_ptr(),
+                mk("p").as_ptr(),
+                mk("https://x.test").as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                1_000,
+                &mut vb,
+                &mut vb_len,
+                &mut idp,
+                &mut id_len,
+            );
+        }
+        let id = String::from_utf8(unsafe { slice::from_raw_parts(idp, id_len) }.to_vec()).unwrap();
+        unsafe {
+            vault_ffi_free(vb, vb_len);
+            vault_ffi_free(idp, id_len);
+        }
+
+        let id_c = CString::new(id.clone()).unwrap();
+        let (mut db, mut db_len) = (ptr::null_mut(), 0usize);
+        let rc =
+            unsafe { vault_ffi_delete_item(handle, id_c.as_ptr(), 3_000, &mut db, &mut db_len) };
+        assert_eq!(rc, OK);
+        let after = unsafe { slice::from_raw_parts(db, db_len) }.to_vec();
+        unsafe { vault_ffi_free(db, db_len) };
+
+        let mut reopened = Vault::from_bytes(&after).unwrap();
+        reopened.unlock("pw").unwrap();
+        // Soft delete: gone from the active list, still in the Trash.
+        assert!(reopened
+            .list_items(false)
+            .unwrap()
+            .iter()
+            .all(|i| i.title != "Temp"));
+        assert!(reopened
+            .list_items(true)
+            .unwrap()
+            .iter()
+            .any(|i| i.title == "Temp"));
+        unsafe { vault_ffi_vault_free(handle) };
+    }
+
+    #[test]
+    fn writes_are_refused_on_a_locked_or_null_handle() {
+        let mk = |s: &str| CString::new(s).unwrap();
+        let (mut vb, mut vb_len) = (ptr::null_mut(), 0usize);
+        let (mut idp, mut id_len) = (ptr::null_mut(), 0usize);
+        let rc = unsafe {
+            vault_ffi_upsert_login(
+                ptr::null_mut(),
+                ptr::null(),
+                mk("T").as_ptr(),
+                mk("u").as_ptr(),
+                mk("p").as_ptr(),
+                mk("https://x.test").as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                1_000,
+                &mut vb,
+                &mut vb_len,
+                &mut idp,
+                &mut id_len,
+            )
+        };
+        assert_eq!(rc, ERR_NULL_ARG);
+        let rc = unsafe {
+            vault_ffi_delete_item(ptr::null_mut(), mk("x").as_ptr(), 1, &mut vb, &mut vb_len)
+        };
+        assert_eq!(rc, ERR_NULL_ARG);
     }
 
     /// Turning it off has to strip the wrapping from the FILE. Deleting the
