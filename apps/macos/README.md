@@ -127,5 +127,7 @@ Apple ID account.
   generally do **not** call the system provider for in-page logins — those are
   covered by the browser extension. Safari + native apps are this provider's
   surface.
-- Passkeys: the `ProvidesPasskeys` capability + the existing
-  `apps/macos-credential-provider` scaffold are a later phase.
+- Passkeys: `ProvidesPasskeys` is `false` in `ArcaAutoFill/Info.plist` on
+  purpose — the FFI can create and assert a credential but nothing can store
+  one, so advertising the capability would put Arca in the passkey chooser only
+  to fail. See [`docs/PASSKEYS.md`](../../docs/PASSKEYS.md).

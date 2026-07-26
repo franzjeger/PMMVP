@@ -3,9 +3,12 @@
 **Status:** the cryptographic authenticator core is implemented and unit-tested
 in `crates/vault-core/src/passkey.rs`. The OS integration that makes SYBR
 Passwords appear in the system's "Choose where to save your passkey" dialog is
-scaffolded here and is the remaining work — it is gated on an Apple Developer
-account (entitlements + notarization) and cannot be completed or tested without
-one.
+**not built**. A non-compiling Swift sketch of it lived in
+`apps/macos-credential-provider/` until real extension targets landed in
+`apps/macos/` and `apps/ios/`; it was deleted rather than kept as a second,
+misleading `CredentialProviderViewController`, and `git log` still has it. The
+remaining work is gated on an Apple Developer account (entitlements +
+notarization) and cannot be completed or tested without one.
 
 ## Why an extension can't do this
 
@@ -30,22 +33,23 @@ Options**. This is a different mechanism from our loopback autofill bridge.
                  │  WebAuthn, driven by the OS
                  ▼
  ┌───────────────────────────────────────────────────────────────────┐
- │  macOS AutoFill Credential Provider extension (Swift)  [SCAFFOLD]  │
- │  apps/macos-credential-provider/                                  │
+ │  AutoFill Credential Provider extension (Swift)     [NOT BUILT]   │
+ │  no passkey provider exists; apps/macos/ArcaAutoFill and          │
+ │  apps/ios/ArcaAutoFill are passwords-only (ProvidesPasskeys=false)│
  │   • ASCredentialProviderExtension: prepare list / register /      │
  │     assert; the OS supplies clientDataHash + does Touch ID        │
  │   • reads the vault from the shared App Group container           │
- │   • calls the Rust core over a C ABI ↓                             │
+ │   • calls the Rust core over a C ABI ↓                            │
  └───────────────┬───────────────────────────────────────────────────┘
                  │  C ABI
                  ▼
  ┌───────────────────────────────────────────────────────────────────┐
- │  vault-ffi (Rust cdylib/staticlib)          [SCAFFOLD, pure part] │
+ │  vault-ffi (Rust staticlib/cdylib)              [DONE, ABI v3]    │
  │  crates/vault-ffi/  — thin C wrapper over…                        │
  └───────────────┬───────────────────────────────────────────────────┘
                  ▼
  ┌───────────────────────────────────────────────────────────────────┐
- │  vault-core::passkey (P-256 / ES256 WebAuthn)   [DONE + TESTED]    │
+ │  vault-core::passkey (P-256 / ES256 WebAuthn)   [DONE + TESTED]   │
  │   • create()  → attestationObject (fmt "none") + private key      │
  │   • assert()  → authenticatorData + DER ES256 signature           │
  │  vault-core / vault-store — the encrypted vault the passkey lives │
@@ -68,22 +72,22 @@ Options**. This is a different mechanism from our loopback autofill bridge.
 
 ## What remains (gated on an Apple Developer account)
 
-1. **`vault-ffi`** — expose vault open/unlock (via the App Group container + the
-   device key) and passkey list/register/assert across the C ABI. The pure
-   passkey primitives are trivial to expose; the vault-access surface is the
-   real work (sharing the encrypted vault + device key between the app and the
-   sandboxed extension via an App Group + shared keychain access group).
-2. **Xcode wrapper.** Tauri does not embed app extensions. The app must be built
-   (or post-processed) so the `.appex` lands in `Arca.app/Contents/
-   PlugIns/`, code-signed together. In practice this means an Xcode project (or
-   a `tauri build` + inject/re-sign step) — decide during implementation.
-3. **Entitlements & provisioning** (needs the Apple Developer account):
-   - `com.apple.developer.authentication-services.autofill-credential-provider`
-     on the extension.
-   - A shared **App Group** (`group.no.sybr.vault`) on both targets so the
-     extension can read the vault + device key.
-   - A provisioning profile enabling the entitlement on the App ID, and
-     notarization for distribution.
+1. **`vault-ffi`** — mostly there now. Vault open/unlock crosses the ABI (v2 with
+   the device key, v3 with the master password), and
+   `vault_ffi_passkey_create`/`_assert` expose the authenticator itself. What is
+   missing is *listing* stored passkeys and *writing* a new one back, which needs
+   the same vault-write surface iOS needs — see [`IOS.md`](./IOS.md) §2.
+2. **Xcode wrapper** — solved. `apps/macos/project.yml` builds a host and embeds
+   the `.appex`, and `apps/ios/project.yml` does the same for the phone. Tauri
+   still does not embed app extensions, so for release the `.appex` gets injected
+   into `Arca.app/Contents/PlugIns/` and co-signed.
+3. **Entitlements & provisioning** — solved for the *passwords* extension in
+   `apps/macos/` and `apps/ios/`: the AutoFill capability on **both** the
+   containing app and the extension, the `group.no.sybr.vault` App Group, and a
+   shared keychain access group. A passkey provider needs all of that plus
+   `ProvidesPasskeys = true`, which is deliberately `false` today so Arca does
+   not appear in the chooser only to fail. Distribution still needs a
+   provisioning profile on the App ID and notarization.
 4. **Enable on device:** System Settings → Passwords → Password Options → turn
    on "Arca". Only then does it appear in the system passkey chooser.
 5. **Windows / Linux:** out of scope for now. Windows has a brand-new "plugin
