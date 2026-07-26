@@ -79,18 +79,9 @@ impl DriveStore {
         }
     }
 
-    /// The signed-in account's email, for the UI to show. `about.get` is one
-    /// of the few endpoints the `appdata` scope reaches.
+    /// The signed-in account's email, for the UI to show.
     pub fn account_email(&self) -> Option<String> {
-        let token = self.access_token().ok()?;
-        let about: serde_json::Value = self
-            .http
-            .get("https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)")
-            .bearer_auth(&*token)
-            .send()
-            .and_then(|r| r.json())
-            .ok()?;
-        about["user"]["emailAddress"].as_str().map(str::to_string)
+        account_email(&self.access_token().ok()?)
     }
 
     /// A usable access token, refreshing through the stored refresh token when
@@ -116,6 +107,24 @@ impl DriveStore {
         self.cache_access_token(token.clone(), expires_in);
         Ok(token)
     }
+}
+
+/// The email address of the account an access token belongs to, for the UI to
+/// show. `about.get` is one of the few endpoints the `appdata` scope reaches.
+///
+/// Free-standing rather than a method, because the caller who most needs it has
+/// just finished a sign-in and holds an access token but has not yet built a
+/// [`DriveStore`] — the refresh token is still on its way to the platform's
+/// keychain. `None` on any failure: a missing label is a cosmetic problem and
+/// must never be the reason a completed sign-in is reported as failed.
+pub fn account_email(access_token: &str) -> Option<String> {
+    let about: serde_json::Value = crate::http::client()
+        .get("https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)")
+        .bearer_auth(access_token)
+        .send()
+        .and_then(|r| r.json())
+        .ok()?;
+    about["user"]["emailAddress"].as_str().map(str::to_string)
 }
 
 /// Stop trusting a token a minute before the server does, so a request cannot

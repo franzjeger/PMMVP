@@ -55,7 +55,7 @@ Current version: **0.2.0**
 | **macOS** | Daily driver. Signed + notarizable releases, see [`docs/RELEASING.md`](./docs/RELEASING.md). |
 | **Windows** | Working, including the ssh-agent named pipe. Built in CI. |
 | **Linux** | Builds and passes CI (incl. X11/Wayland clipboard smoke tests) but has **never been run by a human**. Treat as untested. |
-| **iOS** | Scaffolded in `apps/ios/`. A read-only viewer + AutoFill provider, with Face ID quick unlock; **no sync** — the vault is imported by hand. Compiled by CI, **never run on a device**. See [`docs/IOS.md`](./docs/IOS.md). |
+| **iOS** | Scaffolded in `apps/ios/`. A read-only viewer + AutoFill provider, with Face ID quick unlock. Sync is on the C ABI (v5) but **nothing in Swift calls it yet**, so the vault is still imported by hand. Compiled by CI, **never run on a device**. See [`docs/IOS.md`](./docs/IOS.md). |
 | **Android** | Not built. |
 | **System-wide macOS AutoFill** | Shelved. It works technically, but Touch ID on every fill and a fight with Apple's own password menu made it worse than the browser extension. Source kept in `apps/macos/`. |
 
@@ -72,7 +72,7 @@ crates/
 ├── vault-store/      Atomic single-file persistence, rotating snapshots,
 │                     OS-keychain quick unlock.
 ├── vault-ffi/        C ABI over the core, for native platform integrations
-│                     (Swift). ABI v4.
+│                     (Swift). ABI v5, including the sync surface.
 ├── vault-secmem/     mlock'd buffers for key material.
 ├── vault-appgroup/   macOS App Group container resolution (one isolated
 │                     Objective-C call, so the app crate stays unsafe-free).
@@ -122,7 +122,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cd apps/desktop && npm ci && npm test   # frontend component tests
 ```
 
-Around 141 Rust tests plus 9 frontend tests. `vault-core` has no I/O and is the
+Around 173 Rust tests plus 9 frontend tests. `vault-core` has no I/O and is the
 security-critical surface: its tests cover encrypt/decrypt round-trips,
 wrong-password failure, AEAD tamper detection, KDF determinism, TOTP RFC 6238
 vectors, the on-disk item codec, sync merge and quick-unlock key drift.

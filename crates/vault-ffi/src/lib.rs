@@ -18,9 +18,15 @@
 //!   with the password can mint its own quick-unlock key. The only surface that
 //!   produces a **new vault file**; it still performs no I/O, the bytes come
 //!   back for the caller to persist.
+//! * **Sync (v5)** — [`mod@sync`]: the pull→merge→push cycle from
+//!   [`vault_sync`], so a client can reach the user's encrypted vault in their
+//!   own Drive instead of being handed a file. This is the one surface that
+//!   **does** perform I/O, and only network I/O: it talks to Google, never to
+//!   the filesystem. Merged vault bytes still come back for the caller to
+//!   persist.
 //!
-//! No file, network or clock access here either — [`vault_core`] is I/O-free and
-//! this is a thin wrapper over it.
+//! No file or clock access here — [`vault_core`] is I/O-free and this is a thin
+//! wrapper over it. Network access is confined to the sync surface.
 //!
 //! Every entry point is wrapped so a panic becomes an error code instead of
 //! unwinding across the C boundary.
@@ -33,9 +39,12 @@
 use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::slice;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::Serialize;
 use vault_core::{host_of, Error, ItemKind, SymmetricKey, Vault, VaultItem, KEY_LEN};
+
+pub mod sync;
 
 /// ABI version. Bump on any breaking change to a signature below.
 ///
@@ -52,18 +61,29 @@ use vault_core::{host_of, Error, ItemKind, SymmetricKey, Vault, VaultItem, KEY_L
 /// key instead of waiting for some other process to do it. This is the first
 /// operation that produces a **new vault file**, though it still writes
 /// nothing: the bytes come back for the caller to persist. Purely additive.
-pub const ABI_VERSION: i32 = 4;
+///
+/// v5 adds the sync surface (see [`mod@sync`]). Purely additive to the C
+/// signatures, but it changes two things a client may have relied on, which is
+/// why it is a version bump rather than a silent extension:
+///
+/// * the vault behind a [`VaultHandle`] is now internally synchronized, so
+///   calls on one handle from several threads no longer need external locking
+///   (the restriction on `vault_ffi_vault_free` is unchanged);
+/// * a handle's contents can now change underneath the caller, because a sync
+///   merges a peer's items into the very vault the handle exposes.
+pub const ABI_VERSION: i32 = 5;
 
 // Return codes.
-const OK: i32 = 0;
-const ERR_NULL_ARG: i32 = -1;
-const ERR_UTF8: i32 = -2;
-const ERR_OP_FAILED: i32 = -3;
+pub(crate) const OK: i32 = 0;
+pub(crate) const ERR_NULL_ARG: i32 = -1;
+pub(crate) const ERR_UTF8: i32 = -2;
+pub(crate) const ERR_OP_FAILED: i32 = -3;
 const ERR_LOCKED: i32 = -4;
 const ERR_NOT_FOUND: i32 = -5;
-const ERR_PANIC: i32 = -6;
+pub(crate) const ERR_PANIC: i32 = -6;
 const ERR_DECRYPT: i32 = -7;
 const ERR_BAD_KEY_LEN: i32 = -8;
+// -9 (ERR_SYNC_FAILED) is defined by the sync surface.
 
 /// Map a core error to a stable return code (never leaks detail).
 fn err_code(e: &Error) -> i32 {
@@ -85,7 +105,7 @@ pub extern "C" fn vault_ffi_abi_version() -> i32 {
 ///
 /// # Safety
 /// `out_ptr` and `out_len` must be valid, writable pointers.
-unsafe fn emit(buf: Vec<u8>, out_ptr: *mut *mut u8, out_len: *mut usize) {
+pub(crate) unsafe fn emit(buf: Vec<u8>, out_ptr: *mut *mut u8, out_len: *mut usize) {
     // An empty result would otherwise hand back a non-null dangling pointer
     // (Box::as_mut_ptr of a zero-length slice), which a caller keying off
     // `ptr != null` could dereference. Return an unambiguous (null, 0) instead.
@@ -121,7 +141,7 @@ pub unsafe extern "C" fn vault_ffi_free(ptr: *mut u8, len: usize) {
 ///
 /// # Safety
 /// `s` must be a valid NUL-terminated C string or null.
-unsafe fn cstr<'a>(s: *const c_char) -> Option<&'a str> {
+pub(crate) unsafe fn cstr<'a>(s: *const c_char) -> Option<&'a str> {
     if s.is_null() {
         return None;
     }
@@ -237,8 +257,37 @@ pub unsafe extern "C" fn vault_ffi_passkey_assert(
 
 /// Opaque handle to an unlocked vault. Created by [`vault_ffi_vault_open`],
 /// released (locked + zeroized) by [`vault_ffi_vault_free`].
+///
+/// The vault is behind an `Arc<Mutex<_>>` so the sync surface (v5) can hold the
+/// *same* vault this handle exposes. Sharing it is the point: a cycle merges a
+/// peer's changes into this vault, and the next `vault_ffi_identities` on this
+/// handle sees them. The `Arc` also makes [`vault_ffi_sync_new`] outlive its
+/// vault handle safely — freeing the handle mid-sync drops one reference, not
+/// the vault.
 pub struct VaultHandle {
-    vault: Vault,
+    vault: Arc<Mutex<Vault>>,
+}
+
+impl VaultHandle {
+    /// A second owner of this handle's vault, for the sync surface. Safe in
+    /// itself — the unsafety is in getting a `&VaultHandle` from the caller's
+    /// raw pointer, which happens at the entry point.
+    fn share_vault(&self) -> Arc<Mutex<Vault>> {
+        self.vault.clone()
+    }
+}
+
+/// Borrow the vault, treating a poisoned lock as a failure rather than
+/// recovering from it.
+///
+/// Poisoning means an earlier call panicked while holding the lock, and
+/// `Vault::merge_remote` takes the item list out before putting the merged one
+/// back — so a panic mid-merge can leave the vault holding *no items*. The
+/// panic guard already turned that into an error code for whoever hit it;
+/// silently handing the emptied vault to the next caller is how it would become
+/// an empty vault serialized over the user's file, or pushed to their Drive.
+fn lock_vault(vault: &Mutex<Vault>) -> Result<MutexGuard<'_, Vault>, i32> {
+    vault.lock().map_err(|_| ERR_OP_FAILED)
 }
 
 /// One login identity as handed to Swift: metadata only, never a secret.
@@ -313,7 +362,9 @@ pub unsafe extern "C" fn vault_ffi_vault_open(
     });
     match opened {
         Ok(vault) => {
-            *out_handle = Box::into_raw(Box::new(VaultHandle { vault }));
+            *out_handle = Box::into_raw(Box::new(VaultHandle {
+                vault: Arc::new(Mutex::new(vault)),
+            }));
             OK
         }
         Err(code) => code,
@@ -360,7 +411,9 @@ pub unsafe extern "C" fn vault_ffi_vault_open_password(
     });
     match opened {
         Ok(vault) => {
-            *out_handle = Box::into_raw(Box::new(VaultHandle { vault }));
+            *out_handle = Box::into_raw(Box::new(VaultHandle {
+                vault: Arc::new(Mutex::new(vault)),
+            }));
             OK
         }
         Err(code) => code,
@@ -378,8 +431,14 @@ pub unsafe extern "C" fn vault_ffi_vault_free(handle: *mut VaultHandle) {
         return;
     }
     let _ = catch_unwind(AssertUnwindSafe(|| {
-        let mut boxed = Box::from_raw(handle);
-        boxed.vault.lock(); // re-seal + zeroize before drop
+        let boxed = Box::from_raw(handle);
+        // Poison recovery is right *here* and nowhere else: the vault is being
+        // destroyed, so re-sealing an inconsistent one still zeroizes the key
+        // and the plaintext items, which is the whole job. Refusing would leave
+        // secrets resident until the process exits.
+        if let Ok(mut vault) = boxed.vault.lock().or_else(|e| Ok::<_, ()>(e.into_inner())) {
+            vault.lock(); // Vault::lock — re-seal + zeroize
+        }
         drop(boxed);
     }));
 }
@@ -399,8 +458,11 @@ pub unsafe extern "C" fn vault_ffi_identities(
     if handle.is_null() || out_json.is_null() || out_json_len.is_null() {
         return ERR_NULL_ARG;
     }
-    let vault = &(*handle).vault;
-    match guard_result(|| identities_json(vault)) {
+    let vault = match lock_vault(&(*handle).vault) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    match guard_result(|| identities_json(&vault)) {
         Ok(json) => {
             emit(json.into_bytes(), out_json, out_json_len);
             OK
@@ -429,8 +491,11 @@ pub unsafe extern "C" fn vault_ffi_password_for_id(
     let Some(id) = cstr(id_utf8) else {
         return ERR_UTF8;
     };
-    let vault = &(*handle).vault;
-    match guard_result(|| password_for(vault, id)) {
+    let vault = match lock_vault(&(*handle).vault) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    match guard_result(|| password_for(&vault, id)) {
         Ok(pw) => {
             emit(pw, out_password, out_password_len);
             OK
@@ -524,17 +589,19 @@ pub unsafe extern "C" fn vault_ffi_enable_device_unlock(
     *out_vault_bytes = std::ptr::null_mut();
     *out_vault_bytes_len = 0;
 
-    let vault: *mut Vault = &mut (*handle).vault;
-    if !(*vault).is_unlocked() {
+    let mut vault = match lock_vault(&(*handle).vault) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    if !vault.is_unlocked() {
         return ERR_LOCKED;
     }
-    let was_enabled = (*vault).has_device_unlock();
+    let was_enabled = vault.has_device_unlock();
 
     let result = guard_result(|| {
         let device = SymmetricKey::generate()?;
-        let vault = &mut *vault;
         vault.enable_device_unlock(&device)?;
-        let bytes = reserialize_verified(vault, Some(&device))?;
+        let bytes = reserialize_verified(&vault, Some(&device))?;
         Ok((device, bytes))
     });
     match result {
@@ -554,7 +621,7 @@ pub unsafe extern "C" fn vault_ffi_enable_device_unlock(
             // exposes no setter for it — so the handle keeps a key that was
             // never persisted. Harmless but stale: free the handle and reopen.
             if !was_enabled {
-                (*vault).disable_device_unlock();
+                vault.disable_device_unlock();
             }
             code
         }
@@ -581,14 +648,17 @@ pub unsafe extern "C" fn vault_ffi_disable_device_unlock(
     *out_vault_bytes = std::ptr::null_mut();
     *out_vault_bytes_len = 0;
 
-    let vault = &mut (*handle).vault;
+    let mut vault = match lock_vault(&(*handle).vault) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
     if !vault.is_unlocked() {
         return ERR_LOCKED;
     }
 
     match guard_result(|| {
         vault.disable_device_unlock();
-        reserialize_verified(vault, None)
+        reserialize_verified(&vault, None)
     }) {
         Ok(bytes) => {
             emit(bytes, out_vault_bytes, out_vault_bytes_len);
@@ -611,7 +681,11 @@ pub unsafe extern "C" fn vault_ffi_has_device_unlock(handle: *mut VaultHandle) -
     if handle.is_null() {
         return ERR_NULL_ARG;
     }
-    match catch_unwind(AssertUnwindSafe(|| (*handle).vault.has_device_unlock())) {
+    let vault = match lock_vault(&(*handle).vault) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    match catch_unwind(AssertUnwindSafe(|| vault.has_device_unlock())) {
         Ok(true) => 1,
         Ok(false) => 0,
         Err(_) => ERR_PANIC,
@@ -744,8 +818,8 @@ mod tests {
     // Pinned deliberately: clients gate features on this number, so a bump has
     // to be a conscious edit here, not a side effect.
     #[test]
-    fn abi_version_is_4() {
-        assert_eq!(vault_ffi_abi_version(), 4);
+    fn abi_version_is_5() {
+        assert_eq!(vault_ffi_abi_version(), 5);
     }
 
     // ---- device-unlock surface (ABI v4) ---------------------------------
@@ -1018,7 +1092,11 @@ mod tests {
     fn every_export_is_declared_in_the_header() {
         let header = include_str!("../include/vault_ffi.h");
         let mut checked = 0;
-        for line in include_str!("lib.rs").lines() {
+        // Both files: the sync surface lives in sync.rs, and a scan that only
+        // read lib.rs would quietly stop covering the newest exports — which is
+        // the exact moment this check earns its keep.
+        let sources = [include_str!("lib.rs"), include_str!("sync.rs")];
+        for line in sources.iter().flat_map(|src| src.lines()) {
             let line = line.trim();
             let Some(rest) = line
                 .strip_prefix("pub extern \"C\" fn ")
@@ -1044,7 +1122,7 @@ mod tests {
         }
         // Guard against the scan silently matching nothing (a formatting change
         // that splits the signature across lines would do it).
-        assert!(checked >= 8, "only found {checked} exports to check");
+        assert!(checked >= 17, "only found {checked} exports to check");
     }
 
     // A client with no device key (a phone on first launch) must still be able

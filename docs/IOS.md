@@ -19,13 +19,14 @@ that makes it a password manager rather than a viewer.
 | Piece | State |
 | --- | --- |
 | Crypto + data model | **Done.** `vault-core` is pure Rust, no I/O, no platform assumptions. Same code an iOS app would use. |
-| C ABI for Swift | **Mostly there.** `vault-ffi` (ABI v4), already proven against Swift in `apps/macos/`. |
+| C ABI for Swift | **Mostly there.** `vault-ffi` (ABI v5), already proven against Swift in `apps/macos/`. |
 | Swift side of that ABI | **Portable.** `apps/apple-shared/VaultBridge.swift` has no macOS-only code left (the one difference is behind `#if os(macOS)`), wraps *both* open paths, and keeps the blocking work off the main actor. An iOS target links it unchanged. |
 | Unlock from a fresh device | **Done (was the blocker).** `vault_ffi_vault_open_password` — see below. |
-| Getting the vault onto the phone | **Missing.** The Drive sync client is desktop-only. This is the real work. |
+| Getting the vault onto the phone | **Reachable, not wired.** `vault-sync` moved out of the desktop crate and the C ABI now exposes it (v5). What is missing is Swift: a wrapper, the keychain, and `ASWebAuthenticationSession`. |
 | Writing from the phone | **Missing.** The FFI is read-only today. |
 | iOS app + AutoFill extension | **Scaffolded, never run.** `apps/ios/`: unlock, search, reveal, copy, and a credential provider. Read-only. CI compiles it; no device has. |
 | Quick unlock on the phone | **Done.** `vault_ffi_enable_device_unlock` (ABI v4) mints a device key from a password unlock; the app and the extension both use it. |
+| Sync on the phone | **Half.** ABI v5 (`vault_ffi_sync_*`) runs the whole cycle in Rust. Nothing in Swift calls it yet. |
 | iOS build targets | **Scripted.** [`scripts/build-ffi-ios.sh`](../scripts/build-ffi-ios.sh) adds the targets and stages a static lib per platform. |
 
 ### The blocker that was removed
@@ -60,21 +61,31 @@ and this crate cannot decrypt anything.
 Three traits mark where the platforms actually differ. `RemoteStore` is the
 remote (Google Drive today), `LocalVault` is "merge these copies and give me the
 bytes to push", and `SyncObserver` is progress. The desktop implements all three
-over Tauri in ~250 lines; iOS implements them over its own vault file and an
-observable object.
+over Tauri in ~250 lines. iOS does not implement them at all — the FFI does,
+in Rust, over the vault a `VaultHandle` already holds, so Swift never sees the
+traits and cannot get the retry policy wrong.
 
-What is left is the part that genuinely has no shared form:
+**The C ABI now exposes it (v5).** `vault_ffi_sync_new` binds an engine to an
+open vault handle; `vault_ffi_sync_now` runs one cycle; `vault_ffi_sync_auth_*`
+runs the sign-in. The engine *shares* the handle's vault rather than copying it,
+so a merge is visible to `vault_ffi_identities` on that handle with no reload —
+which is why the vault behind a handle became internally synchronized in v5.
+
+Two things deliberately stay on the Swift side, both because they have no
+portable form:
 
 - **The authorization flow.** The desktop opens a browser and catches the
   redirect on a loopback port; iOS cannot bind a listening socket and needs
-  `ASWebAuthenticationSession` with a custom URL scheme. `OAuthClient` builds the
-  URL and redeems the code — only the middle step is per-platform.
-- **The refresh token's home.** `RefreshTokenStore` is a two-method trait; iOS
-  supplies a keychain-backed one. Note the split between "does a token exist"
-  and "read it": the background loop asks the first every tick, and on Apple
-  platforms reading an item's data runs its ACL and can raise a prompt.
-- **Calling it from Swift.** None of this is on the C ABI yet, so the phone
-  cannot reach it. That is the next FFI job after §2.
+  `ASWebAuthenticationSession` with a custom URL scheme. `vault_ffi_sync_auth_begin`
+  builds the URL and keeps the PKCE verifier, `_finish` redeems the code — only
+  the middle step is per-platform.
+- **Storage.** The refresh token comes back from `_auth_finish` for the iOS
+  keychain, and merged vault bytes come back from `_sync_now` for the app group
+  container. `vault-core` is I/O-free and the FFI stays a thin wrapper over it.
+
+What is left is **Swift**: a `VaultSync` wrapper next to `VaultSession`, keychain
+storage for the refresh token, an `ASWebAuthenticationSession` sign-in, and the
+UI to drive them. Until that exists the phone still gets its vault by AirDrop.
 
 ### 2. Widen the FFI to write
 

@@ -5399,6 +5399,7 @@ dependencies = [
  "serde_json",
  "uuid",
  "vault-core",
+ "vault-sync",
  "zeroize",
 ]
 

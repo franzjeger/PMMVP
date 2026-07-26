@@ -15,8 +15,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
 vault-core.workspace = true
+# The sync surface (ABI v5): Drive transport and the pull→merge→push engine, so
+# a phone can reach the user's own vault instead of being handed a file.
+vault-sync.workspace = true
 # The passwords surface returns login identities as JSON (metadata only) and
-# parses item ids; zeroize wipes the transient device-key copy on open.
+# parses item ids; zeroize wipes the transient device-key copy on open, and
+# holds the refresh token and PKCE verifier while sync needs them.
 serde = { workspace = true }
 serde_json.workspace = true
 uuid.workspace = true

@@ -44,7 +44,7 @@ enum VaultShared {
     /// ABI would otherwise be called through the wrong signatures and fail
     /// quietly — and "quietly wrong" in a credential provider means filling the
     /// wrong bytes into someone's login form.
-    static let requiredAbiVersion: Int32 = 4
+    static let requiredAbiVersion: Int32 = 5
 
     /// Info.plist key carrying the shared keychain access group. Both targets
     /// set it to `$(AppIdentifierPrefix)no.sybr.vault.shared`, which Xcode

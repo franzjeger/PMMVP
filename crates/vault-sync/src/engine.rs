@@ -112,9 +112,14 @@ impl SyncEngine {
             // Another cycle is running and will pick our changes up.
             return Ok(false);
         }
+        // Cleared on drop rather than after the call, so a panic inside the
+        // cycle cannot leave the flag set. It would not crash anything — the
+        // FFI catches it — but every later sync would return "already running"
+        // and do nothing, forever, with no way back short of a restart. A
+        // silent permanent stop is the worst shape a sync failure can take.
+        let _guard = InFlight(&self.in_flight);
 
         let result = self.attempt_cycles();
-        self.in_flight.store(false, Ordering::Release);
 
         match &result {
             Ok(merged) => {
@@ -263,6 +268,15 @@ impl SyncEngine {
             s.last_error = None;
         }
         Ok(Pushed::Yes)
+    }
+}
+
+/// Holds the one-cycle-at-a-time flag and releases it however the cycle ends.
+struct InFlight<'a>(&'a AtomicBool);
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -582,6 +596,71 @@ mod tests {
 
         assert!(sync.sync_now().is_ok(), "one auth failure is recoverable");
         assert_eq!(remote.uploads(), 1);
+    }
+
+    /// A panic inside a cycle must not wedge the engine. The FFI catches the
+    /// panic and reports it, so the user sees one failed sync — but if the
+    /// in-flight flag stayed set, every later sync would quietly return
+    /// "already running" and the vault would stop syncing for the life of the
+    /// process, with nothing on screen to say so.
+    #[test]
+    fn a_panicking_cycle_does_not_wedge_every_later_sync() {
+        struct PanicsOnce {
+            armed: AtomicBool,
+            inner: FakeRemote,
+        }
+        impl RemoteStore for PanicsOnce {
+            fn is_connected(&self) -> bool {
+                true
+            }
+            fn list(&self) -> Result<Vec<crate::RemoteFile>, CycleError> {
+                if self.armed.swap(false, Ordering::SeqCst) {
+                    panic!("transport exploded");
+                }
+                self.inner.list()
+            }
+            fn download(&self, id: &str) -> Result<Vec<u8>, CycleError> {
+                self.inner.download(id)
+            }
+            fn checksum(&self, id: &str) -> Result<String, CycleError> {
+                self.inner.checksum(id)
+            }
+            fn delete(&self, id: &str) -> Result<(), CycleError> {
+                self.inner.delete(id)
+            }
+            fn upload(
+                &self,
+                existing: Option<&str>,
+                bytes: &[u8],
+            ) -> Result<crate::RemoteFile, CycleError> {
+                self.inner.upload(existing, bytes)
+            }
+        }
+
+        let remote = Arc::new(PanicsOnce {
+            armed: AtomicBool::new(true),
+            inner: FakeRemote::default(),
+        });
+        let sync = SyncEngine::new(
+            remote.clone(),
+            Arc::new(FakeLocal::default()),
+            Arc::new(crate::SilentObserver),
+        );
+
+        // Swallow the panic the way the FFI boundary does.
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sync.sync_now()));
+        std::panic::set_hook(previous);
+        assert!(panicked.is_err(), "the cycle really did panic");
+
+        // The engine has to still work.
+        assert_eq!(sync.sync_now(), Ok(false));
+        assert_eq!(
+            remote.inner.uploads(),
+            1,
+            "a later sync must still run, not report 'already in flight' forever"
+        );
     }
 
     #[test]

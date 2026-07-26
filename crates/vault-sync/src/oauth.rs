@@ -123,10 +123,17 @@ impl OAuthClient {
             .json()
             .map_err(|e| format!("token response unreadable: {e}"))?;
 
+        // Empty counts as absent. A present-but-empty token would otherwise be
+        // stored as the credential and fail on every later refresh, with the
+        // sign-in itself reported as having worked.
         let refresh_token = resp["refresh_token"]
             .as_str()
+            .filter(|t| !t.is_empty())
             .ok_or("no refresh token in response")?;
-        let access_token = resp["access_token"].as_str().ok_or("no access token")?;
+        let access_token = resp["access_token"]
+            .as_str()
+            .filter(|t| !t.is_empty())
+            .ok_or("no access token")?;
         Ok(Tokens {
             refresh_token: Zeroizing::new(refresh_token.to_string()),
             access_token: Zeroizing::new(access_token.to_string()),
@@ -153,6 +160,7 @@ impl OAuthClient {
 
         let access = resp["access_token"]
             .as_str()
+            .filter(|t| !t.is_empty())
             .ok_or("refresh rejected (reconnect Google in Settings)")?;
         Ok((
             Zeroizing::new(access.to_string()),

@@ -30,14 +30,14 @@ The Xcode project is generated from [`project.yml`](project.yml) with
 
 These are not polish items. Each is blocked on something that does not exist.
 
-**No sync.** The Drive client and the pull → merge → push engine now live in
-`crates/vault-sync` rather than inside the desktop app crate, so this is no
-longer blocked on an architectural move — but none of it is on the C ABI, so
-Swift still cannot call it, and the sign-in step needs
-`ASWebAuthenticationSession` (the desktop's loopback redirect has no iOS
-equivalent). See [`docs/IOS.md`](../../docs/IOS.md). Until then the vault
-reaches the phone by hand: AirDrop `default.vault` from the Mac and import it.
-That import screen is a stopgap wearing a stopgap's label.
+**No sync — but no longer blocked.** The Drive client and the pull → merge →
+push engine live in `crates/vault-sync`, and ABI v5 puts them on the C boundary
+(`vault_ffi_sync_new` / `_sync_now` / `_sync_auth_begin` / `_sync_auth_finish`).
+What is missing is the Swift half: a wrapper next to `VaultSession`, keychain
+storage for the refresh token, an `ASWebAuthenticationSession` sign-in, and UI.
+See [`docs/IOS.md`](../../docs/IOS.md). Until that exists the vault reaches the
+phone by hand: AirDrop `default.vault` from the Mac and import it. That import
+screen is a stopgap wearing a stopgap's label.
 
 **Read-only** (except quick unlock). No creating, editing or deleting items. The ABI exposes open,
 list identities and fetch one password; that is the whole surface.

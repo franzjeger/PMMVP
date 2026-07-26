@@ -1,6 +1,6 @@
 /* vault-ffi — C ABI over vault-core for native platform integrations.
  *
- * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 4). All
+ * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 5). All
  * out-buffers are heap-allocated by the library and must be released with
  * vault_ffi_free(ptr, len), which also zeroes them.
  *
@@ -20,6 +20,7 @@
  *   -6  a panic was caught at the boundary
  *   -7  decryption failed (wrong key / not a device-unlock vault / tampered)
  *   -8  device key was not 32 bytes
+ *   -9  a sync cycle failed; the reason is in the status JSON's lastError
  */
 #ifndef VAULT_FFI_H
 #define VAULT_FFI_H
@@ -43,12 +44,21 @@ void vault_ffi_free(uint8_t *ptr, size_t len);
  * (read from the shared App Group container) and the 32-byte device key (from
  * the shared keychain).
  *
- * OWNERSHIP / THREADING: a VaultHandle is NOT internally synchronized. Multiple
- * read calls (vault_ffi_identities / vault_ffi_password_for_id) on one handle
- * from different threads are fine, but vault_ffi_vault_free must NOT overlap any
- * other call on the same handle, and must be called exactly once. While the
- * handle is open the decrypted vault (passwords included) is resident in memory,
- * so open, fetch the one password you need, and free the handle promptly. */
+ * OWNERSHIP / THREADING (relaxed in ABI v5): the vault behind a VaultHandle is
+ * internally synchronized, so calls on one handle from different threads no
+ * longer need external locking — which is what makes it safe to sync on a
+ * background thread while the UI reads. vault_ffi_vault_free must still NOT
+ * overlap any other call on the same handle, and must be called exactly once.
+ *
+ * Note that from v5 a handle's CONTENTS can change underneath you: a sync
+ * merges a peer's items into the very vault the handle exposes, so a list taken
+ * before a sync may be stale afterwards. A read that lands during the merge
+ * BLOCKS until it finishes (milliseconds, and no network happens inside that
+ * window) — one more reason not to call this from a UI thread.
+ *
+ * While the handle is open the decrypted vault (passwords included) is resident
+ * in memory, so open, fetch the one password you need, and free the handle
+ * promptly. */
 typedef struct VaultHandle VaultHandle;
 
 /* Open + unlock a vault from its raw file bytes with a 32-byte device key.
@@ -128,6 +138,109 @@ int32_t vault_ffi_disable_device_unlock(VaultHandle *handle,
  * accepted it (restored from a backup), and a client that trusts the keychain
  * alone prompts for a biometric and then fails. */
 int32_t vault_ffi_has_device_unlock(VaultHandle *handle);
+
+/* ---- Sync surface (ABI v5) -----------------------------------------------
+ *
+ * The pull -> merge -> push cycle against the user's own Google Drive. This is
+ * the only surface that performs I/O, and only NETWORK I/O: it talks to Google,
+ * never to the filesystem. Drive holds CIPHERTEXT ONLY — the vault is sealed
+ * before it leaves the device, and the scope is drive.appdata, so Arca sees its
+ * own hidden folder and nothing else in the account.
+ *
+ * Everything network-shaped stays below this line: the REST calls, the TLS, the
+ * token refresh, the retry policy. Two things do not, because they have no
+ * portable form:
+ *
+ *   - the interactive sign-in. vault_ffi_sync_auth_begin hands back a URL and
+ *     keeps the PKCE verifier; open it however the platform does
+ *     (ASWebAuthenticationSession on iOS, a loopback listener on desktop) and
+ *     return the code to vault_ffi_sync_auth_finish. The verifier never crosses
+ *     this boundary.
+ *   - storage. The refresh token comes back for your keychain, merged vault
+ *     bytes come back for your file.
+ *
+ * THREADING: vault_ffi_sync_now and vault_ffi_sync_auth_finish block on the
+ * network. Call them off the UI thread — on iOS an AutoFill extension that
+ * blocks its main thread is killed by the watchdog, not merely slow. */
+
+/* Opaque sync engine bound to one open vault. */
+typedef struct SyncHandle SyncHandle;
+
+/* An interactive sign-in in progress (holds the PKCE verifier). */
+typedef struct SyncAuth SyncAuth;
+
+/* Create a sync engine over an already-open vault. Starts DISCONNECTED: call
+ * vault_ffi_sync_set_credential before vault_ffi_sync_now will do anything.
+ *
+ * The engine shares the handle's vault rather than copying it, so a merge is
+ * visible to vault_ffi_identities on that handle with no reload — and the vault
+ * handle may be freed while this one lives. */
+int32_t vault_ffi_sync_new(VaultHandle *vault, SyncHandle **out_handle);
+
+/* Free a sync handle. Null-safe, call exactly once, and never while
+ * vault_ffi_sync_now is running on another thread. */
+void vault_ffi_sync_free(SyncHandle *handle);
+
+/* Set (or clear) the credential. refresh_token NULL DISCONNECTS: the cached
+ * access token is dropped and the account forgotten. account is a display label
+ * and may be NULL. Connecting resets the engine's bookkeeping — a remote
+ * checksum recorded against one Google account means nothing under another. */
+int32_t vault_ffi_sync_set_credential(SyncHandle *handle,
+                                      const char *refresh_token,
+                                      const char *account);
+
+/* Local vault state changed and should be pushed on the next cycle. */
+void vault_ffi_sync_mark_dirty(SyncHandle *handle);
+
+/* Status as UTF-8 JSON, no network:
+ *   {"connected":bool,"account":string|null,"lastSyncUnix":number|null,
+ *    "lastError":string|null,"merged":false}
+ * merged is always false here; only vault_ffi_sync_now can merge. */
+int32_t vault_ffi_sync_status(SyncHandle *handle, uint8_t **out_json,
+                              size_t *out_json_len);
+
+/* Run one pull -> merge -> push cycle. BLOCKING, network I/O.
+ *
+ * *out_status_json is always produced, so a failed cycle still reports why.
+ *
+ * *out_vault_bytes is non-NULL ONLY when remote changes were merged, and is
+ * then the new vault file to persist. Write it: the merge is already live in
+ * the shared vault, so skipping the write leaves memory ahead of disk. Bytes
+ * come back on failure too when a merge happened before the failure did.
+ *
+ * Returns 0, or -9 with the reason in the status JSON. */
+int32_t vault_ffi_sync_now(SyncHandle *handle, uint8_t **out_vault_bytes,
+                           size_t *out_vault_bytes_len,
+                           uint8_t **out_status_json,
+                           size_t *out_status_json_len);
+
+/* Begin a sign-in: returns the authorization URL to open, and a handle holding
+ * the PKCE verifier. redirect_uri is whatever the platform can catch (a custom
+ * URL scheme on iOS, http://127.0.0.1:<port> on desktop); it is remembered, so
+ * finish cannot disagree with begin about it. */
+int32_t vault_ffi_sync_auth_begin(const char *redirect_uri, uint8_t **out_url,
+                                  size_t *out_url_len, SyncAuth **out_auth);
+
+/* Finish a sign-in: redeem code, return the refresh token and the account's
+ * email. BLOCKING, network I/O.
+ *
+ * SECRET: *out_refresh_token grants access to the synced ciphertext until the
+ * user revokes it. Put it straight into the platform keychain and free it with
+ * vault_ffi_free, which zeroes it. It is the value to hand to
+ * vault_ffi_sync_set_credential.
+ *
+ * *out_account is a display label and may come back NULL — the lookup is a
+ * second request, and losing it must not fail a sign-in that succeeded.
+ *
+ * The verifier is single-use; a second call is rejected by the server. */
+int32_t vault_ffi_sync_auth_finish(SyncAuth *auth, const char *code,
+                                   uint8_t **out_refresh_token,
+                                   size_t *out_refresh_token_len,
+                                   uint8_t **out_account,
+                                   size_t *out_account_len);
+
+/* Free a sign-in handle, zeroizing the PKCE verifier. Null-safe. */
+void vault_ffi_sync_auth_free(SyncAuth *auth);
 
 /* Create a passkey for rp_id. Out-pairs (freed by the caller):
  *   credential_id, private_key (SEC1 P-256, 32 bytes — store encrypted!),
