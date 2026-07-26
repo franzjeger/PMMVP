@@ -1,9 +1,13 @@
 # Arca for iOS — scaffold
 
 A SwiftUI app plus an AutoFill Credential Provider extension, both over the same
-Rust core the desktop uses. **Nothing here has ever been compiled**, let alone
-run on a device — it was written on a machine with no Xcode. Treat the first
-`xcodebuild` as the real review.
+Rust core the desktop uses.
+
+**None of this has been compiled locally**, let alone run on a device — it was
+written on Linux, where the Apple frameworks it imports do not exist. CI now
+builds both schemes unsigned on the macOS runner for every pull request, which
+is the first compiler this code has ever met. Expect that run to be red before
+it is green, and treat it as the real review.
 
 The Xcode project is generated from [`project.yml`](project.yml) with
 [XcodeGen](https://github.com/yonabot/XcodeGen); the `.xcodeproj` is git-ignored.

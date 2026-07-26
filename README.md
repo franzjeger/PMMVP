@@ -55,7 +55,7 @@ Current version: **0.2.0**
 | **macOS** | Daily driver. Signed + notarizable releases, see [`docs/RELEASING.md`](./docs/RELEASING.md). |
 | **Windows** | Working, including the ssh-agent named pipe. Built in CI. |
 | **Linux** | Builds and passes CI (incl. X11/Wayland clipboard smoke tests) but has **never been run by a human**. Treat as untested. |
-| **iOS** | Scaffolded in `apps/ios/`, **never compiled**. A read-only viewer + AutoFill provider; no sync, no Face ID. See [`docs/IOS.md`](./docs/IOS.md). |
+| **iOS** | Scaffolded in `apps/ios/`. A read-only viewer + AutoFill provider, with Face ID quick unlock; **no sync** — the vault is imported by hand. Compiled by CI, **never run on a device**. See [`docs/IOS.md`](./docs/IOS.md). |
 | **Android** | Not built. |
 | **System-wide macOS AutoFill** | Shelved. It works technically, but Touch ID on every fill and a fight with Apple's own password menu made it worse than the browser extension. Source kept in `apps/macos/`. |
 
@@ -72,7 +72,7 @@ crates/
 ├── vault-store/      Atomic single-file persistence, rotating snapshots,
 │                     OS-keychain quick unlock.
 ├── vault-ffi/        C ABI over the core, for native platform integrations
-│                     (Swift). ABI v3.
+│                     (Swift). ABI v4.
 ├── vault-secmem/     mlock'd buffers for key material.
 └── vault-appgroup/   macOS App Group container resolution (one isolated
                       Objective-C call, so the app crate stays unsafe-free).
