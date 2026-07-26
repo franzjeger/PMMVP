@@ -27,4 +27,10 @@ pub enum Error {
     /// Quick-unlock was requested but no device key is stored.
     #[error("quick-unlock is not enabled")]
     QuickUnlockNotEnabled,
+
+    /// A restore named a file that is not one of this vault's snapshots, or it
+    /// could not be read. Restoring overwrites the live vault, so anything we
+    /// cannot positively identify as our own snapshot is refused.
+    #[error("not a snapshot of this vault")]
+    SnapshotNotFound,
 }

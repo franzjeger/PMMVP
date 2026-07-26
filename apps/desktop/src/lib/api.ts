@@ -162,6 +162,15 @@ export interface PasswordOptions {
   symbols: boolean;
 }
 
+/** One rotated local snapshot of the encrypted vault file. */
+export interface SnapshotSummary {
+  /** Absolute path; pass back verbatim to `restoreSnapshot`. */
+  path: string;
+  /** Unix SECONDS (not millis) the snapshot was taken. */
+  createdUnix: number;
+  bytes: number;
+}
+
 /** Error shape the backend returns (`CmdError`). */
 export interface ApiError {
   code: string;
@@ -296,6 +305,39 @@ export const api = {
       });
       if (typeof path !== "string") return null;
       return await invoke<number>("export_logins_csv", { path });
+    } finally {
+      await invoke<void>("set_blur_lock_suppressed", { suppressed: false });
+    }
+  },
+
+  // ---- backup & restore ----------------------------------------------------
+
+  /** Local snapshots of the encrypted vault, newest first (metadata only). */
+  listSnapshots: () => invoke<SnapshotSummary[]>("list_snapshots"),
+
+  /**
+   * Roll the vault back to a snapshot (biometric-gated). The current state is
+   * snapshotted first, so this is undoable. The app ends up LOCKED: a snapshot
+   * can predate a master-password change, so it must be unlocked with whatever
+   * password it was written with.
+   */
+  restoreSnapshot: (path: string) =>
+    invoke<void>("restore_snapshot", { path }),
+
+  /**
+   * Native "save as", then copy the ENCRYPTED vault there as an off-device
+   * backup. Returns bytes written, or `null` if the user cancels. Needs no
+   * biometric gate: the copy is ciphertext, useless without the master password.
+   */
+  exportVaultBackup: async (): Promise<number | null> => {
+    await invoke<void>("set_blur_lock_suppressed", { suppressed: true });
+    try {
+      const path = await saveDialog({
+        defaultPath: "arca-backup.vault",
+        filters: [{ name: "Arca vault", extensions: ["vault"] }],
+      });
+      if (typeof path !== "string") return null;
+      return await invoke<number>("export_vault_backup", { path });
     } finally {
       await invoke<void>("set_blur_lock_suppressed", { suppressed: false });
     }

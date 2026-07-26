@@ -8,6 +8,7 @@ import {
 } from "../lib/api";
 import { GearIcon } from "./icons";
 import { ImportDialog } from "./ImportDialog";
+import { RestoreDialog } from "./RestoreDialog";
 
 const AUTO_LOCK_OPTIONS = [
   { label: "Never", value: 0 },
@@ -39,6 +40,7 @@ export function SettingsDialog({
   const [quickUnlock, setQuickUnlock] = useState(status.hasQuickUnlock);
   const [busy, setBusy] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [restoreOpen, setRestoreOpen] = useState(false);
 
   useEffect(() => {
     api
@@ -352,7 +354,49 @@ export function SettingsDialog({
                 Export…
               </button>
             </Row>
+            <Row
+              label="Back up the vault"
+              hint="Saves a copy of the ENCRYPTED vault. Still needs your master password to open, so it is safe to keep on a USB stick or another machine. Restore by copying it back."
+            >
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setBusy(true);
+                  api
+                    .exportVaultBackup()
+                    .then((n) => {
+                      if (n !== null)
+                        onToast(`Backup written (${Math.round(n / 1024)} KB)`);
+                    })
+                    .catch((e) => onToast(errorMessage(e)))
+                    .finally(() => setBusy(false));
+                }}
+                className="rounded-lg border border-hairline px-3 py-1.5 text-[13px] text-neutral-200 hover:bg-fill/5 disabled:opacity-50"
+              >
+                Back up…
+              </button>
+            </Row>
+            <Row
+              label="Earlier versions"
+              hint="Arca keeps the vault as it was before each save (the last few, plus one a day for a week). Roll back if something was deleted or a sync merge went wrong."
+            >
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setRestoreOpen(true)}
+                className="rounded-lg border border-hairline px-3 py-1.5 text-[13px] text-neutral-200 hover:bg-fill/5 disabled:opacity-50"
+              >
+                Restore…
+              </button>
+            </Row>
           </div>
+        )}
+        {restoreOpen && (
+          <RestoreDialog
+            onClose={() => setRestoreOpen(false)}
+            onToast={onToast}
+          />
         )}
 
         <div className="flex shrink-0 justify-end border-t border-hairline px-5 py-3">

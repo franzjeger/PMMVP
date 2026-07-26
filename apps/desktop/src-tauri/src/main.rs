@@ -28,51 +28,56 @@ const KEYCHAIN_ACCOUNT: &str = "default-vault";
 #[cfg(target_os = "macos")]
 const APP_GROUP: &str = "group.no.sybr.vault";
 
-/// Resolve where the vault file lives.
+/// Last-modified time, or `None` when the file is missing/unreadable.
+#[cfg(target_os = "macos")]
+fn modified_at(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
+}
+
+/// Resolve where the vault file lives: always the app-data directory.
 ///
-/// On macOS it belongs in the shared App Group container so the sandboxed
-/// AutoFill extension can read it. On first run we migrate an existing vault
-/// (and its settings) into the container, **keeping the original as a backup**
-/// (never deleted). If the container can't be reached (e.g. the entitlement
-/// isn't provisioned), we fall back to the app-data path so the app keeps
-/// working — only cross-app autofill is unavailable. Other platforms always use
-/// the app-data path.
+/// The vault briefly lived in the shared App Group container so the macOS
+/// AutoFill extension could read it. That extension is shelved, and the
+/// container is a liability without it: reaching it at all requires a
+/// provisioned entitlement, so if the profile lapses or the app is re-signed
+/// without one, `container_path` returns `None` — and the app would silently
+/// open a STALE app-data copy while the user keeps adding entries to it. A
+/// password manager must never quietly serve the wrong vault.
+///
+/// So the app-data path is canonical, and a *newer* container copy is migrated
+/// back down once (snapshotting whatever it replaces). The container copy is
+/// left in place as an extra off-path backup.
 fn resolve_vault_path(app: &tauri::App, data_dir: &Path) -> PathBuf {
     let app_data_vault = data_dir.join("default.vault");
     #[cfg(target_os = "macos")]
     {
-        // The container path MUST come from Foundation's containerURL API, not a
-        // hardcoded ~/Library/Group Containers/<group> path: that call is what
-        // grants this (non-sandboxed but entitled) process filesystem access to
-        // the container. A raw path is denied with EPERM. Returns None when the
-        // App Group entitlement isn't provisioned — then we keep the app-data
-        // vault and only cross-app autofill is unavailable.
+        // The container path MUST come from Foundation's containerURL API: it is
+        // that call which grants this (non-sandboxed but entitled) process access
+        // to the container. A hardcoded path is denied with EPERM.
         if let Some(container) = vault_appgroup::container_path(APP_GROUP) {
             let shared_vault = container.join("default.vault");
-            // Migrate once: copy the vault + settings, keep originals as backup.
-            if !shared_vault.exists() && app_data_vault.exists() {
-                match std::fs::copy(&app_data_vault, &shared_vault) {
+            let shared_is_newer = match (modified_at(&shared_vault), modified_at(&app_data_vault)) {
+                (Some(shared), Some(local)) => shared > local,
+                (Some(_), None) => true, // only the container has a vault
+                _ => false,
+            };
+            if shared_is_newer {
+                // Never overwrite without a rollback point.
+                let _ = vault_store::snapshot::capture(&app_data_vault);
+                match std::fs::copy(&shared_vault, &app_data_vault) {
                     Ok(_) => {
-                        let old_settings = data_dir.join("settings.json");
-                        if old_settings.exists() {
-                            let _ = std::fs::copy(&old_settings, container.join("settings.json"));
+                        let shared_settings = container.join("settings.json");
+                        if shared_settings.exists() {
+                            let _ = std::fs::copy(&shared_settings, data_dir.join("settings.json"));
                         }
-                        eprintln!("[arca] migrated vault into App Group container");
+                        eprintln!("[arca] migrated the newer App Group vault back to app data");
                     }
                     Err(e) => eprintln!(
-                        "[arca] App Group container write failed ({e}); \
-                         falling back to app-data vault (AutoFill unavailable)"
+                        "[arca] could not migrate the App Group vault back ({e}); \
+                         using the app-data vault"
                     ),
                 }
             }
-            // Use the shared vault if it exists (migrated) or there is no
-            // app-data vault to fall back to.
-            if shared_vault.exists() || !app_data_vault.exists() {
-                eprintln!("[arca] vault path: shared App Group container");
-                return shared_vault;
-            }
-        } else {
-            eprintln!("[arca] App Group container unavailable; using app-data vault");
         }
     }
     let _ = app; // unused on non-macOS
@@ -169,6 +174,9 @@ fn main() {
             commands::sync_status,
             commands::sync_now,
             commands::merge_duplicates,
+            commands::list_snapshots,
+            commands::restore_snapshot,
+            commands::export_vault_backup,
             commands::resolve_autofill_consent,
             commands::verify_passkey_approval,
             commands::cancel_passkey_verification,

@@ -17,7 +17,7 @@
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Emitter, State};
 use uuid::Uuid;
 
 use vault_core::{
@@ -583,6 +583,76 @@ pub fn export_logins_csv(state: St<'_>, path: String) -> Result<usize, CmdError>
     wtr.flush()
         .map_err(|e| CmdError::new("export", &e.to_string()))?;
     Ok(n)
+}
+
+// ---- backup & restore -----------------------------------------------------
+
+/// One rotated local snapshot, for the restore list.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotSummary {
+    /// Absolute path, passed back verbatim to `restore_snapshot`.
+    pub path: String,
+    /// Unix seconds the snapshot was taken.
+    pub created_unix: i64,
+    pub bytes: u64,
+}
+
+/// Local snapshots of the vault, newest first. Metadata only (they are
+/// encrypted blobs), so this needs no unlock and reveals nothing.
+#[tauri::command]
+pub fn list_snapshots(state: St<'_>) -> Result<Vec<SnapshotSummary>, CmdError> {
+    let st = guard(state.inner())?;
+    Ok(st
+        .store
+        .snapshots()
+        .into_iter()
+        .map(|s| SnapshotSummary {
+            path: s.path.to_string_lossy().into_owned(),
+            created_unix: s.created_unix,
+            bytes: s.bytes,
+        })
+        .collect())
+}
+
+/// Roll the vault back to a snapshot.
+///
+/// Destructive, so it is gated behind a biometric re-auth. The current state is
+/// snapshotted first (the restore is itself undoable). The restored file may
+/// predate a master-password change, so we drop the in-memory vault and leave
+/// the app locked: the user unlocks with whatever password that snapshot used.
+#[tauri::command]
+pub fn restore_snapshot(
+    app: tauri::AppHandle,
+    state: St<'_>,
+    path: String,
+) -> Result<(), CmdError> {
+    crate::biometric::authenticate("restore an earlier version of your vault")
+        .map_err(|m| CmdError::new("biometric_failed", &m))?;
+    let mut st = guard(state.inner())?;
+    st.store.restore_snapshot(std::path::Path::new(&path))?;
+    // Reload from disk; `from_bytes` yields a LOCKED vault by design.
+    st.vault = st.store.load().ok();
+    st.touch();
+    drop(st);
+    let _ = app.emit("vault-locked", "restored");
+    Ok(())
+}
+
+/// Copy the encrypted vault to `path` as an off-device backup.
+///
+/// The file is the same ciphertext the app stores, so it is useless without the
+/// master password: no biometric gate is needed and nothing is decrypted here.
+/// Restoring it is a file copy back (documented in the emergency kit).
+#[tauri::command]
+pub fn export_vault_backup(state: St<'_>, path: String) -> Result<u64, CmdError> {
+    let st = guard(state.inner())?;
+    if !st.store.exists() {
+        return Err(CmdError::new("no_vault", "There is no vault file yet."));
+    }
+    let bytes = std::fs::copy(st.store.path(), &path)
+        .map_err(|e| CmdError::new("export", &format!("Could not write the backup: {e}")))?;
+    Ok(bytes)
 }
 
 /// Merge duplicate logins (same site + username). Losers go to the Trash;

@@ -14,6 +14,7 @@
 mod error;
 mod keychain;
 pub mod secrets;
+pub mod snapshot;
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -77,11 +78,37 @@ impl VaultStore {
     }
 
     /// Serialize and atomically persist the vault.
+    ///
+    /// Snapshots the previous contents first (see [`snapshot`]), so a bad edit,
+    /// bulk delete or merge can be rolled back. Snapshotting is best-effort: it
+    /// must never be the reason a save fails.
     pub fn save(&self, vault: &Vault) -> Result<()> {
         let bytes = vault.to_bytes()?;
+        let _ = snapshot::capture(&self.path);
         write_atomic(&self.path, &bytes)?;
         self.last_seen.store(fingerprint(&bytes), Ordering::Relaxed);
         Ok(())
+    }
+
+    /// Snapshots of this vault, newest first (see [`snapshot::list`]).
+    pub fn snapshots(&self) -> Vec<snapshot::SnapshotInfo> {
+        snapshot::list(&self.path)
+    }
+
+    /// Roll the vault file back to `snapshot`, capturing the current state first
+    /// so the restore itself is undoable. The caller must reload the vault from
+    /// disk afterwards — the in-memory copy is now stale.
+    pub fn restore_snapshot(&self, snapshot_path: &Path) -> Result<()> {
+        snapshot::restore(&self.path, snapshot_path)?;
+        // Force the next `save_synced` to re-read: the file changed under us.
+        self.last_seen.store(0, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Take a snapshot right now, e.g. before a risky bulk operation (import,
+    /// dedupe). Best-effort; returns the snapshot when one was written.
+    pub fn snapshot_now(&self) -> Option<snapshot::SnapshotInfo> {
+        snapshot::capture(&self.path).ok().flatten()
     }
 
     /// Sync-aware save: if the file on disk changed since we last read/wrote it
@@ -109,6 +136,9 @@ impl VaultStore {
             }
         }
         let bytes = vault.to_bytes()?;
+        // Snapshot before the merged result lands: a merge that pulled in a bad
+        // peer state is exactly what you want to roll back.
+        let _ = snapshot::capture(&self.path);
         write_atomic(&self.path, &bytes)?;
         self.last_seen.store(fingerprint(&bytes), Ordering::Relaxed);
         Ok(merged)
@@ -177,7 +207,7 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Writes to a sibling temp file (so it lands on the same filesystem, making
 /// `rename` atomic), restricts its permissions, fsyncs the file, renames it
 /// over the target, then best-effort fsyncs the directory.
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let dir = path.parent().filter(|p| !p.as_os_str().is_empty());
     if let Some(dir) = dir {
         fs::create_dir_all(dir)?;
@@ -338,12 +368,23 @@ mod tests {
         v.upsert_item(Item::new(login(), 1)).unwrap();
         store.save(&v).unwrap(); // overwrite
 
-        // Only the vault file remains; no leftover ".tmp" siblings.
-        let entries: Vec<_> = fs::read_dir(dir.path())
+        // The vault file and the snapshot directory remain; no leftover ".tmp"
+        // siblings from either the vault write or the snapshot copy.
+        let mut entries: Vec<_> = fs::read_dir(dir.path())
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(entries, vec!["v.vault".to_string()]);
+        entries.sort();
+        assert_eq!(
+            entries,
+            vec!["snapshots".to_string(), "v.vault".to_string()]
+        );
+        assert!(
+            fs::read_dir(dir.path().join("snapshots"))
+                .unwrap()
+                .all(|e| !e.unwrap().file_name().to_string_lossy().contains(".tmp.")),
+            "a torn temp file was left in the snapshot dir"
+        );
     }
 
     #[test]
