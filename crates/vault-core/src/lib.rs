@@ -38,6 +38,7 @@ pub mod security;
 pub mod ssh;
 pub mod sync;
 pub mod totp;
+pub mod url;
 pub mod vault;
 
 pub use error::{Error, Result};
@@ -47,6 +48,7 @@ pub use password::{generate_password, PasswordOptions};
 pub use secret::{SymmetricKey, KEY_LEN};
 pub use security::{audit, estimate_strength, ItemSecurity, PasswordStrength, SecurityIssue};
 pub use totp::{current_totp, parse_otpauth_uri, OtpAuth, TotpCode};
+pub use url::host_of;
 pub use vault::Vault;
 
 #[cfg(test)]
