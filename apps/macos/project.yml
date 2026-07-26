@@ -14,11 +14,11 @@ options:
 
 settings:
   base:
-    SWIFT_VERSION: "5.0"
-    # Data races in a credential provider mean handing back the wrong password,
-    # so check for them. `complete` under the Swift 5 language mode reports them
-    # as warnings; flipping SWIFT_VERSION to 6.0 turns the same set into errors,
-    # which is the follow-up once this has been built clean once.
+    SWIFT_VERSION: "6.0"
+    # Swift 6 language mode: data-race safety is enforced, not suggested. A race
+    # in a credential provider means handing back the wrong password. Kept
+    # alongside the explicit `complete` setting, which is what the count in
+    # scripts/build-apple-ci.sh measured at zero before this was switched on.
     SWIFT_STRICT_CONCURRENCY: complete
     # Xcode 16+ wraps Debug builds in a separate <name>.debug.dylib launched via
     # a thunk. For an app extension the credential-provider loader can fail to

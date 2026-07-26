@@ -20,7 +20,7 @@ options:
 
 settings:
   base:
-    SWIFT_VERSION: "5.0"
+    SWIFT_VERSION: "6.0"
     # Xcode wraps Debug builds in a separate <name>.debug.dylib launched via a
     # thunk. For an app extension the credential-provider loader can fail to
     # recognize that indirection, so build a conventional single-binary target.
@@ -29,8 +29,8 @@ settings:
     # without it. This is a RUNTIME failure — no compile catches it.
     ENABLE_DEBUG_DYLIB: "NO"
     # Same reasoning as apps/macos/project.yml: a data race here means handing
-    # back the wrong password. `complete` reports them as warnings under the
-    # Swift 5 language mode; SWIFT_VERSION 6.0 turns them into errors.
+    # back the wrong password, so the Swift 6 language mode makes it an error
+    # rather than a warning.
     SWIFT_STRICT_CONCURRENCY: complete
     # Must match apps/macos — App Groups and keychain groups are team-scoped, so
     # the phone's app, its extension and the Mac app all have to share one team.

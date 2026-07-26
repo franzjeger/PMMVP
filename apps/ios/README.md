@@ -8,8 +8,9 @@ written on Linux, where the Apple frameworks it imports do not exist. CI builds
 both schemes unsigned on the macOS runner for every pull request, via
 [`scripts/build-apple-ci.sh`](../../scripts/build-apple-ci.sh), which reports a
 count of compiler diagnostics so a clean build is asserted rather than inferred.
-That count is what gates `SWIFT_VERSION: 6.0`: `SWIFT_STRICT_CONCURRENCY` is
-already `complete`, so its findings are warnings now and errors then.
+Both projects are on the **Swift 6 language mode**, so data-race safety is
+enforced rather than suggested; that count reached zero under `complete`
+checking first, which is what made the switch safe.
 
 The Xcode project is generated from [`project.yml`](project.yml) with
 [XcodeGen](https://github.com/yonabot/XcodeGen); the `.xcodeproj` is git-ignored.
