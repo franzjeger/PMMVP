@@ -70,11 +70,23 @@ IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
 [ -n "$IDENTITY" ] || die "no 'Developer ID Application' certificate in the keychain."
 echo "   signing identity: $IDENTITY"
 
+# The update signing key is separate from the Apple one: Apple's signature says
+# "this came from Frank Lia", the update key says "this is the same Arca you
+# already trust". Installed copies only accept updates signed by the key baked
+# into the build they are running, so losing it strands every user forever.
+UPDATER_KEY="${ARCA_UPDATER_KEY:-$HOME/.arca/arca-updater.key}"
+[ -f "$UPDATER_KEY" ] || die "no update signing key at $UPDATER_KEY.
+     Without it the build cannot be published as an update. Restore it from
+     your backup, or (only if no release has ever shipped) generate a new one:
+       cd apps/desktop && npx tauri signer generate -w \"$UPDATER_KEY\""
+
 step "Building the release bundle (Developer ID + hardened runtime)"
 # Tauri signs the bundle itself when these are set; the hardened runtime is
 # required for notarization.
 export APPLE_SIGNING_IDENTITY="$IDENTITY"
 export APPLE_TEAM_ID="$TEAM_ID"
+export TAURI_SIGNING_PRIVATE_KEY_PATH="$UPDATER_KEY"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${ARCA_UPDATER_KEY_PASSWORD:-}"
 (cd "$REPO/apps/desktop" && npm run tauri build -- --bundles app,dmg)
 
 APP="$REPO/target/release/bundle/macos/Arca.app"
@@ -125,6 +137,37 @@ fi
 
 step "Gatekeeper assessment (what another Mac will decide)"
 spctl --assess --type execute --verbose=2 "$APP" 2>&1 | tail -3
+
+step "Writing the update manifest"
+# Tauri emits <bundle>.app.tar.gz plus a detached .sig when
+# createUpdaterArtifacts is on. latest.json is what installed copies poll.
+UPD_ARCHIVE="$(ls -t "$REPO/target/release/bundle/macos/"*.app.tar.gz 2>/dev/null | head -1 || true)"
+if [ -n "$UPD_ARCHIVE" ] && [ -f "$UPD_ARCHIVE.sig" ]; then
+  VERSION="$(python3 -c "import json;print(json.load(open('$REPO/apps/desktop/src-tauri/tauri.conf.json'))['version'])")"
+  LATEST="$REPO/target/release/bundle/latest.json"
+  SIG="$(cat "$UPD_ARCHIVE.sig")" VER="$VERSION" ARCH="$(basename "$UPD_ARCHIVE")" \
+  python3 - > "$LATEST" <<'PYEOF'
+import json, os, datetime
+url = ("https://github.com/franzjeger/PMMVP/releases/download/v"
+       + os.environ["VER"] + "/" + os.environ["ARCH"])
+print(json.dumps({
+    "version": os.environ["VER"],
+    "pub_date": datetime.datetime.now(datetime.timezone.utc)
+                  .strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "notes": "See the release notes on GitHub.",
+    # Both Apple architectures run the same universal-capable bundle.
+    "platforms": {
+        "darwin-aarch64": {"signature": os.environ["SIG"], "url": url},
+        "darwin-x86_64":  {"signature": os.environ["SIG"], "url": url},
+    },
+}, indent=2))
+PYEOF
+  echo "   $LATEST (v$VERSION)"
+  echo "   Publish it AND $(basename "$UPD_ARCHIVE") on the v$VERSION GitHub release,"
+  echo "   or installed copies will never see the update."
+else
+  echo "   no updater artifacts produced; skipping (is createUpdaterArtifacts on?)"
+fi
 
 printf '\nRELEASE OK\n  app: %s\n' "$APP"
 [ -n "$DMG" ] && printf '  dmg: %s\n' "$DMG"

@@ -35,6 +35,18 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlBRjkxRjAwMkYwNTNENzkKUldSNVBRVXZBQi81bXFXSzhpTVFBbVZlQk1tTTNhOU1pWkEwLzg1dS9iSGFXUWdlSklUUDhBRFkK",
+      "endpoints": [
+        "https://github.com/franzjeger/PMMVP/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

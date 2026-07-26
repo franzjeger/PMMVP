@@ -46,6 +46,8 @@ reqwest.workspace = true
 # Zeroizing, for the refresh token on its way between the keychain and the
 # sync crate.
 zeroize.workspace = true
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 [dev-dependencies]
 tempfile = "3"

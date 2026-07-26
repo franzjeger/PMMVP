@@ -88,6 +88,11 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // Updates are checked and installed from the UI only, never
+        // automatically: installing restarts the app, which drops an unlocked
+        // vault and any half-finished edit.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             // Resolve a per-user data directory for the single vault file.
             let data_dir = app.path().app_data_dir()?;

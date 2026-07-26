@@ -1,7 +1,9 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
   api,
+  checkForUpdate,
   errorMessage,
+  installUpdate,
   type Settings,
   type SyncStatus,
   type VaultStatus,
@@ -41,6 +43,9 @@ export function SettingsDialog({
   const [busy, setBusy] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
+  // null = not checked yet / up to date; set once an update is actually offered.
+  const [update, setUpdate] = useState<{ version: string } | null>(null);
+  const [updateChecked, setUpdateChecked] = useState(false);
 
   useEffect(() => {
     api
@@ -375,6 +380,43 @@ export function SettingsDialog({
                 className="rounded-lg border border-hairline px-3 py-1.5 text-[13px] text-neutral-200 hover:bg-fill/5 disabled:opacity-50"
               >
                 Back up…
+              </button>
+            </Row>
+            <Row
+              label="Updates"
+              hint={
+                update
+                  ? `Version ${update.version} is available. Installing restarts Arca, so the vault locks and any unsaved edit is lost.`
+                  : updateChecked
+                    ? "Arca is up to date."
+                    : "Check whether a newer signed build is available. Nothing installs without your say-so."
+              }
+            >
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setBusy(true);
+                  if (update) {
+                    installUpdate()
+                      .catch((e) => {
+                        onToast(errorMessage(e));
+                        setBusy(false);
+                      });
+                    return; // on success the app relaunches
+                  }
+                  checkForUpdate()
+                    .then((u) => {
+                      setUpdate(u);
+                      setUpdateChecked(true);
+                      if (!u) onToast("Arca is up to date");
+                    })
+                    .catch((e) => onToast(errorMessage(e)))
+                    .finally(() => setBusy(false));
+                }}
+                className="rounded-lg border border-hairline px-3 py-1.5 text-[13px] text-neutral-200 hover:bg-fill/5 disabled:opacity-50"
+              >
+                {update ? `Install ${update.version}` : "Check…"}
               </button>
             </Row>
             <Row

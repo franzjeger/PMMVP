@@ -198,6 +198,43 @@ export function errorMessage(e: unknown): string {
   return String(e);
 }
 
+/** An available update, from `checkForUpdate`. */
+export interface UpdateInfo {
+  version: string;
+  notes: string;
+}
+
+/**
+ * Ask the update endpoint whether a newer signed build exists. Returns null
+ * when up to date, or when the check fails (offline, endpoint down) — a failed
+ * check must never look like an available update.
+ */
+export async function checkForUpdate(): Promise<UpdateInfo | null> {
+  const { check } = await import("@tauri-apps/plugin-updater");
+  try {
+    const update = await check();
+    if (!update) return null;
+    return { version: update.version, notes: update.body ?? "" };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Download, install, and relaunch into the new version.
+ *
+ * This RESTARTS the app, so the vault locks and any unsaved edit is lost. Only
+ * call it from an explicit user action that says so.
+ */
+export async function installUpdate(): Promise<void> {
+  const { check } = await import("@tauri-apps/plugin-updater");
+  const { relaunch } = await import("@tauri-apps/plugin-process");
+  const update = await check();
+  if (!update) throw new Error("No update is available any more.");
+  await update.downloadAndInstall();
+  await relaunch();
+}
+
 /** True when running inside the Tauri webview (vs. a plain browser). */
 export function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
