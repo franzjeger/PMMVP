@@ -25,4 +25,12 @@ export default defineConfig({
     emptyOutDir: true,
     target: "es2021",
   },
+  // Component tests run in jsdom. The Tauri `invoke` bridge does not exist
+  // there, so tests mock `../lib/api` rather than the transport.
+  test: {
+    environment: "jsdom",
+    globals: true,
+    setupFiles: ["./src/test/setup.ts"],
+    include: ["src/**/*.test.{ts,tsx}"],
+  },
 });

@@ -28,6 +28,9 @@ cargo build --quiet -p vault-desktop
 step "Frontend: typecheck + build"
 (cd apps/desktop && npm run --silent build)
 
+step "Frontend: component tests"
+(cd apps/desktop && npm run --silent test)
+
 if [ "$FULL" = "--full" ]; then
   if [ "$(uname)" = "Darwin" ]; then
     step "Keychain regression tests (quick-unlock drift heal)"
