@@ -127,7 +127,10 @@ Apple ID account.
 
 CI runs exactly this on the macOS matrix leg, for pull requests and manual
 dispatch — the only machine in CI with Xcode, and the only thing standing
-between the Swift and nobody ever compiling it.
+between the Swift and nobody ever compiling it. It goes through
+[`scripts/build-apple-ci.sh`](../../scripts/build-apple-ci.sh), which prints a
+count of compiler diagnostics rather than leaving you to infer cleanliness from
+an empty log.
 
 ## Not this (deliberately, for later phases)
 

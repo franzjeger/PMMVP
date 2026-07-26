@@ -162,16 +162,17 @@ jobs:
       # an Apple ID; CODE_SIGNING_ALLOWED=NO gets the compiler and the linker
       # without one. The iOS scheme also exercises scripts/build-ffi-ios.sh,
       # so the cross-compile and staging are covered by the same step.
+      #
+      # The script reports a diagnostic COUNT rather than relying on an empty
+      # log, because an empty log cannot distinguish "clean" from "suppressed".
+      # That number is also what decides whether SWIFT_VERSION can go to 6.0:
+      # SWIFT_STRICT_CONCURRENCY is `complete` in both projects, so its findings
+      # are warnings today and errors under the Swift 6 language mode.
       - name: Build the Swift targets, unsigned (macOS + iOS)
         if: runner.os == 'macOS'
         run: |
           brew install xcodegen
-          (cd apps/macos && xcodegen generate && \
-            xcodebuild -quiet -scheme ArcaHost -destination 'platform=macOS' \
-              CODE_SIGNING_ALLOWED=NO -derivedDataPath build build)
-          (cd apps/ios && xcodegen generate && \
-            xcodebuild -quiet -scheme Arca -destination 'generic/platform=iOS Simulator' \
-              CODE_SIGNING_ALLOWED=NO -derivedDataPath build build)
+          scripts/build-apple-ci.sh
 
   linux-smoke:
     name: linux real-clipboard & keychain smoke
