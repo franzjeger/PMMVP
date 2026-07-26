@@ -26,7 +26,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::slice;
 
 use serde::Serialize;
-use vault_core::{Error, ItemKind, SymmetricKey, Vault, VaultItem, KEY_LEN};
+use vault_core::{host_of, Error, ItemKind, SymmetricKey, Vault, VaultItem, KEY_LEN};
 
 /// ABI version. Bump on any breaking change to a signature below.
 ///
@@ -232,42 +232,6 @@ struct Identity {
     user: String,
     domain: String,
     label: String,
-}
-
-/// Bare host of a URL for domain matching: scheme, path, query, userinfo and
-/// port stripped, a leading "www." and a trailing "." removed, lowercased. IPv6
-/// literals in brackets keep their inner colons.
-///
-/// This domain is the anti-phishing match key, so it MUST agree with how a
-/// browser resolves the host. Browsers strip ASCII tab/newline from a URL and
-/// treat backslashes as forward slashes before parsing; we do the same first,
-/// otherwise a crafted stored URL like `https://good.com\@evil.com` (which a
-/// browser navigates to good.com) would be read here as host `evil.com`.
-fn host_of(url: &str) -> String {
-    let normalized: String = url
-        .chars()
-        .filter(|&c| c != '\t' && c != '\n' && c != '\r')
-        .map(|c| if c == '\\' { '/' } else { c })
-        .collect();
-    let s = normalized.trim();
-    let after_scheme = s.split_once("://").map(|(_, r)| r).unwrap_or(s);
-    let authority = after_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(after_scheme);
-    let host = authority
-        .rsplit_once('@')
-        .map(|(_, h)| h)
-        .unwrap_or(authority);
-    let host = if let Some(rest) = host.strip_prefix('[') {
-        rest.split_once(']').map(|(inner, _)| inner).unwrap_or(rest)
-    } else {
-        host.split_once(':').map(|(h, _)| h).unwrap_or(host)
-    };
-    let host = host.trim_end_matches('.');
-    host.strip_prefix("www.")
-        .unwrap_or(host)
-        .to_ascii_lowercase()
 }
 
 /// Build the JSON identity array from the unlocked vault's active logins.
@@ -646,30 +610,6 @@ mod tests {
             unsafe { vault_ffi_vault_open_password(std::ptr::null(), 0, pw.as_ptr(), &mut h) },
             ERR_NULL_ARG
         );
-    }
-
-    #[test]
-    fn host_of_extracts_the_matchable_domain() {
-        assert_eq!(host_of("https://www.github.com/login"), "github.com");
-        assert_eq!(host_of("http://example.com:8080/x"), "example.com");
-        assert_eq!(
-            host_of("https://user:pass@sub.example.com/y"),
-            "sub.example.com"
-        );
-        assert_eq!(host_of("https://[fd00::1]:8443/z"), "fd00::1");
-        assert_eq!(host_of("bareword"), "bareword");
-    }
-
-    #[test]
-    fn host_of_matches_browser_normalization() {
-        // Backslash is treated as a path separator by browsers, so the host is
-        // good.com, NOT evil.com — otherwise a good.com credential could be
-        // offered on evil.com.
-        assert_eq!(host_of(r"https://good.com\@evil.com"), "good.com");
-        assert_eq!(host_of("https://good.com\t/login"), "good.com");
-        assert_eq!(host_of("https://good.com\n"), "good.com");
-        // Trailing-dot FQDN and case normalize so matching doesn't fail-closed.
-        assert_eq!(host_of("https://Good.COM./x"), "good.com");
     }
 
     #[test]

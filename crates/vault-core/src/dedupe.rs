@@ -16,30 +16,8 @@
 //!   the merge propagates to synced peers as ordinary tombstones.
 
 use crate::item::{Item, VaultItem};
+use crate::url::host_of;
 use std::collections::HashMap;
-
-/// Bare lowercase host of a URL for grouping: scheme/path/query/userinfo/port
-/// stripped, a leading `www.` and a trailing `.` removed. Mirrors the autofill
-/// bridge's host matching so "duplicate" here means "the same site there".
-fn host_key(url: &str) -> String {
-    let s = url.trim();
-    let after_scheme = s.split_once("://").map(|(_, r)| r).unwrap_or(s);
-    let authority = after_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(after_scheme);
-    let host = authority
-        .rsplit_once('@')
-        .map(|(_, h)| h)
-        .unwrap_or(authority);
-    let host = if let Some(rest) = host.strip_prefix('[') {
-        rest.split_once(']').map(|(inner, _)| inner).unwrap_or(rest)
-    } else {
-        host.split_once(':').map(|(h, _)| h).unwrap_or(host)
-    };
-    let host = host.trim_end_matches('.').to_lowercase();
-    host.strip_prefix("www.").unwrap_or(&host).to_string()
-}
 
 /// Merge duplicate active logins in place. Returns the number of items that
 /// were merged away (soft-deleted into the Trash).
@@ -52,7 +30,7 @@ pub fn merge_duplicate_logins(items: &mut [Item], now_unix_millis: i64) -> usize
         }
         if let VaultItem::Login { username, url, .. } = &item.data {
             let user = username.trim().to_lowercase();
-            let host = host_key(url);
+            let host = host_of(url);
             if host.is_empty() && user.is_empty() {
                 continue; // nothing to key on; leave untouched
             }

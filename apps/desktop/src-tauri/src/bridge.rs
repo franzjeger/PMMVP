@@ -177,32 +177,11 @@ fn info_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("native-bridge.json")
 }
 
-/// Bare host of a URL: scheme/path/port/userinfo stripped and a leading "www."
-/// removed. Empty when there's no host. Shared with the item list (site
-/// grouping) so the UI groups by exactly the hosts autofill matches on.
-pub(crate) fn host_of(url: &str) -> String {
-    let after_scheme = match url.find("://") {
-        Some(i) => &url[i + 3..],
-        None => url.trim(),
-    };
-    let authority = after_scheme.split('/').next().unwrap_or("");
-    let no_userinfo = authority.rsplit('@').next().unwrap_or(authority);
-    // Strip the port bracket-aware: an IPv6 literal ("[fd00::a1]:8080") must
-    // not be truncated at the first colon inside the address.
-    let host = if no_userinfo.starts_with('[') {
-        match no_userinfo.find(']') {
-            Some(end) => &no_userinfo[..=end],
-            None => no_userinfo, // malformed literal; keep as-is
-        }
-    } else {
-        no_userinfo.split(':').next().unwrap_or(no_userinfo)
-    };
-    // Lowercase BEFORE stripping "www." so "WWW.GitHub.com" == "github.com";
-    // full Unicode lowercase so IDN hosts compare equal too. Drop a trailing
-    // dot (the fully-qualified form "github.com." == "github.com").
-    let host = host.trim().trim_end_matches('.').to_lowercase();
-    host.strip_prefix("www.").unwrap_or(&host).to_string()
-}
+/// The anti-phishing match key, from `vault-core` so the desktop bridge, the
+/// AutoFill FFI and the duplicate finder cannot drift apart again. Also used for
+/// item-list site grouping, so the UI groups by exactly the hosts autofill
+/// matches on.
+pub(crate) use vault_core::host_of;
 
 /// Whether a stored login's URL should autofill on the requested page: exact
 /// host, or a sub/parent-domain relationship (after stripping `www.`).
@@ -1166,6 +1145,45 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    /// Regression: `host_of` used to end the authority at `/` only, so an `@`
+    /// anywhere in a query or fragment read as userinfo and everything after it
+    /// became the host. A stored `https://bank.example#@evil.com` therefore
+    /// matched `evil.com`, and autofill offered the bank credential there.
+    ///
+    /// Browser-supplied URLs were never affected (`location.href` always carries
+    /// the path `/`), but a stored URL need not come from a browser — CSV import
+    /// is a documented path for a file the user may not control.
+    ///
+    /// The parsing now lives in `vault-core`; this pins the property that
+    /// matters here, which is whether the credential is offered at all.
+    #[test]
+    fn an_at_sign_after_the_authority_never_moves_the_match() {
+        for stored in [
+            "https://bank.example#@evil.com",
+            "https://bank.example?ref=@evil.com",
+            "https://bank.example?email=me@gmail.com",
+            r"https://bank.example\@evil.com",
+        ] {
+            assert!(
+                !domain_matches(stored, "https://evil.com/"),
+                "{stored} offered the credential on evil.com"
+            );
+            assert!(
+                !domain_matches(stored, "https://gmail.com/"),
+                "{stored} offered the credential on gmail.com"
+            );
+            assert!(
+                domain_matches(stored, "https://bank.example/login"),
+                "{stored} failed to match its own site"
+            );
+        }
+        // Real userinfo is still userinfo: it sits before the authority ends.
+        assert!(domain_matches(
+            "https://me@bank.example/login",
+            "https://bank.example/"
+        ));
     }
 
     #[test]
