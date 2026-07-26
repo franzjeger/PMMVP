@@ -21,6 +21,13 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
+    # Xcode wraps Debug builds in a separate <name>.debug.dylib launched via a
+    # thunk. For an app extension the credential-provider loader can fail to
+    # recognize that indirection, so build a conventional single-binary target.
+    # apps/macos learned this the hard way; the iOS extension is the same shape
+    # of thing, and the CI build log shows it linking ArcaAutoFill.debug.dylib
+    # without it. This is a RUNTIME failure — no compile catches it.
+    ENABLE_DEBUG_DYLIB: "NO"
     # Same reasoning as apps/macos/project.yml: a data race here means handing
     # back the wrong password. `complete` reports them as warnings under the
     # Swift 5 language mode; SWIFT_VERSION 6.0 turns them into errors.
