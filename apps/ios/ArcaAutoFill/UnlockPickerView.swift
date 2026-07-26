@@ -19,6 +19,10 @@ struct UnlockPickerView: View {
             }
             .navigationTitle("Arca")
             .navigationBarTitleDisplayMode(.inline)
+            // Try the device key immediately. With quick unlock on, a fill is a
+            // glance instead of typing a master password into a keyboard
+            // accessory view.
+            .task { await model.start() }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") { model.cancel() }
@@ -107,6 +111,13 @@ private struct UnlockForm: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(password.isEmpty || isUnlocking)
+
+            if model.canUseDeviceKey {
+                Button("Use Face ID", systemImage: "faceid") {
+                    Task { await model.useDeviceKey() }
+                }
+                .disabled(isUnlocking)
+            }
 
             Spacer()
         }

@@ -1,11 +1,12 @@
 // State for the AutoFill extension: unlock, then either fill the credential the
 // OS named or show the ones matching the site.
 //
-// The extension is a SEPARATE PROCESS from the app, so it cannot borrow an
-// unlocked session — and iOS has no device key to shortcut with, because nothing
-// can mint one yet (../README.md). That means a master password, and an Argon2id
-// derivation, per fill. It is the sharpest edge in this scaffold and the first
-// thing an FFI write path would fix.
+// The extension is a SEPARATE PROCESS from the app, so it cannot borrow the
+// app's unlocked session. It opens the vault itself: with the device key from
+// the shared keychain when the user has turned quick unlock on — a biometric and
+// a symmetric unwrap — and otherwise with the master password, which costs a
+// full Argon2id derivation on every single fill. That difference is why
+// `vault_ffi_enable_device_unlock` exists.
 
 import AuthenticationServices
 import Observation
@@ -33,6 +34,9 @@ final class AutoFillModel {
     private(set) var identities: [VaultIdentity] = []
     private(set) var failure: String?
 
+    /// Whether the password field should offer a biometric retry.
+    var canUseDeviceKey: Bool { VaultSession.hasStoredDeviceKey }
+
     private let domains: Set<String>
     private let direct: DirectRequest?
     private let onFill: @MainActor (ASPasswordCredential) -> Void
@@ -54,12 +58,38 @@ final class AutoFillModel {
 
     func cancel() { onCancel() }
 
+    /// Try the device key straight away. Falls through to the password form when
+    /// there is no key or the biometric is declined — never blocks on it.
+    func start() async {
+        guard canUseDeviceKey else { return }
+        await open(fallback: "Couldn't unlock with Face ID.") {
+            try await VaultSession.openWithDeviceKey(reason: "fill a password from Arca")
+        }
+    }
+
+    func useDeviceKey() async {
+        await open(fallback: "Couldn't unlock with Face ID.") {
+            try await VaultSession.openWithDeviceKey(reason: "fill a password from Arca")
+        }
+    }
+
     func unlock(password: String) async {
+        await open(fallback: "Couldn't unlock the vault.") {
+            try await VaultSession.openWithMasterPassword(password)
+        }
+    }
+
+    /// Both unlock paths converge here: get a handle, then either fill the one
+    /// credential the OS named or show the ones matching the site.
+    private func open(
+        fallback: String,
+        _ makeSession: @Sendable () async throws -> VaultSession
+    ) async {
         guard phase != .unlocking else { return }
         phase = .unlocking
         failure = nil
         do {
-            let session = try await VaultSession.openWithMasterPassword(password)
+            let session = try await makeSession()
             self.session = session
 
             // Asked for one credential: hand it back rather than showing a list
@@ -78,7 +108,9 @@ final class AutoFillModel {
             phase = .picking
         } catch {
             log.error("unlock failed: \(vaultLogMessage(for: error), privacy: .public)")
-            failure = Self.message(error, fallback: "Couldn't unlock the vault.")
+            // A declined biometric is a choice, not an error: the password field
+            // is already on screen.
+            failure = Self.cancelled(error) ? nil : Self.message(error, fallback: fallback)
             phase = .locked
         }
     }
@@ -102,5 +134,15 @@ final class AutoFillModel {
 
     private static func message(_ error: Error, fallback: String) -> String {
         (error as? LocalizedError)?.errorDescription ?? fallback
+    }
+
+    private static func cancelled(_ error: Error) -> Bool {
+        guard let vaultError = error as? VaultError else { return false }
+        switch vaultError {
+        case .noDeviceKey(let status), .deviceKeyNotStored(let status):
+            return status == errSecUserCanceled
+        default:
+            return false
+        }
     }
 }
