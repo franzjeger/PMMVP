@@ -98,6 +98,17 @@ export interface BreachHit {
   count: number;
 }
 
+/**
+ * Outcome of a breach check. `unchecked` counts logins whose range request
+ * failed — they are NOT known to be clean, so the UI must not imply an
+ * all-clear when it is non-zero.
+ */
+export interface BreachReport {
+  hits: BreachHit[];
+  checked: number;
+  unchecked: number;
+}
+
 export interface SecurityIssue {
   id: string;
   issues: SecurityTag[];
@@ -241,7 +252,7 @@ export const api = {
 
   currentTotp: (id: string) => invoke<Totp>("current_totp", { id }),
   securityReport: () => invoke<SecurityIssue[]>("security_report"),
-  checkBreaches: () => invoke<BreachHit[]>("check_breaches"),
+  checkBreaches: () => invoke<BreachReport>("check_breaches"),
   generate: (options: PasswordOptions) => invoke<string>("generate", { options }),
 
   importLogins: (path: string) => invoke<ImportSummary>("import_logins", { path }),
@@ -349,6 +360,18 @@ export const api = {
 /** Fired by the backend when the vault auto-locks (idle or window blur). */
 export function onVaultLocked(cb: (reason: string) => void): Promise<UnlistenFn> {
   return listen<string>("vault-locked", (e) => cb(e.payload));
+}
+
+/**
+ * Progress of a running breach check: one step per DISTINCT hash prefix
+ * fetched, not per login, so `total` is usually well below the login count.
+ */
+export function onBreachProgress(
+  cb: (done: number, total: number) => void,
+): Promise<UnlistenFn> {
+  return listen<[number, number]>("breach-progress", (e) =>
+    cb(e.payload[0], e.payload[1]),
+  );
 }
 
 /** Fired after a copied secret is auto-cleared from the clipboard. */

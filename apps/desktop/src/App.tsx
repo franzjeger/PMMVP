@@ -6,6 +6,7 @@ import {
   errorMessage,
   isTauri,
   onAutofilled,
+  onBreachProgress,
   onClipboardCleared,
   onFillConsentRequest,
   onLoginSaved,
@@ -65,6 +66,10 @@ export default function App() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [breaches, setBreaches] = useState<Map<string, number>>(new Map());
   const [breachBusy, setBreachBusy] = useState(false);
+  const [breachProgress, setBreachProgress] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
 
   const loadItems = useCallback(async () => {
     try {
@@ -205,18 +210,31 @@ export default function App() {
   // On-demand HaveIBeenPwned k-anonymity check over all login passwords.
   const runBreachCheck = useCallback(async () => {
     setBreachBusy(true);
+    setBreachProgress(null);
+    // One request per distinct hash prefix, so a big vault takes a while.
+    // Report progress rather than spinning silently for a minute.
+    const unlisten = await onBreachProgress((done, total) =>
+      setBreachProgress({ done, total }),
+    );
     try {
-      const hits = await api.checkBreaches();
-      setBreaches(new Map(hits.map((h) => [h.id, h.count])));
+      const report = await api.checkBreaches();
+      setBreaches(new Map(report.hits.map((h) => [h.id, h.count])));
+      const n = report.hits.length;
+      const found = n
+        ? `${n} password${n === 1 ? "" : "s"} found in known breaches`
+        : "No breached passwords found";
+      // Never imply an all-clear for logins we could not actually check.
       setToast(
-        hits.length
-          ? `${hits.length} password${hits.length === 1 ? "" : "s"} found in known breaches`
-          : "No breached passwords found",
+        report.unchecked
+          ? `${found} — but ${report.unchecked} could not be checked (network); try again`
+          : found,
       );
     } catch (e) {
       setToast(errorMessage(e));
     } finally {
+      unlisten();
       setBreachBusy(false);
+      setBreachProgress(null);
     }
   }, []);
 
@@ -386,7 +404,9 @@ export default function App() {
                   className="rounded-md border border-hairline px-2.5 py-1 text-neutral-200 hover:bg-fill/5 disabled:opacity-50"
                 >
                   {breachBusy
-                    ? "Checking breaches…"
+                    ? breachProgress
+                      ? `Checking ${breachProgress.done} of ${breachProgress.total}…`
+                      : "Checking breaches…"
                     : breaches.size
                       ? "Re-check breaches"
                       : "Check passwords for breaches"}

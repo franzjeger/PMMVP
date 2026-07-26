@@ -901,12 +901,30 @@ pub struct BreachHit {
     pub count: u64,
 }
 
+/// Outcome of a breach check.
+///
+/// `unchecked` matters: a login whose range request failed is NOT known to be
+/// clean, and reporting only `hits` would turn a network problem into a false
+/// all-clear on a security feature.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BreachReport {
+    pub hits: Vec<BreachHit>,
+    /// Logins actually compared against the breach corpus.
+    pub checked: usize,
+    /// Logins skipped because their range could not be fetched.
+    pub unchecked: usize,
+}
+
 /// Check every login password against HaveIBeenPwned using k-anonymity: only the
 /// 5-char SHA-1 prefix leaves the device, never the password or its full hash.
 /// The password plaintext is touched only briefly under the state lock (to hash
 /// it); the network calls run afterward with just the hashes.
 #[tauri::command]
-pub async fn check_breaches(state: St<'_>) -> Result<Vec<BreachHit>, CmdError> {
+pub async fn check_breaches(
+    app: tauri::AppHandle,
+    state: St<'_>,
+) -> Result<BreachReport, CmdError> {
     // (id, prefix, suffix) for every login, computed under the lock.
     let entries: Vec<(String, String, String)> = {
         let st = guard(state.inner())?;
@@ -930,61 +948,124 @@ pub async fn check_breaches(state: St<'_>) -> Result<Vec<BreachHit>, CmdError> {
         out
     };
     if entries.is_empty() {
-        return Ok(Vec::new());
+        return Ok(BreachReport {
+            hits: Vec::new(),
+            checked: 0,
+            unchecked: 0,
+        });
     }
 
     tauri::async_runtime::spawn_blocking(move || {
-        use std::collections::HashMap;
-        const WORKERS: usize = 8;
-        let chunk = entries.len().div_ceil(WORKERS).max(1);
+        use std::collections::{HashMap, HashSet};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        // Fetch each DISTINCT prefix exactly once. Work used to be split by
+        // login, with a per-worker cache, so a vault with reused passwords (or
+        // simply two logins whose hashes share a prefix) fetched the same range
+        // several times: ~640 requests for ~640 logins, minutes of waiting. Only
+        // the prefix set actually costs network time; matching suffixes is local.
+        let prefixes: Vec<String> = entries
+            .iter()
+            .map(|(_, p, _)| p.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        let total = prefixes.len();
+
+        // Each response is padded to a uniform ~80 KB, so latency dominates and
+        // concurrency is what helps. The range API is a cached, public endpoint
+        // designed for exactly this.
+        const WORKERS: usize = 16;
+
+        let prefixes = Arc::new(prefixes);
+        let ranges: Arc<Mutex<HashMap<String, String>>> = Arc::default();
+        let next = Arc::new(AtomicUsize::new(0));
+        let done = Arc::new(AtomicUsize::new(0));
+
         let mut handles = Vec::new();
-        for part in entries.chunks(chunk).map(<[_]>::to_vec) {
+        for _ in 0..WORKERS.min(total.max(1)) {
+            let (prefixes, ranges, next, done) = (
+                Arc::clone(&prefixes),
+                Arc::clone(&ranges),
+                Arc::clone(&next),
+                Arc::clone(&done),
+            );
+            let app = app.clone();
             handles.push(std::thread::spawn(move || {
-                let client = match reqwest::blocking::Client::builder()
+                let Ok(client) = reqwest::blocking::Client::builder()
                     .timeout(std::time::Duration::from_secs(20))
                     .build()
-                {
-                    Ok(c) => c,
-                    Err(_) => return Vec::new(),
+                else {
+                    return;
                 };
-                // Cache range bodies within this worker to skip repeat fetches.
-                let mut ranges: HashMap<String, String> = HashMap::new();
-                let mut hits = Vec::new();
-                for (id, prefix, suffix) in part {
-                    let body = match ranges.get(&prefix) {
-                        Some(b) => b.clone(),
-                        None => {
-                            // `Add-Padding` makes every response a uniform size,
-                            // so an on-path observer can't infer the prefix.
-                            let fetched = client
-                                .get(format!("https://api.pwnedpasswords.com/range/{prefix}"))
-                                .header("Add-Padding", "true")
-                                .send()
-                                .and_then(reqwest::blocking::Response::text)
-                                .ok();
-                            match fetched {
-                                Some(b) => {
-                                    ranges.insert(prefix.clone(), b.clone());
-                                    b
-                                }
-                                None => continue, // network hiccup: skip this one
-                            }
+                // Pull from a shared cursor rather than a fixed slice, so one
+                // slow response cannot leave other workers idle.
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(prefix) = prefixes.get(i) else { break };
+                    // One retry: the endpoint is rate-limited and throughput
+                    // measured wildly variable, so a single failure is usually
+                    // transient — and an unfetched prefix means those logins go
+                    // UNCHECKED, which must never be reported as "no breaches".
+                    let mut body = None;
+                    for attempt in 0..2 {
+                        if attempt > 0 {
+                            std::thread::sleep(std::time::Duration::from_millis(750));
                         }
-                    };
-                    if let Some(count) = vault_core::breach::count_in_range(&suffix, &body) {
-                        hits.push(BreachHit { id, count });
+                        // `Add-Padding` makes every response a uniform size, so
+                        // an on-path observer cannot infer the prefix from it.
+                        body = client
+                            .get(format!("https://api.pwnedpasswords.com/range/{prefix}"))
+                            .header("Add-Padding", "true")
+                            .send()
+                            .and_then(reqwest::blocking::Response::error_for_status)
+                            .and_then(reqwest::blocking::Response::text)
+                            .ok();
+                        if body.is_some() {
+                            break;
+                        }
                     }
+                    if let Some(body) = body {
+                        if let Ok(mut map) = ranges.lock() {
+                            map.insert(prefix.clone(), body);
+                        }
+                    }
+                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    // Minutes of indeterminate spinner is not acceptable UI.
+                    let _ = app.emit("breach-progress", (n, total));
                 }
-                hits
             }));
         }
-        let mut all = Vec::new();
         for h in handles {
-            if let Ok(hits) = h.join() {
-                all.extend(hits);
+            let _ = h.join();
+        }
+
+        let ranges = ranges
+            .lock()
+            .map_err(|_| CmdError::new("internal", "breach-check task failed"))?;
+        let mut hits = Vec::new();
+        // Logins whose range never arrived are UNCHECKED, not clean. Counting
+        // them lets the UI say so instead of implying an all-clear.
+        let mut unchecked = 0usize;
+        for (id, prefix, suffix) in &entries {
+            match ranges.get(prefix) {
+                Some(body) => {
+                    if let Some(count) = vault_core::breach::count_in_range(suffix, body) {
+                        hits.push(BreachHit {
+                            id: id.clone(),
+                            count,
+                        });
+                    }
+                }
+                None => unchecked += 1,
             }
         }
-        Ok(all)
+        Ok(BreachReport {
+            checked: entries.len() - unchecked,
+            unchecked,
+            hits,
+        })
     })
     .await
     .map_err(|_| CmdError::new("internal", "breach-check task failed"))?
