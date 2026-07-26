@@ -408,17 +408,21 @@ fn do_unlock(state: &Mutex<AppState>, master_password: &str) -> Result<(), CmdEr
     st.vault_mut()?.unlock(master_password)?;
 
     // Self-heal quick unlock: if the header says it's enabled but the keychain
-    // device key is gone (e.g. an older build stored it in the data-protection
-    // keychain, which this build no longer reads), re-establish it now that the
-    // vault is unlocked — so the NEXT unlock is Touch ID, without the user
-    // having to toggle the setting off/on. Best-effort: any failure just leaves
-    // quick unlock off.
-    let needs_heal = st
-        .vault
-        .as_ref()
-        .map(Vault::has_device_unlock)
-        .unwrap_or(false)
-        && !st.store.quick_unlock_available();
+    // device key is MISSING or NO LONGER MATCHES the header wrap (drift from an
+    // interrupted re-enable, a restored/bootstrapped vault file, a peer's
+    // header), re-establish it now that the vault is unlocked — so the NEXT
+    // unlock is Touch ID, without the user having to toggle the setting off/on.
+    // The mismatch case matters: Touch ID *succeeds* but the unwrap fails, and
+    // without this heal every unlock degrades into prompt-then-password forever.
+    // Best-effort: any failure just leaves quick unlock off until the next
+    // password unlock retries the repair.
+    let needs_heal = {
+        let AppState { store, vault, .. } = &*st;
+        vault
+            .as_ref()
+            .map(|v| store.quick_unlock_stale(v))
+            .unwrap_or(false)
+    };
     if needs_heal {
         {
             let AppState { store, vault, .. } = &mut *st;
@@ -453,7 +457,19 @@ pub fn quick_unlock(app: tauri::AppHandle, state: St<'_>) -> Result<(), CmdError
     }
     let AppState { store, vault, .. } = &mut *st;
     let vault = vault.as_mut().ok_or_else(CmdError::no_vault)?;
-    store.quick_unlock(vault)?;
+    if let Err(e) = store.quick_unlock(vault) {
+        // The user just passed Touch ID; if the stored key no longer unwraps
+        // the header (stale drift), say so explicitly — the frontend then stops
+        // re-prompting and asks for the master password once, which repairs
+        // quick unlock via the self-heal in `do_unlock`.
+        if store.quick_unlock_stale(vault) {
+            return Err(CmdError::new(
+                "quick_unlock_stale",
+                "Quick unlock is out of sync with this vault. Enter your master password once to repair it.",
+            ));
+        }
+        return Err(e.into());
+    }
     st.touch();
     drop(st);
     kick_sync(&app);

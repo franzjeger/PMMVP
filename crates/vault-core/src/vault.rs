@@ -375,6 +375,22 @@ impl Vault {
         self.header.device_wrapped_vault_key.is_some()
     }
 
+    /// Whether `device_key` actually unwraps this header's quick-unlock slot.
+    ///
+    /// The OS-keychain copy of the device key and the header wrap can drift
+    /// apart (an interrupted re-enable, a restored backup file, a peer's file
+    /// bootstrapped onto this machine). Then Touch ID succeeds but the unwrap
+    /// fails — so callers use this to detect the mismatch and re-establish
+    /// quick unlock instead of silently failing. Works locked or unlocked;
+    /// `false` when quick unlock was never enabled.
+    pub fn device_key_matches(&self, device_key: &SymmetricKey) -> bool {
+        self.header
+            .device_wrapped_vault_key
+            .as_ref()
+            .map(|wrapped| crypto::unwrap_key(device_key, wrapped, DEVICE_UNLOCK_AAD).is_ok())
+            .unwrap_or(false)
+    }
+
     // ----- accessors ------------------------------------------------------
 
     pub fn header(&self) -> &VaultHeader {
@@ -496,6 +512,40 @@ mod tests {
                 password: "correct horse battery staple".into(),
             }
         );
+    }
+
+    // ---- quick-unlock drift ---------------------------------------------
+
+    // The OS-keychain device key and the header wrap can drift apart (an
+    // interrupted re-enable, a restored backup, a bootstrapped peer file). The
+    // symptom was brutal: Touch ID kept succeeding while the unlock kept
+    // failing, and nothing repaired it. `device_key_matches` is the detection
+    // primitive the self-heal builds on — pin its semantics.
+    #[test]
+    fn device_key_matches_detects_drift() {
+        let mut v = Vault::create("pw", cheap_params()).unwrap();
+        let k1 = SymmetricKey::generate().unwrap();
+        let k2 = SymmetricKey::generate().unwrap();
+
+        // Never enabled: nothing matches.
+        assert!(!v.device_key_matches(&k1));
+
+        v.enable_device_unlock(&k1).unwrap();
+        assert!(v.device_key_matches(&k1));
+        assert!(!v.device_key_matches(&k2)); // drifted keychain copy
+
+        // Re-enable with a fresh key (the repair path): the new key matches,
+        // the old one no longer does.
+        v.enable_device_unlock(&k2).unwrap();
+        assert!(v.device_key_matches(&k2));
+        assert!(!v.device_key_matches(&k1));
+
+        // Works on a LOCKED vault too (the lock screen checks before unlock).
+        let bytes = v.to_bytes().unwrap();
+        let locked = Vault::from_bytes(&bytes).unwrap();
+        assert!(!locked.is_unlocked());
+        assert!(locked.device_key_matches(&k2));
+        assert!(!locked.device_key_matches(&k1));
     }
 
     // ---- merge_remote (sync) --------------------------------------------

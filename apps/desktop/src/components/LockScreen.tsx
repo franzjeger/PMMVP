@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, errorMessage, type VaultStatus } from "../lib/api";
+import { api, errorMessage, isApiError, type VaultStatus } from "../lib/api";
 import { LockIcon, TouchIdIcon } from "./icons";
 
 export function LockScreen({
@@ -43,6 +43,12 @@ export function LockScreen({
     }
   };
 
+  // After quick unlock FAILS past the biometric (stale device key, keychain
+  // trouble), stop offering Touch ID entirely until a password unlock repairs
+  // it — more prompts can only fail the same way. A storm of re-prompts here is
+  // exactly the failure mode this guards against.
+  const [quickBroken, setQuickBroken] = useState(false);
+
   const quick = async (auto = false) => {
     setBusy(true);
     if (!auto) setError(null);
@@ -50,10 +56,18 @@ export function LockScreen({
       await api.quickUnlock();
       onUnlocked();
     } catch (e) {
-      // If the user dismisses the automatic Touch ID prompt, fall back quietly
-      // to the password field instead of showing an error. Manual retries still
-      // surface the reason.
-      if (!auto) setError(errorMessage(e));
+      const code = isApiError(e) ? e.code : "";
+      if (code === "biometric_failed") {
+        // The user cancelled/failed the prompt itself. Quiet on the automatic
+        // attempt; show the reason on a manual retry.
+        if (!auto) setError(errorMessage(e));
+      } else {
+        // Touch ID SUCCEEDED but the unlock itself failed (stale device key
+        // etc.). Always surface this and stop prompting — only the master
+        // password (which self-repairs quick unlock) can get past it.
+        setQuickBroken(true);
+        setError(errorMessage(e));
+      }
     } finally {
       setBusy(false);
     }
@@ -61,10 +75,15 @@ export function LockScreen({
 
   // Prompt for Touch ID automatically as soon as the lock screen appears (once),
   // like the system lock screen. The password field stays available as a
-  // fallback if the user cancels or prefers to type.
+  // fallback if the user cancels or prefers to type. Never re-triggered by
+  // focusing/clicking the password field: typing your password must not spawn
+  // biometric prompts.
   const autoTried = useRef(false);
   const canBiometric =
-    !creating && status.quickUnlockAvailable && status.biometricAvailable;
+    !creating &&
+    status.quickUnlockAvailable &&
+    status.biometricAvailable &&
+    !quickBroken;
   useEffect(() => {
     if (autoTried.current || !canBiometric) return;
     autoTried.current = true;
@@ -103,11 +122,6 @@ export function LockScreen({
             autoFocus
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            // Tapping the (empty) field re-invokes Touch ID, so there's no
-            // separate button: the prompt also fires automatically on mount.
-            onClick={() => {
-              if (canBiometric && !busy && password === "") void quick(true);
-            }}
             placeholder="Master password"
             className="w-full rounded-lg bg-fill/5 px-3 py-2.5 text-[14px] text-neutral-100 outline-none ring-1 ring-line/10 focus:ring-accent/60"
           />
@@ -133,10 +147,15 @@ export function LockScreen({
         </form>
 
         {canBiometric && (
-          <p className="mt-3 flex items-center justify-center gap-1.5 text-[11px] text-neutral-600">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void quick(false)}
+            className="mt-3 flex w-full items-center justify-center gap-1.5 text-[11px] text-neutral-500 hover:text-neutral-300 disabled:opacity-60"
+          >
             <TouchIdIcon className="h-3.5 w-3.5" />
-            Touch ID
-          </p>
+            Use Touch ID
+          </button>
         )}
       </div>
     </div>

@@ -122,6 +122,25 @@ impl VaultStore {
         keychain::exists(&self.keychain_service, &self.keychain_account)
     }
 
+    /// Whether quick unlock is STALE for `vault`: the header carries a
+    /// device-unlock slot, but the OS-keychain key is missing or no longer
+    /// unwraps it (drift from an interrupted re-enable, a restored/bootstrapped
+    /// vault file, or a peer's header). Touch ID then succeeds while the unlock
+    /// itself fails — callers should repair by re-running
+    /// [`enable_quick_unlock`](Self::enable_quick_unlock) once the vault is
+    /// unlocked with the master password, and persisting.
+    pub fn quick_unlock_stale(&self, vault: &Vault) -> bool {
+        if !vault.has_device_unlock() {
+            return false;
+        }
+        match keychain::get(&self.keychain_service, &self.keychain_account) {
+            Ok(Some(key)) => !vault.device_key_matches(&key),
+            Ok(None) => true,
+            // Keychain unreadable: can't verify — don't churn the key.
+            Err(_) => false,
+        }
+    }
+
     /// Enable quick-unlock: mint a random device key, store it in the OS
     /// keychain, and add a device-wrapped vault key to the header. The caller
     /// must [`save`](Self::save) afterward to persist the header change. The
@@ -339,6 +358,50 @@ mod tests {
     // Keychain tests require a real OS secret store (and may pop a biometric /
     // auth prompt), so they are not run by default. Run on a desktop with:
     //   cargo test -p vault-store -- --ignored
+
+    // Regression: the keychain device key drifting from the header wrap used to
+    // make EVERY unlock fail after a successful Touch ID (prompt storm →
+    // password), with nothing repairing it. `quick_unlock_stale` must detect
+    // the drift, and re-running `enable_quick_unlock` must repair it.
+    #[test]
+    #[ignore = "requires OS keychain access"]
+    fn stale_device_key_is_detected_and_repairable() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = VaultStore::new(
+            dir.path().join("stale.vault"),
+            "no.sybr.vault.test",
+            "stale-key-test",
+        );
+        let mut v = Vault::create("pw", cheap_params()).unwrap();
+
+        // Healthy: enabled, key matches.
+        store.enable_quick_unlock(&mut v).unwrap();
+        assert!(!store.quick_unlock_stale(&v));
+
+        // Drift: something replaces the keychain copy (interrupted re-enable,
+        // another install) — header still wraps the OLD key.
+        let intruder = SymmetricKey::generate().unwrap();
+        keychain::set("no.sybr.vault.test", "stale-key-test", &intruder).unwrap();
+        assert!(store.quick_unlock_stale(&v));
+        let mut locked = Vault::from_bytes(&v.to_bytes().unwrap()).unwrap();
+        assert!(store.quick_unlock(&mut locked).is_err()); // the user-visible failure
+
+        // Repair (what the password-unlock self-heal runs): fresh key, rewrap.
+        store.enable_quick_unlock(&mut v).unwrap();
+        assert!(!store.quick_unlock_stale(&v));
+        let mut reloaded = Vault::from_bytes(&v.to_bytes().unwrap()).unwrap();
+        store.quick_unlock(&mut reloaded).unwrap();
+        assert!(reloaded.is_unlocked());
+
+        // Missing key entirely is also stale (heal covers both).
+        keychain::delete("no.sybr.vault.test", "stale-key-test").unwrap();
+        assert!(store.quick_unlock_stale(&v));
+
+        // Cleanup: nothing left behind.
+        let mut v2 = v;
+        let _ = store.disable_quick_unlock(&mut v2);
+    }
+
     #[test]
     #[ignore = "requires OS keychain access"]
     fn quick_unlock_round_trip() {
