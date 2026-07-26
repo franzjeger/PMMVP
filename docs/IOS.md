@@ -98,11 +98,12 @@ wrapper. That much of §2 remains.
 Done, unverified:
 
 - [`scripts/build-ffi-ios.sh`](../scripts/build-ffi-ios.sh) adds the Rust targets
-  and stages one `.a` per platform, because device and simulator are different
-  platforms. Not an xcframework, despite this document originally asking for
-  one: Xcode resolves a framework dependency before any pre-build script runs,
-  so a library the project builds itself can never be one. Search paths resolve
-  at link time — the same shape `apps/macos` already used.
+  and stages one `.a` per platform: arm64 for the device, and a `lipo` of arm64 +
+  x86_64 for the simulator, because `ARCHS_STANDARD` there is both. Not an
+  xcframework, despite this document originally asking for one: Xcode resolves a
+  framework dependency before any pre-build script runs, so a library the project
+  builds itself can never be one. Search paths resolve at link time — the same
+  shape `apps/macos` already used.
 - A SwiftUI app: unlock, search, item detail, copy (pasteboard `localOnly` and
   expiring), lock on backgrounding, covered app-switcher snapshot.
 - An **AutoFill Credential Provider extension**. Worth saying clearly: this is
