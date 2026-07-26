@@ -87,7 +87,10 @@ export APPLE_SIGNING_IDENTITY="$IDENTITY"
 export APPLE_TEAM_ID="$TEAM_ID"
 export TAURI_SIGNING_PRIVATE_KEY_PATH="$UPDATER_KEY"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${ARCA_UPDATER_KEY_PASSWORD:-}"
-(cd "$REPO/apps/desktop" && npm run tauri build -- --bundles app,dmg)
+# createUpdaterArtifacts is passed HERE, not in tauri.conf.json: in the shared
+# config it made every local dev build demand the release signing key.
+(cd "$REPO/apps/desktop" && npm run tauri build -- --bundles app,dmg \
+  --config '{"bundle":{"createUpdaterArtifacts":true}}')
 
 APP="$REPO/target/release/bundle/macos/Arca.app"
 DMG="$(ls -t "$REPO/target/release/bundle/dmg/"*.dmg 2>/dev/null | head -1 || true)"
