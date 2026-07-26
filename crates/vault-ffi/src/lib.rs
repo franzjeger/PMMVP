@@ -1,17 +1,26 @@
 //! C ABI over `vault-core` for native platform integrations.
 //!
-//! Consumed by the macOS AutoFill Credential Provider extension (Swift). Two
-//! surfaces, both returning freshly-allocated buffers the caller frees with
-//! [`vault_ffi_free`]:
+//! Consumed by the AutoFill Credential Provider extensions (Swift) on macOS and
+//! iOS. Three surfaces, all returning freshly-allocated buffers the caller frees
+//! with [`vault_ffi_free`]:
 //!
 //! * **Passkeys (v1)** — stateless ES256 authenticator ops
 //!   (`vault_ffi_passkey_create` / `_assert`). The caller already holds the
 //!   private key; see `docs/PASSKEYS.md`.
-//! * **Passwords (v2)** — a stateful vault surface (`vault_ffi_vault_open` +
-//!   `_identities` / `_password_for_id` / `_vault_free`). Swift can't run
-//!   Argon2id/XChaCha20, so it hands over the encrypted file bytes (from the
-//!   shared App Group container) and the device key (from the shared keychain);
-//!   the unlocked vault lives behind an opaque [`VaultHandle`] here.
+//! * **Passwords (v2, v3)** — a stateful vault surface (`vault_ffi_vault_open`,
+//!   `_vault_open_password` + `_identities` / `_password_for_id` /
+//!   `_vault_free`). Swift can't run Argon2id/XChaCha20, so it hands over the
+//!   encrypted file bytes (from the shared App Group container) and either the
+//!   device key (from the shared keychain) or the master password; the unlocked
+//!   vault lives behind an opaque [`VaultHandle`] here.
+//! * **Device unlock (v4)** — `vault_ffi_enable_device_unlock` /
+//!   `_disable_device_unlock` / `_has_device_unlock`, so a client that opened
+//!   with the password can mint its own quick-unlock key. The only surface that
+//!   produces a **new vault file**; it still performs no I/O, the bytes come
+//!   back for the caller to persist.
+//!
+//! No file, network or clock access here either — [`vault_core`] is I/O-free and
+//! this is a thin wrapper over it.
 //!
 //! Every entry point is wrapped so a panic becomes an error code instead of
 //! unwinding across the C boundary.
@@ -36,7 +45,14 @@ use vault_core::{host_of, Error, ItemKind, SymmetricKey, Vault, VaultItem, KEY_L
 ///
 /// v3 adds `vault_ffi_vault_open_password`, so a client with no device key
 /// (a phone on first launch) can open the vault at all. Purely additive.
-pub const ABI_VERSION: i32 = 3;
+///
+/// v4 adds the device-unlock surface (`vault_ffi_enable_device_unlock`,
+/// `vault_ffi_disable_device_unlock`, `vault_ffi_has_device_unlock`), so a
+/// client that opened with the master password can mint its own quick-unlock
+/// key instead of waiting for some other process to do it. This is the first
+/// operation that produces a **new vault file**, though it still writes
+/// nothing: the bytes come back for the caller to persist. Purely additive.
+pub const ABI_VERSION: i32 = 4;
 
 // Return codes.
 const OK: i32 = 0;
@@ -433,6 +449,175 @@ fn guard_result<T>(f: impl FnOnce() -> vault_core::Result<T>) -> Result<T, i32> 
     }
 }
 
+// ===========================================================================
+// Device-unlock surface (ABI v4)
+//
+// Until now the FFI could only *use* a device key some other process had
+// minted. On a phone there is no other process, so quick unlock was impossible
+// and every AutoFill cost the user their master password and an Argon2id
+// derivation. These let a client that opened with the password mint its own.
+//
+// Still no I/O: `vault-core` is I/O-free and this stays a thin wrapper, so the
+// new file bytes come back for the caller to persist. The caller owns the
+// atomic write, the backup, and the ordering.
+// ===========================================================================
+
+/// Re-serialize the handle's vault, verifying it can be reopened with
+/// `check_key` before handing the bytes back.
+///
+/// Cheap insurance on the only path that produces a replacement vault file: the
+/// caller is about to overwrite the user's only copy, so bytes that do not open
+/// must never leave this function. `None` skips the device-key check (nothing to
+/// check against once device unlock has been removed).
+fn reserialize_verified(
+    vault: &Vault,
+    check_key: Option<&SymmetricKey>,
+) -> vault_core::Result<Vec<u8>> {
+    let bytes = vault.to_bytes()?;
+    let mut probe = Vault::from_bytes(&bytes)?;
+    // With no key to check against, parsing IS the check: `disable` only clears
+    // a header field, and the master-password wrapped key is untouched either
+    // way.
+    if let Some(key) = check_key {
+        probe.unlock_with_device_key(key)?;
+    }
+    Ok(bytes)
+}
+
+/// Turn on quick unlock. Mints a fresh 32-byte device key, wraps the vault key
+/// with it, and returns **both** the key and the new vault file bytes.
+///
+/// The master password keeps working: this only adds a second wrapping of the
+/// same vault key, it does not replace the first.
+///
+/// SECRET: `*out_device_key` is the quick-unlock key. Put it straight into the
+/// platform keychain behind a biometric access control and free it with
+/// [`vault_ffi_free`], which zeroes it. Anyone holding it can open the vault
+/// without the master password — that is the entire point of it.
+///
+/// The handle is updated in place, so it now reports `has_device_unlock`. If the
+/// caller then fails to persist the bytes, memory and file disagree until the
+/// next open; nothing is lost, because the file is simply the older one.
+///
+/// # Safety
+/// `handle` must be valid; all four out-pointers must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn vault_ffi_enable_device_unlock(
+    handle: *mut VaultHandle,
+    out_device_key: *mut *mut u8,
+    out_device_key_len: *mut usize,
+    out_vault_bytes: *mut *mut u8,
+    out_vault_bytes_len: *mut usize,
+) -> i32 {
+    if handle.is_null()
+        || out_device_key.is_null()
+        || out_device_key_len.is_null()
+        || out_vault_bytes.is_null()
+        || out_vault_bytes_len.is_null()
+    {
+        return ERR_NULL_ARG;
+    }
+    // Pre-null both out-pairs so an error path never leaves a caller holding a
+    // stale pointer it might free or read.
+    *out_device_key = std::ptr::null_mut();
+    *out_device_key_len = 0;
+    *out_vault_bytes = std::ptr::null_mut();
+    *out_vault_bytes_len = 0;
+
+    let vault: *mut Vault = &mut (*handle).vault;
+    if !(*vault).is_unlocked() {
+        return ERR_LOCKED;
+    }
+    let was_enabled = (*vault).has_device_unlock();
+
+    let result = guard_result(|| {
+        let device = SymmetricKey::generate()?;
+        let vault = &mut *vault;
+        vault.enable_device_unlock(&device)?;
+        let bytes = reserialize_verified(vault, Some(&device))?;
+        Ok((device, bytes))
+    });
+    match result {
+        Ok((device, bytes)) => {
+            emit(
+                device.as_bytes().to_vec(),
+                out_device_key,
+                out_device_key_len,
+            );
+            emit(bytes, out_vault_bytes, out_vault_bytes_len);
+            OK
+        }
+        Err(code) => {
+            // The header may already carry the new wrapping. If there was
+            // nothing there before, putting it back is exact. If quick unlock
+            // was already on we cannot restore the OLD blob — `vault-core`
+            // exposes no setter for it — so the handle keeps a key that was
+            // never persisted. Harmless but stale: free the handle and reopen.
+            if !was_enabled {
+                (*vault).disable_device_unlock();
+            }
+            code
+        }
+    }
+}
+
+/// Turn quick unlock off: drop the device-wrapped key from the header and
+/// return the new vault file bytes. The master password is unaffected.
+///
+/// Deleting the key from the keychain is not enough on its own — the wrapping
+/// would stay in the file and travel to every device the vault syncs to.
+///
+/// # Safety
+/// `handle` must be valid; both out-pointers must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn vault_ffi_disable_device_unlock(
+    handle: *mut VaultHandle,
+    out_vault_bytes: *mut *mut u8,
+    out_vault_bytes_len: *mut usize,
+) -> i32 {
+    if handle.is_null() || out_vault_bytes.is_null() || out_vault_bytes_len.is_null() {
+        return ERR_NULL_ARG;
+    }
+    *out_vault_bytes = std::ptr::null_mut();
+    *out_vault_bytes_len = 0;
+
+    let vault = &mut (*handle).vault;
+    if !vault.is_unlocked() {
+        return ERR_LOCKED;
+    }
+
+    match guard_result(|| {
+        vault.disable_device_unlock();
+        reserialize_verified(vault, None)
+    }) {
+        Ok(bytes) => {
+            emit(bytes, out_vault_bytes, out_vault_bytes_len);
+            OK
+        }
+        Err(code) => code,
+    }
+}
+
+/// `1` if the vault carries a device-wrapped key, `0` if not, negative on error.
+///
+/// The keychain can hold a key for a vault that no longer accepts it (restored
+/// from a backup, say), so a client that trusts the keychain alone will prompt
+/// for a biometric and then fail. Ask the vault.
+///
+/// # Safety
+/// `handle` must be a valid handle.
+#[no_mangle]
+pub unsafe extern "C" fn vault_ffi_has_device_unlock(handle: *mut VaultHandle) -> i32 {
+    if handle.is_null() {
+        return ERR_NULL_ARG;
+    }
+    match catch_unwind(AssertUnwindSafe(|| (*handle).vault.has_device_unlock())) {
+        Ok(true) => 1,
+        Ok(false) => 0,
+        Err(_) => ERR_PANIC,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -559,8 +744,258 @@ mod tests {
     // Pinned deliberately: clients gate features on this number, so a bump has
     // to be a conscious edit here, not a side effect.
     #[test]
-    fn abi_version_is_3() {
-        assert_eq!(vault_ffi_abi_version(), 3);
+    fn abi_version_is_4() {
+        assert_eq!(vault_ffi_abi_version(), 4);
+    }
+
+    // ---- device-unlock surface (ABI v4) ---------------------------------
+
+    /// A serialized vault with NO device unlock — what a phone actually starts
+    /// from. `sample_vault` already has it enabled, which would only exercise
+    /// the re-enrolment path.
+    fn password_only_vault() -> Vec<u8> {
+        use vault_core::{Item, KdfAlgorithm, KdfParams};
+        let params = KdfParams {
+            algorithm: KdfAlgorithm::Argon2id,
+            m_cost_kib: 256,
+            t_cost: 1,
+            p_cost: 1,
+            salt: vec![3u8; KdfParams::SALT_LEN],
+        };
+        let mut v = Vault::create("pw", params).unwrap();
+        v.upsert_item(Item::new(
+            VaultItem::Login {
+                title: "GitHub".into(),
+                username: "frank@sybr.no".into(),
+                password: "s3cr3t-pw".into(),
+                url: "https://github.com/login".into(),
+                totp_secret: None,
+                notes: String::new(),
+            },
+            0,
+        ))
+        .unwrap();
+        v.to_bytes().unwrap()
+    }
+
+    fn open_with_password(bytes: &[u8], password: &str) -> *mut VaultHandle {
+        let mut handle: *mut VaultHandle = ptr::null_mut();
+        let pw = CString::new(password).unwrap();
+        let rc = unsafe {
+            vault_ffi_vault_open_password(bytes.as_ptr(), bytes.len(), pw.as_ptr(), &mut handle)
+        };
+        assert_eq!(rc, OK);
+        handle
+    }
+
+    /// The whole point of v4: a client that only knows the master password can
+    /// mint a quick-unlock key, and what comes back actually works.
+    #[test]
+    fn enabling_device_unlock_yields_a_key_and_a_vault_that_opens_with_it() {
+        let original = password_only_vault();
+        let handle = open_with_password(&original, "pw");
+        assert_eq!(unsafe { vault_ffi_has_device_unlock(handle) }, 0);
+
+        let (mut key, mut key_len) = (ptr::null_mut(), 0usize);
+        let (mut bytes, mut bytes_len) = (ptr::null_mut(), 0usize);
+        let rc = unsafe {
+            vault_ffi_enable_device_unlock(
+                handle,
+                &mut key,
+                &mut key_len,
+                &mut bytes,
+                &mut bytes_len,
+            )
+        };
+        assert_eq!(rc, OK);
+        assert_eq!(key_len, KEY_LEN);
+        assert!(bytes_len > 0);
+        assert_eq!(unsafe { vault_ffi_has_device_unlock(handle) }, 1);
+
+        let key_bytes = unsafe { slice::from_raw_parts(key, key_len).to_vec() };
+        let new_vault = unsafe { slice::from_raw_parts(bytes, bytes_len).to_vec() };
+        unsafe {
+            vault_ffi_free(key, key_len);
+            vault_ffi_free(bytes, bytes_len);
+            vault_ffi_vault_free(handle);
+        }
+
+        // The returned key opens the returned bytes...
+        let mut device_handle: *mut VaultHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                vault_ffi_vault_open(
+                    new_vault.as_ptr(),
+                    new_vault.len(),
+                    key_bytes.as_ptr(),
+                    key_bytes.len(),
+                    &mut device_handle,
+                )
+            },
+            OK
+        );
+        // ...and the vault behind it is whole, not a husk that merely parsed.
+        let (mut json, mut json_len) = (ptr::null_mut(), 0usize);
+        assert_eq!(
+            unsafe { vault_ffi_identities(device_handle, &mut json, &mut json_len) },
+            OK
+        );
+        let listed = unsafe { std::str::from_utf8(slice::from_raw_parts(json, json_len)).unwrap() }
+            .to_string();
+        assert!(listed.contains("github.com"));
+        unsafe {
+            vault_ffi_free(json, json_len);
+            vault_ffi_vault_free(device_handle);
+        }
+
+        // THE property that matters: enabling quick unlock must not cost the
+        // user their master password. Locking someone out of their own vault is
+        // unrecoverable — there is no reset.
+        let still_mine = open_with_password(&new_vault, "pw");
+        assert!(!still_mine.is_null());
+        unsafe { vault_ffi_vault_free(still_mine) };
+
+        // And a wrong device key is still refused by the new file.
+        let mut bad: *mut VaultHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                vault_ffi_vault_open(
+                    new_vault.as_ptr(),
+                    new_vault.len(),
+                    [9u8; KEY_LEN].as_ptr(),
+                    KEY_LEN,
+                    &mut bad,
+                )
+            },
+            ERR_DECRYPT
+        );
+        assert!(bad.is_null());
+    }
+
+    /// Turning it off has to strip the wrapping from the FILE. Deleting the
+    /// keychain item alone would leave the wrapped key in the vault, where it
+    /// travels to every device the vault syncs to.
+    #[test]
+    fn disabling_device_unlock_revokes_the_key_in_the_file() {
+        let (original, device_key, _id) = sample_vault();
+        let handle = open_with_password(&original, "pw");
+        assert_eq!(unsafe { vault_ffi_has_device_unlock(handle) }, 1);
+
+        let (mut bytes, mut bytes_len) = (ptr::null_mut(), 0usize);
+        let rc = unsafe { vault_ffi_disable_device_unlock(handle, &mut bytes, &mut bytes_len) };
+        assert_eq!(rc, OK);
+        assert_eq!(unsafe { vault_ffi_has_device_unlock(handle) }, 0);
+        let new_vault = unsafe { slice::from_raw_parts(bytes, bytes_len).to_vec() };
+        unsafe {
+            vault_ffi_free(bytes, bytes_len);
+            vault_ffi_vault_free(handle);
+        }
+
+        // The key that used to work no longer does.
+        let mut revoked: *mut VaultHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                vault_ffi_vault_open(
+                    new_vault.as_ptr(),
+                    new_vault.len(),
+                    device_key.as_ptr(),
+                    device_key.len(),
+                    &mut revoked,
+                )
+            },
+            ERR_DECRYPT
+        );
+        assert!(revoked.is_null());
+
+        // The master password still does.
+        let still_mine = open_with_password(&new_vault, "pw");
+        assert!(!still_mine.is_null());
+        unsafe { vault_ffi_vault_free(still_mine) };
+    }
+
+    /// Re-enrolling replaces the key rather than adding a second one, so a
+    /// device key that leaked can be rotated away.
+    #[test]
+    fn re_enrolling_invalidates_the_previous_device_key() {
+        let (original, old_key, _id) = sample_vault();
+        let handle = open_with_password(&original, "pw");
+
+        let (mut key, mut key_len) = (ptr::null_mut(), 0usize);
+        let (mut bytes, mut bytes_len) = (ptr::null_mut(), 0usize);
+        assert_eq!(
+            unsafe {
+                vault_ffi_enable_device_unlock(
+                    handle,
+                    &mut key,
+                    &mut key_len,
+                    &mut bytes,
+                    &mut bytes_len,
+                )
+            },
+            OK
+        );
+        let new_key = unsafe { slice::from_raw_parts(key, key_len).to_vec() };
+        let new_vault = unsafe { slice::from_raw_parts(bytes, bytes_len).to_vec() };
+        assert_ne!(new_key.as_slice(), old_key.as_slice());
+        unsafe {
+            vault_ffi_free(key, key_len);
+            vault_ffi_free(bytes, bytes_len);
+            vault_ffi_vault_free(handle);
+        }
+
+        let mut stale: *mut VaultHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                vault_ffi_vault_open(
+                    new_vault.as_ptr(),
+                    new_vault.len(),
+                    old_key.as_ptr(),
+                    old_key.len(),
+                    &mut stale,
+                )
+            },
+            ERR_DECRYPT
+        );
+        assert!(stale.is_null());
+    }
+
+    #[test]
+    fn device_unlock_rejects_null_arguments_without_dereferencing_them() {
+        let (mut a, mut al) = (ptr::null_mut(), 0usize);
+        assert_eq!(
+            unsafe {
+                vault_ffi_enable_device_unlock(ptr::null_mut(), &mut a, &mut al, &mut a, &mut al)
+            },
+            ERR_NULL_ARG
+        );
+        assert_eq!(
+            unsafe { vault_ffi_disable_device_unlock(ptr::null_mut(), &mut a, &mut al) },
+            ERR_NULL_ARG
+        );
+        assert_eq!(
+            unsafe { vault_ffi_has_device_unlock(ptr::null_mut()) },
+            ERR_NULL_ARG
+        );
+
+        // A valid handle with null out-pointers must also be refused, not
+        // written through.
+        let bytes = password_only_vault();
+        let handle = open_with_password(&bytes, "pw");
+        assert_eq!(
+            unsafe {
+                vault_ffi_enable_device_unlock(
+                    handle,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                )
+            },
+            ERR_NULL_ARG
+        );
+        // Refused cleanly: the vault is untouched, so a retry still works.
+        assert_eq!(unsafe { vault_ffi_has_device_unlock(handle) }, 0);
+        unsafe { vault_ffi_vault_free(handle) };
     }
 
     /// include/vault_ffi.h is the contract Swift compiles against, and it is

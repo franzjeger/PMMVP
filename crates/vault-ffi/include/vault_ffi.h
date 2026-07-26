@@ -1,6 +1,6 @@
 /* vault-ffi — C ABI over vault-core for native platform integrations.
  *
- * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 3). All
+ * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 4). All
  * out-buffers are heap-allocated by the library and must be released with
  * vault_ffi_free(ptr, len), which also zeroes them.
  *
@@ -83,6 +83,51 @@ int32_t vault_ffi_identities(VaultHandle *handle, uint8_t **out_json,
 int32_t vault_ffi_password_for_id(VaultHandle *handle, const char *id_utf8,
                                   uint8_t **out_password,
                                   size_t *out_password_len);
+
+/* ---- Device-unlock surface (ABI v4) -------------------------------------
+ *
+ * Lets a client that opened with the MASTER PASSWORD mint its own quick-unlock
+ * key, instead of waiting for some other process to put one in the keychain.
+ * On a phone there is no other process, so without this every AutoFill costs
+ * the user their master password and an Argon2id derivation.
+ *
+ * Still no I/O here: the new vault file bytes come back for the CALLER to
+ * persist. The caller owns the atomic write and the ordering. Write the vault
+ * file BEFORE storing the key: a vault carrying a wrapping whose key was never
+ * saved is harmless (the master password still opens it), whereas a stored key
+ * for a vault that was never written opens nothing. */
+
+/* Turn on quick unlock. Mints a fresh 32-byte device key, wraps the vault key
+ * with it, and returns BOTH the key and the new vault file bytes. Both are
+ * freed with vault_ffi_free.
+ *
+ * The master password keeps working — this adds a second wrapping of the same
+ * vault key, it does not replace the first.
+ *
+ * SECRET: *out_device_key opens the vault without the master password. Put it
+ * straight into the platform keychain behind a biometric access control.
+ *
+ * The returned bytes are verified to reopen with the returned key before they
+ * are handed back, so a caller can never be given a vault it cannot unlock. */
+int32_t vault_ffi_enable_device_unlock(VaultHandle *handle,
+                                       uint8_t **out_device_key,
+                                       size_t *out_device_key_len,
+                                       uint8_t **out_vault_bytes,
+                                       size_t *out_vault_bytes_len);
+
+/* Turn quick unlock off: drop the device-wrapped key from the header and return
+ * the new vault file bytes. Deleting the keychain item alone is NOT enough —
+ * the wrapping would stay in the file and travel to every device the vault
+ * syncs to. The master password is unaffected. */
+int32_t vault_ffi_disable_device_unlock(VaultHandle *handle,
+                                        uint8_t **out_vault_bytes,
+                                        size_t *out_vault_bytes_len);
+
+/* 1 if the vault carries a device-wrapped key, 0 if not, negative on error.
+ * Ask this rather than trusting the keychain: a key can outlive the vault that
+ * accepted it (restored from a backup), and a client that trusts the keychain
+ * alone prompts for a biometric and then fails. */
+int32_t vault_ffi_has_device_unlock(VaultHandle *handle);
 
 /* Create a passkey for rp_id. Out-pairs (freed by the caller):
  *   credential_id, private_key (SEC1 P-256, 32 bytes — store encrypted!),

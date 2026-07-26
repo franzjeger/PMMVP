@@ -7,9 +7,9 @@
 //
 // This is the part of iOS that was designed for third-party password managers,
 // unlike the macOS equivalent the project shelved — no fight with Apple's own
-// password menu, no Touch ID on every fill by decree. The cost here is different
-// and self-inflicted: no device key exists on iOS, so every fill asks for the
-// master password.
+// password menu, no Touch ID on every fill by decree. With quick unlock turned
+// on, a fill is a biometric and a symmetric unwrap; without it, the master
+// password and a full Argon2id derivation, in a keyboard accessory view.
 
 import AuthenticationServices
 import SwiftUI
@@ -25,8 +25,9 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
     // MARK: Quick fill (no UI)
 
     override func provideCredentialWithoutUserInteraction(for credentialRequest: ASCredentialRequest) {
-        // Opening the vault needs the master password, which is user interaction
-        // by definition — so ask the OS for the UI path rather than fail.
+        // Opening the vault needs either a biometric (to read the device key) or
+        // the master password. Both are user interaction by definition, so ask
+        // the OS for the UI path rather than fail here.
         log.info("provideWithoutUI -> userInteractionRequired")
         cancel(.userInteractionRequired)
     }

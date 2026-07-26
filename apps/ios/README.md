@@ -12,10 +12,11 @@ The Xcode project is generated from [`project.yml`](project.yml) with
 
 | | |
 | --- | --- |
-| Unlock | Master password → Argon2id → `vault_ffi_vault_open_password`. |
+| Unlock | Face ID / Touch ID once quick unlock is on, master password otherwise (Argon2id, `vault_ffi_vault_open_password`). |
 | Browse | Search logins, see username/site/title, reveal one password. |
 | Copy | `localOnly` (never reaches Universal Clipboard) and cleared by iOS after 30s. |
 | AutoFill | Registers as a password provider and publishes identities (metadata only) to `ASCredentialIdentityStore` on unlock, so Arca appears in the QuickType bar. |
+| Quick unlock | Mints a device key via `vault_ffi_enable_device_unlock`, stored behind `biometryCurrentSet` so enrolling a new face invalidates it. |
 | Lock | On backgrounding, and the app-switcher snapshot is covered. |
 
 ## What it does not do, and why
@@ -29,27 +30,33 @@ that moves to a shared crate ([`docs/IOS.md`](../../docs/IOS.md)), the vault
 reaches the phone by hand: AirDrop `default.vault` from the Mac and import it.
 That import screen is a stopgap wearing a stopgap's label.
 
-**No Face ID.** Quick unlock needs a 32-byte device key in the shared keychain.
-`vault-core` can mint one (`enable_device_unlock`), but `vault-ffi` does not
-export it — and using it would mean writing the vault file back, which the
-read-only ABI cannot do. So the master password is the only way in, **including
-inside the AutoFill extension, on every single fill**. The extension is a
-separate process and cannot borrow the app's unlocked session. This is the
-sharpest edge in the scaffold.
-
-**Read-only.** No creating, editing or deleting items. The ABI exposes open,
+**Read-only** (except quick unlock). No creating, editing or deleting items. The ABI exposes open,
 list identities and fetch one password; that is the whole surface.
 
 **Logins only.** `vault_ffi_identities` filters to `ItemKind::Login`, so
 passkeys, SSH keys, Wi-Fi networks and secure notes are invisible here. No TOTP
 either — it is in `vault-core` but not on the ABI.
 
-### The one change that fixes most of this
+### Quick unlock, and the one write that crosses the ABI
 
-Export a device-unlock path from `vault-ffi`: mint a key after a successful
-password unlock, re-serialise, and save. That single addition turns every fill
-from "type your master password and wait for Argon2id" into a Face ID prompt,
-and it is the prerequisite for the write path anyway.
+`vault_ffi_enable_device_unlock` mints a device key, wraps the vault key with it
+and returns both the key and **new vault file bytes** — the only ABI call that
+produces a replacement vault. It still writes nothing itself; `vault-core` is
+I/O-free and the caller owns the write.
+
+Two rules the Swift side follows, both for the same reason (this is the user's
+only copy of their vault):
+
+- **The vault file is written before the key is stored.** A vault carrying a
+  wrapping whose key was never saved is inert — the master password still opens
+  it. A stored key for a vault that was never written opens nothing.
+- **The returned bytes are verified to reopen with the returned key inside
+  Rust**, before they are handed over. A caller can never be given a vault it
+  cannot unlock.
+
+Turning it off strips the wrapping from the file as well as deleting the
+keychain item: the wrapping would otherwise travel to every device the vault
+syncs to.
 
 ## Build
 

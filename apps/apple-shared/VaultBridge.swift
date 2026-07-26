@@ -44,7 +44,7 @@ enum VaultShared {
     /// ABI would otherwise be called through the wrong signatures and fail
     /// quietly — and "quietly wrong" in a credential provider means filling the
     /// wrong bytes into someone's login form.
-    static let requiredAbiVersion: Int32 = 3
+    static let requiredAbiVersion: Int32 = 4
 
     /// Info.plist key carrying the shared keychain access group. Both targets
     /// set it to `$(AppIdentifierPrefix)no.sybr.vault.shared`, which Xcode
@@ -85,6 +85,55 @@ enum VaultShared {
             .containerURL(forSecurityApplicationGroupIdentifier: appGroup)?
             .appending(path: vaultFileName)
     }
+
+    /// The encrypted vault file's bytes.
+    static func loadVault() throws -> Data {
+        guard let url = vaultURL else { throw VaultError.noContainer }
+        let bytes: Data
+        do {
+            // Read and handle the failure, rather than `fileExists` then read:
+            // the app rewrites this file atomically, so a stat-then-read races it.
+            bytes = try Data(contentsOf: url)
+        } catch let error as NSError {
+            switch error.code {
+            case NSFileReadNoSuchFileError, NSFileNoSuchFileError:
+                throw VaultError.noVaultFile
+            case NSFileReadNoPermissionError:
+                throw VaultError.containerNotPermitted
+            default:
+                throw VaultError.unreadableVaultFile(code: error.code)
+            }
+        }
+        // An empty `Data` has no base address, so this would reach the FFI as a
+        // null pointer and come back as "null argument" — which reads like a
+        // programming error rather than the broken vault file it actually is.
+        guard !bytes.isEmpty else { throw VaultError.emptyVaultFile }
+        return bytes
+    }
+
+    /// Replace the vault file.
+    ///
+    /// The one place that knows how this file gets written, because this is the
+    /// user's only copy: atomically, so a failure mid-write leaves the previous
+    /// vault intact rather than a truncated one, and — on iOS — unreadable while
+    /// the device is locked. Everything that writes the container goes through
+    /// here, so the options cannot drift between callers.
+    static func writeVault(_ bytes: Data) throws {
+        guard let url = vaultURL else { throw VaultError.noContainer }
+        #if os(iOS)
+        let options: Data.WritingOptions = [.atomic, .completeFileProtection]
+        #else
+        // completeFileProtection is iOS-only; macOS has no equivalent flag here.
+        let options: Data.WritingOptions = [.atomic]
+        #endif
+        do {
+            try bytes.write(to: url, options: options)
+        } catch let error as NSError {
+            throw error.code == NSFileWriteNoPermissionError
+                ? VaultError.containerNotPermitted
+                : VaultError.vaultWriteFailed(code: error.code)
+        }
+    }
 }
 
 /// Return codes from vault_ffi.h, named so nothing here carries a bare -7.
@@ -121,7 +170,13 @@ enum VaultError: Error, Equatable {
     /// A zero-byte vault file: present, but nothing to open.
     case emptyVaultFile
     case unreadableVaultFile(code: Int)
+    /// The re-sealed vault could not be written back to the container.
+    case vaultWriteFailed(code: Int)
     case noDeviceKey(status: OSStatus)
+    /// The minted device key could not be put in the keychain. The vault file
+    /// is already re-sealed by then, which is harmless — the master password
+    /// still opens it and retrying replaces the wrapping.
+    case deviceKeyNotStored(status: OSStatus)
     /// `vault_ffi_identities` returned something that wasn't the documented JSON.
     case malformedIdentities
 }
@@ -143,6 +198,12 @@ extension VaultError: LocalizedError {
             return "No vault found. Set one up in Arca first."
         case .unreadableVaultFile:
             return "Couldn't read the vault file."
+        case .vaultWriteFailed:
+            return "Couldn't save the vault. Quick unlock is not set up."
+        case .deviceKeyNotStored(let status) where status == errSecUserCanceled:
+            return "Quick unlock was cancelled."
+        case .deviceKeyNotStored:
+            return "Couldn't store the quick-unlock key. Is Face ID or a passcode set up?"
         case .noDeviceKey(let status) where status == errSecUserCanceled:
             return "Unlock was cancelled."
         case .noDeviceKey(let status) where status == errSecItemNotFound:
@@ -162,6 +223,8 @@ extension VaultError: LocalizedError {
         case .noVaultFile: return "noVaultFile"
         case .emptyVaultFile: return "emptyVaultFile"
         case .unreadableVaultFile(let code): return "unreadableVaultFile(\(code))"
+        case .vaultWriteFailed(let code): return "vaultWriteFailed(\(code))"
+        case .deviceKeyNotStored(let status): return "deviceKeyNotStored(\(status))"
         case .noDeviceKey(let status): return "noDeviceKey(\(status))"
         case .malformedIdentities: return "malformedIdentities"
         }
@@ -228,7 +291,7 @@ final class VaultSession: @unchecked Sendable {
     static func openWithDeviceKey(reason: String) async throws -> VaultSession {
         try await Self.run {
             try Self.checkAbi()
-            let vaultBytes = try Self.loadVaultBytes()
+            let vaultBytes = try VaultShared.loadVault()
             return try Self.withDeviceKey(reason: reason) { key in
                 var handle: OpaquePointer?
                 let code = vaultBytes.withUnsafeBytes { vault in
@@ -256,7 +319,7 @@ final class VaultSession: @unchecked Sendable {
     static func openWithMasterPassword(_ password: String) async throws -> VaultSession {
         try await Self.run {
             try Self.checkAbi()
-            let vaultBytes = try Self.loadVaultBytes()
+            let vaultBytes = try VaultShared.loadVault()
             var handle: OpaquePointer?
             let code = vaultBytes.withUnsafeBytes { vault in
                 password.withCString { password in
@@ -324,6 +387,79 @@ final class VaultSession: @unchecked Sendable {
         }
     }
 
+    // MARK: Quick unlock
+
+    /// Turn on quick unlock: mint a device key, re-seal the vault with it, and
+    /// put the key in the shared keychain behind Face ID / Touch ID.
+    ///
+    /// The order is not arbitrary. The vault file is written BEFORE the key is
+    /// stored, because the two failure modes are not symmetric: a vault carrying
+    /// a wrapping whose key was never saved is inert — the master password still
+    /// opens it and running this again replaces the wrapping — whereas a stored
+    /// key for a vault that was never written opens nothing, and every launch
+    /// after it would prompt for a biometric and then fail.
+    func enableDeviceUnlock() async throws {
+        try await Self.run {
+            var key: UnsafeMutablePointer<UInt8>?
+            var keyLength = 0
+            var vault: UnsafeMutablePointer<UInt8>?
+            var vaultLength = 0
+            let code = vault_ffi_enable_device_unlock(
+                self.handle, &key, &keyLength, &vault, &vaultLength)
+            guard code == VaultFFICode.ok, let key, let vault else {
+                throw VaultError.ffi(code: code, operation: "enable_device_unlock")
+            }
+            // Rust zeroes both buffers; the device key half is a secret.
+            defer {
+                vault_ffi_free(key, keyLength)
+                vault_ffi_free(vault, vaultLength)
+            }
+
+            try VaultShared.writeVault(Data(bytes: vault, count: vaultLength))
+
+            var keyData = Data(bytes: key, count: keyLength)
+            // Same best-effort wipe as the read path, and the same reason it is
+            // only best-effort: `Data` is copy-on-write, so this clears the
+            // buffer while nothing else holds it.
+            defer { keyData.resetBytes(in: 0..<keyData.count) }
+            try Self.storeDeviceKey(keyData)
+        }
+    }
+
+    /// Turn quick unlock off.
+    ///
+    /// The keychain item goes first, so the key stops being usable the moment
+    /// the user asks. Stripping the wrapping from the file matters too: deleting
+    /// the key alone would leave the wrapping in the vault, where it travels to
+    /// every device the vault syncs to.
+    func disableDeviceUnlock() async throws {
+        try await Self.run {
+            Self.deleteDeviceKey()
+
+            var vault: UnsafeMutablePointer<UInt8>?
+            var vaultLength = 0
+            let code = vault_ffi_disable_device_unlock(self.handle, &vault, &vaultLength)
+            guard code == VaultFFICode.ok, let vault else {
+                throw VaultError.ffi(code: code, operation: "disable_device_unlock")
+            }
+            defer { vault_ffi_free(vault, vaultLength) }
+            try VaultShared.writeVault(Data(bytes: vault, count: vaultLength))
+        }
+    }
+
+    /// Whether the VAULT carries a device-wrapped key.
+    ///
+    /// A different question from whether the keychain holds one, and worth
+    /// asking separately: a key outlives the vault that accepted it if the file
+    /// is replaced from a backup, and a client trusting only the keychain would
+    /// prompt for a biometric and then fail to open anything.
+    func hasDeviceUnlock() async -> Bool {
+        let result = try? await Self.run {
+            vault_ffi_has_device_unlock(self.handle) == 1
+        }
+        return result ?? false
+    }
+
     // MARK: Plumbing
 
     /// Run blocking work on the vault queue and `await` it.
@@ -350,29 +486,89 @@ final class VaultSession: @unchecked Sendable {
         }
     }
 
-    /// The encrypted vault file's bytes.
-    private static func loadVaultBytes() throws -> Data {
-        guard let url = VaultShared.vaultURL else { throw VaultError.noContainer }
-        let bytes: Data
-        do {
-            // Read and handle the failure, rather than `fileExists` then read:
-            // the app rewrites this file atomically, so a stat-then-read races it.
-            bytes = try Data(contentsOf: url)
-        } catch let error as NSError {
-            switch error.code {
-            case NSFileReadNoSuchFileError, NSFileNoSuchFileError:
-                throw VaultError.noVaultFile
-            case NSFileReadNoPermissionError:
-                throw VaultError.containerNotPermitted
-            default:
-                throw VaultError.unreadableVaultFile(code: error.code)
-            }
+    /// Base keychain query identifying the one device-key item. Shared by every
+    /// operation on it, so the four attributes that decide *which* item is
+    /// touched cannot drift between read, write, delete and probe.
+    private static func deviceKeyQuery() -> [String: Any] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: VaultShared.keychainService,
+            kSecAttrAccount as String: VaultShared.keychainAccount,
+            kSecAttrAccessGroup as String: VaultShared.keychainAccessGroup,
+        ]
+        #if os(macOS)
+        // Arca writes the device key into the DATA-PROTECTION keychain, which is
+        // the one that carries access groups and biometric access control.
+        // Without this flag the query hits the file-based login keychain and
+        // finds nothing. iOS has only the data-protection keychain.
+        query[kSecUseDataProtectionKeychain as String] = true
+        #endif
+        return query
+    }
+
+    /// Store the device key, replacing whatever was there.
+    private static func storeDeviceKey(_ key: Data) throws {
+        // Replace rather than add: `SecItemAdd` over an existing item fails with
+        // errSecDuplicateItem, and a leftover key from a previous enrolment
+        // would unlock nothing.
+        deleteDeviceKey()
+
+        // `biometryCurrentSet` invalidates the key when a face or finger is
+        // added, which is the defence against someone who has the passcode
+        // enrolling their own biometrics. It cannot be satisfied on a device
+        // with none enrolled, so fall back to `userPresence` there — the master
+        // password is the backstop either way.
+        let context = LAContext()
+        let hasBiometrics = context.canEvaluatePolicy(
+            .deviceOwnerAuthenticationWithBiometrics, error: nil)
+        let flags: SecAccessControlCreateFlags =
+            hasBiometrics ? .biometryCurrentSet : .userPresence
+
+        // WhenUnlockedThisDeviceOnly: the key is for THIS device, so it must
+        // never reach a backup or another device via iCloud Keychain.
+        guard let access = SecAccessControlCreateWithFlags(
+            nil,
+            kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            flags,
+            nil)
+        else {
+            throw VaultError.deviceKeyNotStored(status: errSecParam)
         }
-        // An empty `Data` has no base address, so this would reach the FFI as a
-        // null pointer and come back as "null argument" — which reads like a
-        // programming error rather than the broken vault file it actually is.
-        guard !bytes.isEmpty else { throw VaultError.emptyVaultFile }
-        return bytes
+
+        var query = deviceKeyQuery()
+        // kSecAttrAccessControl carries the accessibility itself; setting
+        // kSecAttrAccessible alongside it is rejected.
+        query[kSecAttrAccessControl as String] = access
+        query[kSecValueData as String] = key
+
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw VaultError.deviceKeyNotStored(status: status)
+        }
+    }
+
+    /// Remove the device key. Missing is success — the caller wants it gone.
+    private static func deleteDeviceKey() {
+        _ = SecItemDelete(deviceKeyQuery() as CFDictionary)
+    }
+
+    /// Forget the stored device key without an open vault to strip the wrapping
+    /// from. For when the vault FILE is replaced: the key was minted for a file
+    /// that no longer exists, and leaving it would offer a biometric unlock that
+    /// cannot possibly work.
+    static func forgetDeviceKey() { deleteDeviceKey() }
+
+    /// Whether a device key is stored, WITHOUT prompting for it.
+    ///
+    /// Asking for the data would put a Face ID sheet on screen to answer what is
+    /// only a question about which button to draw. Querying attributes needs no
+    /// authentication; if the OS insists anyway it says so, and that is still a
+    /// yes.
+    static var hasStoredDeviceKey: Bool {
+        var query = deviceKeyQuery()
+        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
+        let status = SecItemCopyMatching(query as CFDictionary, nil)
+        return status == errSecSuccess || status == errSecInteractionNotAllowed
     }
 
     /// Read the device key from the shared keychain group, gated by Touch ID /
@@ -390,22 +586,9 @@ final class VaultSession: @unchecked Sendable {
         context.touchIDAuthenticationAllowableReuseDuration = 0
         defer { context.invalidate() }
 
-        var query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: VaultShared.keychainService,
-            kSecAttrAccount as String: VaultShared.keychainAccount,
-            kSecAttrAccessGroup as String: VaultShared.keychainAccessGroup,
-            kSecReturnData as String: true,
-            kSecUseAuthenticationContext as String: context,
-        ]
-        #if os(macOS)
-        // Arca writes the device key into the DATA-PROTECTION keychain, which is
-        // the one that carries access groups and the Touch ID access control.
-        // Without this flag the search hits the file-based login keychain and
-        // finds nothing. iOS has only the data-protection keychain and ignores
-        // the key, so it is scoped to macOS to keep the query honest.
-        query[kSecUseDataProtectionKeychain as String] = true
-        #endif
+        var query = deviceKeyQuery()
+        query[kSecReturnData as String] = true
+        query[kSecUseAuthenticationContext as String] = context
 
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)

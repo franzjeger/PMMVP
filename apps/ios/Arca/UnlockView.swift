@@ -1,14 +1,13 @@
-// Master-password unlock.
+// Unlock: Face ID if a device key has been minted on this device, the master
+// password otherwise.
 //
-// There is no Face ID path, and that is a missing FFI export rather than an
-// oversight: quick unlock needs a 32-byte device key minted into the keychain,
-// and `vault-ffi` has no way to create one — `enable_device_unlock` exists in
-// vault-core but is not exported, and using it would mean writing the vault file
-// back, which the read-only ABI cannot do either. See ../README.md.
+// The biometric path is attempted once automatically. A password manager that
+// makes you tap before it will even ask is one you stop using, and the password
+// field stays right there for when it is declined or unavailable.
 //
-// So every unlock runs Argon2id with the vault header's parameters. That is
-// deliberately expensive, which is why the button shows progress rather than
-// pretending to be instant.
+// The password path runs Argon2id with the vault header's parameters, which is
+// deliberately expensive — hence progress rather than a button pretending to be
+// instant. Quick unlock exists precisely to avoid paying that on every fill.
 
 import SwiftUI
 
@@ -16,6 +15,7 @@ struct UnlockView: View {
     @Environment(VaultStore.self) private var store
 
     @State private var password = ""
+    @State private var didTryBiometrics = false
     @FocusState private var focused: Bool
 
     private var isUnlocking: Bool { store.phase == .unlocking }
@@ -56,10 +56,17 @@ struct UnlockView: View {
             .buttonStyle(.borderedProminent)
             .disabled(password.isEmpty || isUnlocking)
 
-            Text("Deriving the key takes a moment — that is Argon2id doing its job.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            if store.quickUnlockAvailable {
+                Button("Use Face ID", systemImage: "faceid") {
+                    Task { await store.unlockWithDeviceKey() }
+                }
+                .disabled(isUnlocking)
+            } else {
+                Text("Deriving the key takes a moment — that is Argon2id doing its job.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
 
             ImportVaultButton(title: "Import a different vault")
                 .font(.caption)
@@ -67,7 +74,16 @@ struct UnlockView: View {
             Spacer()
         }
         .padding(28)
-        .onAppear { focused = true }
+        .task {
+            // Once per appearance. Backgrounding locks the vault, which brings
+            // this view back and legitimately re-arms the prompt; a failed or
+            // declined attempt must not loop.
+            if store.quickUnlockAvailable, !didTryBiometrics {
+                didTryBiometrics = true
+                await store.unlockWithDeviceKey()
+            }
+            focused = store.phase != .unlocked
+        }
     }
 
     private func submit() {

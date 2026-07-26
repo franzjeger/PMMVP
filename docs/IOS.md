@@ -17,13 +17,13 @@ that makes it a password manager rather than a viewer.
 | Piece | State |
 | --- | --- |
 | Crypto + data model | **Done.** `vault-core` is pure Rust, no I/O, no platform assumptions. Same code an iOS app would use. |
-| C ABI for Swift | **Mostly there.** `vault-ffi` (ABI v3), already proven against Swift in `apps/macos/`. |
+| C ABI for Swift | **Mostly there.** `vault-ffi` (ABI v4), already proven against Swift in `apps/macos/`. |
 | Swift side of that ABI | **Portable.** `apps/apple-shared/VaultBridge.swift` has no macOS-only code left (the one difference is behind `#if os(macOS)`), wraps *both* open paths, and keeps the blocking work off the main actor. An iOS target links it unchanged. |
 | Unlock from a fresh device | **Done (was the blocker).** `vault_ffi_vault_open_password` — see below. |
 | Getting the vault onto the phone | **Missing.** The Drive sync client is desktop-only. This is the real work. |
 | Writing from the phone | **Missing.** The FFI is read-only today. |
 | iOS app + AutoFill extension | **Scaffolded, never built.** `apps/ios/`: unlock, search, reveal, copy, and a credential provider. Read-only, and unverified by any compiler. |
-| Quick unlock on the phone | **Missing, and it hurts.** No device key can be minted on iOS, so the master password is retyped on *every* AutoFill. See below. |
+| Quick unlock on the phone | **Done.** `vault_ffi_enable_device_unlock` (ABI v4) mints a device key from a password unlock; the app and the extension both use it. |
 | iOS build targets | **Scripted.** [`scripts/build-ffi-ios.sh`](../scripts/build-ffi-ios.sh) adds the targets and packages an xcframework. |
 
 ### The blocker that was removed
@@ -70,18 +70,26 @@ operations. An app that can only read is a viewer, not a password manager. Addin
 items, editing them and re-serialising the vault all need to cross the boundary,
 along with the save path so changes can be pushed back.
 
-### 3. Quick unlock — small change, largest effect
+### 3. Quick unlock — done (ABI v4)
 
-Nothing on iOS can create a device key. `vault-core` has `enable_device_unlock`,
-but `vault-ffi` does not export it, and calling it would mean re-serialising and
-saving the vault — which the read-only ABI cannot do either.
+The AutoFill extension is a **separate process** and cannot borrow the app's
+unlocked session, so before this every single fill cost the user their master
+password and a full Argon2id derivation, typed into a keyboard accessory view.
 
-The consequence is not cosmetic. The AutoFill extension is a **separate process**
-and cannot borrow the app's unlocked session, so every single fill asks for the
-master password and runs Argon2id before it can hand back a credential. Exporting
-a mint-and-save path turns that into a Face ID prompt, and it is a prerequisite
-for §2 regardless. Of everything on this list it is the cheapest thing with the
-biggest effect on whether the app is usable.
+`vault_ffi_enable_device_unlock` fixes it: from a password-unlocked handle it
+mints a 32-byte device key, wraps the vault key with it, and returns the key plus
+**new vault file bytes**. The master password keeps working — this adds a second
+wrapping, it does not replace the first.
+
+It is the first ABI call that produces a replacement vault, so it is careful
+about it. The bytes are verified to reopen with the returned key *inside Rust*
+before they are handed back, and Swift writes the vault file before storing the
+key: a wrapping whose key was never saved is inert, whereas a key for a vault
+that was never written opens nothing. The key lives behind `biometryCurrentSet`
+where biometrics are enrolled, so adding a face invalidates it.
+
+It still writes nothing itself — `vault-core` is I/O-free and this stays a thin
+wrapper. That much of §2 remains.
 
 ### 4. The app itself — scaffolded
 
@@ -126,8 +134,8 @@ proposal, not a milestone, and it is read-only besides.
 "Reuse the core" is still not the same as "nearly done". Sync alone is a
 substantial refactor plus a new OAuth flow, and the write path is more again.
 
-Order, now that the shell exists: **build it once** and fix what the compiler
-says. Then §3, quick unlock — it is small and it decides whether anyone tolerates
-the app. Then §1, sync, because until the vault can reach the phone by itself
-every user is AirDropping a file. §2, writing, last: it is the largest, and it is
-the one that needs the merge semantics thought through rather than typed.
+Order, now that the shell exists and quick unlock is in: **build it once** and
+fix what the compiler says — none of the Swift has ever been through one. Then
+§1, sync, because until the vault can reach the phone by itself every user is
+AirDropping a file. §2, writing, last: it is the largest, and the one that needs
+the merge semantics thought through rather than typed.
