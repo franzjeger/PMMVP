@@ -74,11 +74,15 @@ crates/
 ├── vault-ffi/        C ABI over the core, for native platform integrations
 │                     (Swift). ABI v4.
 ├── vault-secmem/     mlock'd buffers for key material.
-└── vault-appgroup/   macOS App Group container resolution (one isolated
-                      Objective-C call, so the app crate stays unsafe-free).
+├── vault-appgroup/   macOS App Group container resolution (one isolated
+│                     Objective-C call, so the app crate stays unsafe-free).
+└── vault-sync/       End-to-end encrypted sync: the Google Drive client, the
+                      OAuth token calls, and the pull→merge→push engine, over
+                      traits so each platform supplies its own storage and UI.
 apps/
 ├── desktop/          Tauri 2 app
-│   ├── src-tauri/      Rust shell: commands, state, sync, bridge, ssh-agent.
+│   ├── src-tauri/      Rust shell: commands, state, sync glue, bridge,
+│   │                   ssh-agent.
 │   └── src/            React + TypeScript + Tailwind three-pane UI.
 ├── apple-shared/     VaultBridge.swift — the Swift side of vault-ffi, shared
 │                     verbatim by the macOS and iOS targets.

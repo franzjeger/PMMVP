@@ -48,22 +48,33 @@ another call on the same handle.
 
 ## What still has to be built
 
-### 1. Sync — the big one
+### 1. Sync — half done
 
-`apps/desktop/src-tauri/src/sync.rs` is ~670 lines of Google Drive client living
-**inside the desktop app crate**, so nothing else can use it. Without it an iOS
-app has no way to obtain the vault at all: there is no server, and the file
-never leaves the user's own cloud.
+Sync used to be ~670 lines of Google Drive client living **inside the desktop app
+crate**, where nothing else could reach it. It is now `crates/vault-sync`: the
+Drive REST client, the OAuth token calls and the pull → merge → push engine,
+with the desktop as one caller. The merge itself never moved — that is still
+`vault-core` — and neither did the security model: the remote holds ciphertext
+and this crate cannot decrypt anything.
 
-Two sub-problems, not one:
+Three traits mark where the platforms actually differ. `RemoteStore` is the
+remote (Google Drive today), `LocalVault` is "merge these copies and give me the
+bytes to push", and `SyncObserver` is progress. The desktop implements all three
+over Tauri in ~250 lines; iOS implements them over its own vault file and an
+observable object.
 
-- **Move it to a shared crate** (say `vault-sync`), leaving the desktop app as a
-  caller. The merge logic is already in `vault-core::sync`, so this is about the
-  transport, the Drive REST calls and the pull → merge → push loop.
-- **Replace the OAuth flow.** The desktop uses PKCE with a **loopback redirect**,
-  which does not exist on iOS. That has to become
-  `ASWebAuthenticationSession` with a custom URL scheme, and the refresh token
-  has to live in the iOS keychain rather than the desktop secret store.
+What is left is the part that genuinely has no shared form:
+
+- **The authorization flow.** The desktop opens a browser and catches the
+  redirect on a loopback port; iOS cannot bind a listening socket and needs
+  `ASWebAuthenticationSession` with a custom URL scheme. `OAuthClient` builds the
+  URL and redeems the code — only the middle step is per-platform.
+- **The refresh token's home.** `RefreshTokenStore` is a two-method trait; iOS
+  supplies a keychain-backed one. Note the split between "does a token exist"
+  and "read it": the background loop asks the first every tick, and on Apple
+  platforms reading an item's data runs its ACL and can raise a prompt.
+- **Calling it from Swift.** None of this is on the C ABI yet, so the phone
+  cannot reach it. That is the next FFI job after §2.
 
 ### 2. Widen the FFI to write
 

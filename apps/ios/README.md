@@ -30,10 +30,12 @@ The Xcode project is generated from [`project.yml`](project.yml) with
 
 These are not polish items. Each is blocked on something that does not exist.
 
-**No sync.** `apps/desktop/src-tauri/src/sync.rs` is a ~670-line Google Drive
-client living *inside the desktop app crate*, so nothing else can call it, and
-its OAuth flow uses a loopback redirect that iOS has no equivalent for. Until
-that moves to a shared crate ([`docs/IOS.md`](../../docs/IOS.md)), the vault
+**No sync.** The Drive client and the pull → merge → push engine now live in
+`crates/vault-sync` rather than inside the desktop app crate, so this is no
+longer blocked on an architectural move — but none of it is on the C ABI, so
+Swift still cannot call it, and the sign-in step needs
+`ASWebAuthenticationSession` (the desktop's loopback redirect has no iOS
+equivalent). See [`docs/IOS.md`](../../docs/IOS.md). Until then the vault
 reaches the phone by hand: AirDrop `default.vault` from the Mac and import it.
 That import screen is a stopgap wearing a stopgap's label.
 

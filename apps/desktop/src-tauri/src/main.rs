@@ -116,8 +116,8 @@ fn main() {
             // the confirm-autofill setting is on).
             app.manage(bridge::PendingConsents::default());
             app.manage(bridge::PendingVerifications::default());
-            // Google Drive sync: shared status + background pull-merge-push loop.
-            app.manage(sync::SharedSync::default());
+            // Google Drive sync: background pull-merge-push loop. State lives in
+            // the engine (vault-sync), not in Tauri's managed map.
             sync::start_loop(app.handle().clone());
 
             // Local autofill bridge for the browser extension (loopback + token;
