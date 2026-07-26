@@ -86,8 +86,12 @@ XCFramework found at …"*. Search paths resolve at link time, which is also how
 `apps/macos` links the same library. Package an xcframework if the library is
 ever shipped to someone else.
 
-arm64 only, matching `apps/macos`. An Intel Mac cannot run this simulator slice;
-add `x86_64-apple-ios` to the script if that matters.
+The device slice is arm64 only — every iOS device is. The **simulator** slice is
+a `lipo` of arm64 and x86_64, which is not optional: `ARCHS_STANDARD` for
+iphonesimulator is `arm64 x86_64`, and a generic simulator destination has no
+concrete device to narrow it to, so Xcode links both. An arm64-only simulator lib
+fails with *"ignoring file … found architecture 'arm64', required architecture
+'x86_64'"* and then every `vault_ffi_*` symbol undefined.
 
 ### Compile-check without signing
 

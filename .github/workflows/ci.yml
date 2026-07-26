@@ -147,9 +147,10 @@ jobs:
       - name: vault-ffi cross-compiles for iOS
         if: runner.os == 'macOS'
         run: |
-          rustup target add aarch64-apple-ios aarch64-apple-ios-sim
-          cargo build -p vault-ffi --release --target aarch64-apple-ios
-          cargo build -p vault-ffi --release --target aarch64-apple-ios-sim
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+          for t in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios; do
+            cargo build -p vault-ffi --release --target "$t"
+          done
 
       # The Swift in apps/ is written and reviewed on Linux, where no toolchain
       # can build it: SwiftUI, AuthenticationServices, LocalAuthentication and
