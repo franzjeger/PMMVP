@@ -5334,6 +5334,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vault-appgroup"
+version = "0.2.0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "vault-core"
 version = "0.2.0"
 dependencies = [
@@ -5379,6 +5386,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tempfile",
  "uuid",
+ "vault-appgroup",
  "vault-core",
  "vault-store",
  "zeroize",

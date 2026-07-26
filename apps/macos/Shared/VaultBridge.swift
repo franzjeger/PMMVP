@@ -19,6 +19,10 @@ enum VaultShared {
     static let vaultFileName = "default.vault"
     static let keychainService = "no.sybr.vault"
     static let keychainAccount = "default-vault"
+    /// Shared keychain access group holding the device key (matches the app's
+    /// Entitlements.plist and the extension's keychain-access-groups entitlement,
+    /// which expands $(AppIdentifierPrefix) to the same LY6LJ395B8. prefix).
+    static let keychainAccessGroup = "LY6LJ395B8.no.sybr.vault.shared"
 
     /// The encrypted vault file in the shared container (nil if the entitlement
     /// isn't provisioned yet).
@@ -52,10 +56,17 @@ func vaultFfiAbiVersion() -> Int32 { vault_ffi_abi_version() }
 func deviceKey(reason: String) throws -> Data {
     let ctx = LAContext()
     ctx.localizedReason = reason
+    // The Arca app writes the device key into the shared access group in the
+    // DATA-PROTECTION keychain (that is what carries the access group + Touch ID
+    // access control). Without kSecUseDataProtectionKeychain the search hits the
+    // file-based login keychain and finds nothing. The value is the raw 32-byte
+    // key, ready for vault_ffi_vault_open.
     let query: [String: Any] = [
         kSecClass as String: kSecClassGenericPassword,
         kSecAttrService as String: VaultShared.keychainService,
         kSecAttrAccount as String: VaultShared.keychainAccount,
+        kSecAttrAccessGroup as String: VaultShared.keychainAccessGroup,
+        kSecUseDataProtectionKeychain as String: true,
         kSecReturnData as String: true,
         kSecUseAuthenticationContext as String: ctx,
     ]

@@ -1,0 +1,15 @@
+[package]
+name = "vault-appgroup"
+description = "macOS App Group container path resolution (Foundation containerURL) for Arca."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+# Isolated so the desktop app crate can keep #![forbid(unsafe_code)]: the one
+# Objective-C FFI call lives here, behind a safe `container_path` function.
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.build-dependencies]
+cc = "1"

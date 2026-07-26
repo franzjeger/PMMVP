@@ -23,6 +23,9 @@ serde.workspace = true
 serde_json.workspace = true
 vault-core.workspace = true
 vault-store.workspace = true
+# macOS App Group container resolution (Foundation containerURL), isolated so
+# this crate keeps #![forbid(unsafe_code)].
+vault-appgroup.workspace = true
 uuid.workspace = true
 # Public Suffix List for passkey RP-ID validation (reject eTLD-scoped rp_ids).
 psl.workspace = true

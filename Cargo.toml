@@ -5,6 +5,7 @@ members = [
     "crates/vault-store",
     "crates/vault-ffi",
     "crates/vault-secmem",
+    "crates/vault-appgroup",
     "apps/desktop/src-tauri",
     "extension/native-host",
 ]
@@ -33,6 +34,7 @@ repository = "https://example.invalid/vault"
 vault-core = { path = "crates/vault-core" }
 vault-store = { path = "crates/vault-store" }
 vault-secmem = { path = "crates/vault-secmem" }
+vault-appgroup = { path = "crates/vault-appgroup" }
 
 # --- crypto (audited RustCrypto crates only; no custom primitives) ---
 argon2 = "0.5"

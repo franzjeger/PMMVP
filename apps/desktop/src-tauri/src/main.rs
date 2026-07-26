@@ -41,26 +41,38 @@ fn resolve_vault_path(app: &tauri::App, data_dir: &Path) -> PathBuf {
     let app_data_vault = data_dir.join("default.vault");
     #[cfg(target_os = "macos")]
     {
-        if let Ok(home) = app.path().home_dir() {
-            let container = home.join("Library/Group Containers").join(APP_GROUP);
-            if std::fs::create_dir_all(&container).is_ok() {
-                let shared_vault = container.join("default.vault");
-                // Migrate once: copy the vault + settings, keep originals.
-                if !shared_vault.exists()
-                    && app_data_vault.exists()
-                    && std::fs::copy(&app_data_vault, &shared_vault).is_ok()
-                {
-                    let old_settings = data_dir.join("settings.json");
-                    if old_settings.exists() {
-                        let _ = std::fs::copy(&old_settings, container.join("settings.json"));
+        // The container path MUST come from Foundation's containerURL API, not a
+        // hardcoded ~/Library/Group Containers/<group> path: that call is what
+        // grants this (non-sandboxed but entitled) process filesystem access to
+        // the container. A raw path is denied with EPERM. Returns None when the
+        // App Group entitlement isn't provisioned — then we keep the app-data
+        // vault and only cross-app autofill is unavailable.
+        if let Some(container) = vault_appgroup::container_path(APP_GROUP) {
+            let shared_vault = container.join("default.vault");
+            // Migrate once: copy the vault + settings, keep originals as backup.
+            if !shared_vault.exists() && app_data_vault.exists() {
+                match std::fs::copy(&app_data_vault, &shared_vault) {
+                    Ok(_) => {
+                        let old_settings = data_dir.join("settings.json");
+                        if old_settings.exists() {
+                            let _ = std::fs::copy(&old_settings, container.join("settings.json"));
+                        }
+                        eprintln!("[arca] migrated vault into App Group container");
                     }
-                }
-                // Use the shared vault if it exists (migrated) or there is no
-                // app-data vault to fall back to.
-                if shared_vault.exists() || !app_data_vault.exists() {
-                    return shared_vault;
+                    Err(e) => eprintln!(
+                        "[arca] App Group container write failed ({e}); \
+                         falling back to app-data vault (AutoFill unavailable)"
+                    ),
                 }
             }
+            // Use the shared vault if it exists (migrated) or there is no
+            // app-data vault to fall back to.
+            if shared_vault.exists() || !app_data_vault.exists() {
+                eprintln!("[arca] vault path: shared App Group container");
+                return shared_vault;
+            }
+        } else {
+            eprintln!("[arca] App Group container unavailable; using app-data vault");
         }
     }
     let _ = app; // unused on non-macOS

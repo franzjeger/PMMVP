@@ -15,6 +15,14 @@ APP_DST="/Applications/Arca.app"
 # strips what `tauri build` embedded.
 ENTITLEMENTS="$REPO/apps/desktop/src-tauri/Entitlements.plist"
 
+# Gate every install on the smoke test (Rust tests + frontend build + on macOS
+# the keychain quick-unlock drift regression). Skip only with SKIP_SMOKE=1 and a
+# reason you can defend.
+if [ "${SKIP_SMOKE:-}" != "1" ]; then
+  echo "==> Smoke test (set SKIP_SMOKE=1 to bypass)…"
+  bash "$REPO/scripts/smoke-test.sh" --full
+fi
+
 echo "==> Building release bundle…"
 (cd "$REPO/apps/desktop" && npm run tauri build -- --bundles app)
 
@@ -23,11 +31,14 @@ echo "==> Building release bundle…"
 # with a provisioning profile that authorizes them — Developer ID without a
 # profile is KILLED at launch. Development signing (Apple Development cert +
 # the Mac Team dev profile) authorizes them, so that's what we use locally.
-# The profile is produced by building the ArcaSign stub once in apps/macos
-# (Xcode auto-provisioning). Distribution later needs a Developer ID profile.
-# Profile source, most-reliable first: the currently installed app (already
-# proven to launch), a fresh ArcaSign stub build, then Xcode's newest profile.
-PROFILE_SRC="$APP_DST/Contents/embedded.provisionprofile"
+# The profile must AUTHORIZE the App Group (group.no.sybr.vault) and the shared
+# keychain group. The committed "Arca Vault macOS Dev" profile does — it is tied
+# to the explicit App ID no.sybr.vault with App Groups + a LY6LJ395B8.* keychain
+# group. Earlier fallbacks (the wildcard "Mac Team *" profile) grant the keychain
+# group but NOT the App Group, so the shared-container write was blocked; prefer
+# the committed profile first and only fall back for machines without it.
+PROFILE_SRC="$REPO/apps/macos/profiles/Arca_Vault_macOS_Dev.provisionprofile"
+[ -f "$PROFILE_SRC" ] || PROFILE_SRC="$APP_DST/Contents/embedded.provisionprofile"
 [ -f "$PROFILE_SRC" ] || PROFILE_SRC="$REPO/apps/macos/build/Build/Products/Debug/ArcaSign.app/Contents/embedded.provisionprofile"
 [ -f "$PROFILE_SRC" ] || PROFILE_SRC="$(ls -t "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"/*.provisionprofile 2>/dev/null | head -1)"
 
