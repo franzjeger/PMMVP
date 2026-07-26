@@ -4,10 +4,12 @@ A SwiftUI app plus an AutoFill Credential Provider extension, both over the same
 Rust core the desktop uses.
 
 **None of this has been compiled locally**, let alone run on a device — it was
-written on Linux, where the Apple frameworks it imports do not exist. CI now
-builds both schemes unsigned on the macOS runner for every pull request, which
-is the first compiler this code has ever met. Expect that run to be red before
-it is green, and treat it as the real review.
+written on Linux, where the Apple frameworks it imports do not exist. CI builds
+both schemes unsigned on the macOS runner for every pull request, via
+[`scripts/build-apple-ci.sh`](../../scripts/build-apple-ci.sh), which reports a
+count of compiler diagnostics so a clean build is asserted rather than inferred.
+That count is what gates `SWIFT_VERSION: 6.0`: `SWIFT_STRICT_CONCURRENCY` is
+already `complete`, so its findings are warnings now and errors then.
 
 The Xcode project is generated from [`project.yml`](project.yml) with
 [XcodeGen](https://github.com/yonabot/XcodeGen); the `.xcodeproj` is git-ignored.
