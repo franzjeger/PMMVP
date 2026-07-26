@@ -72,9 +72,17 @@ open Arca.xcodeproj
 
 The pre-build phase runs [`scripts/build-ffi-ios.sh`](../../scripts/build-ffi-ios.sh),
 which adds the Rust targets, cross-compiles `vault-ffi` for device and simulator
-and packages `libs/VaultFFI.xcframework`. Two slices are not optional: device and
-simulator are different *platforms*, and linking the two `.a` files directly
-fails on the second with duplicate symbols.
+and stages `libs/device/libvault_ffi.a` and `libs/simulator/libvault_ffi.a`. Two
+are not optional: device and simulator are different *platforms*, and an
+SDK-conditional `LIBRARY_SEARCH_PATHS` picks the right one.
+
+Not an `.xcframework`, though `docs/IOS.md` originally asked for one and the
+first cut built one. Xcode resolves a framework dependency when it sets the
+target up, before any pre-build script runs, so a library the project builds
+itself can never exist in time — a clean checkout fails with *"There is no
+XCFramework found at …"*. Search paths resolve at link time, which is also how
+`apps/macos` links the same library. Package an xcframework if the library is
+ever shipped to someone else.
 
 arm64 only, matching `apps/macos`. An Intel Mac cannot run this simulator slice;
 add `x86_64-apple-ios` to the script if that matters.

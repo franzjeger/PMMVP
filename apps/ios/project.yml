@@ -3,7 +3,7 @@
 #
 # Two targets over the same Rust core the desktop and macOS extension use:
 # a SwiftUI app and an AutoFill Credential Provider extension. Both link
-# VaultFFI.xcframework (built by the pre-build script) and read the encrypted
+# vault-ffi (cross-compiled by the pre-build script) and read the encrypted
 # vault from the shared App Group container.
 #
 # SCAFFOLD — see README.md for what actually works. The short version: the FFI is
@@ -32,17 +32,24 @@ settings:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
     TARGETED_DEVICE_FAMILY: "1,2"
-    # vault-ffi (Rust) linkage, shared by both targets. The xcframework carries
-    # its own copy of the header, but pointing at the crate's include directory
-    # is what guarantees the bridging header's #import resolves.
+    # vault-ffi (Rust) linkage, shared by both targets, and deliberately the same
+    # shape as apps/macos: search paths + a linker flag, resolved at LINK time.
+    # A framework dependency is resolved when Xcode sets the target up, before
+    # the pre-build script has run, so a library this project builds itself can
+    # never be one — see scripts/build-ffi-ios.sh.
     SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/../apple-shared/Arca-Bridging-Header.h"
     HEADER_SEARCH_PATHS: "$(SRCROOT)/../../crates/vault-ffi/include"
+    # Device and simulator are different platforms with different .a files; the
+    # SDK condition is what picks the right one.
+    "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]": "$(SRCROOT)/libs/device"
+    "LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]": "$(SRCROOT)/libs/simulator"
+    OTHER_LDFLAGS: "-lvault_ffi"
 
-# Pre-build step reused by both targets: build the Rust static libs for device +
-# simulator and package them as an xcframework. `basedOnDependencyAnalysis: false`
-# so it always runs (cargo itself is incremental).
+# Pre-build step reused by both targets: cross-compile vault-ffi for device and
+# simulator and stage the two .a files where LIBRARY_SEARCH_PATHS looks.
+# `basedOnDependencyAnalysis: false` so it always runs (cargo is incremental).
 scriptDefaults: &buildFfi
-  name: "Build vault-ffi (Rust xcframework)"
+  name: "Build vault-ffi (Rust static libs)"
   basedOnDependencyAnalysis: false
   script: |
     set -euo pipefail
@@ -67,9 +74,6 @@ targets:
     preBuildScripts:
       - *buildFfi
     dependencies:
-      # A static-library xcframework is linked, never embedded.
-      - framework: libs/VaultFFI.xcframework
-        embed: false
       # Embeds the .appex into Arca.app/PlugIns, which is how the OS discovers
       # the credential provider.
       - target: ArcaAutoFill
@@ -89,6 +93,3 @@ targets:
         CODE_SIGN_ENTITLEMENTS: ArcaAutoFill/ArcaAutoFill.entitlements
     preBuildScripts:
       - *buildFfi
-    dependencies:
-      - framework: libs/VaultFFI.xcframework
-        embed: false

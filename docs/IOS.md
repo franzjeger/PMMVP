@@ -26,7 +26,7 @@ that makes it a password manager rather than a viewer.
 | Writing from the phone | **Missing.** The FFI is read-only today. |
 | iOS app + AutoFill extension | **Scaffolded, never run.** `apps/ios/`: unlock, search, reveal, copy, and a credential provider. Read-only. CI compiles it; no device has. |
 | Quick unlock on the phone | **Done.** `vault_ffi_enable_device_unlock` (ABI v4) mints a device key from a password unlock; the app and the extension both use it. |
-| iOS build targets | **Scripted.** [`scripts/build-ffi-ios.sh`](../scripts/build-ffi-ios.sh) adds the targets and packages an xcframework. |
+| iOS build targets | **Scripted.** [`scripts/build-ffi-ios.sh`](../scripts/build-ffi-ios.sh) adds the targets and stages a static lib per platform. |
 
 ### The blocker that was removed
 
@@ -98,9 +98,11 @@ wrapper. That much of §2 remains.
 Done, unverified:
 
 - [`scripts/build-ffi-ios.sh`](../scripts/build-ffi-ios.sh) adds the Rust targets
-  and packages `VaultFFI.xcframework`. Two slices, because device and simulator
-  are different platforms — linking both `.a` files directly fails on the second
-  with duplicate symbols.
+  and stages one `.a` per platform, because device and simulator are different
+  platforms. Not an xcframework, despite this document originally asking for
+  one: Xcode resolves a framework dependency before any pre-build script runs,
+  so a library the project builds itself can never be one. Search paths resolve
+  at link time — the same shape `apps/macos` already used.
 - A SwiftUI app: unlock, search, item detail, copy (pasteboard `localOnly` and
   expiring), lock on backgrounding, covered app-switcher snapshot.
 - An **AutoFill Credential Provider extension**. Worth saying clearly: this is
