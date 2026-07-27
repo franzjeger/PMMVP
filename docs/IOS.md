@@ -97,11 +97,13 @@ to that type. An iOS client (`Arca iOS`, bundle id `no.sybr.vault.ios`) now
 exists in the same GCP project, so both platforms reach the same
 `appDataFolder` and sync with each other.
 
-Three things follow from that, and all three have to carry the same value or the
-consent page fails the same way:
+The same number then has to appear in three places, and any one of them being a
+character off fails as `redirect_uri_mismatch` on the consent page with nothing
+to point at:
 
-- `REDIRECT_URI` / `CLIENT_ID` in `vault-sync/src/drive.rs`, behind
-  `cfg(target_os = "ios")`.
+- `vault-sync/src/drive.rs`, behind `cfg(target_os = "ios")`. `CLIENT_ID` and
+  `REDIRECT_URI` are both `concat!`ed from one `ios_client!` literal, so those
+  two at least cannot drift apart.
 - `SyncSignIn.redirectURI` and its callback scheme.
 - `CFBundleURLSchemes` in the app's Info.plist.
 
@@ -110,6 +112,10 @@ a request that sends an empty one, so the token calls now omit `client_secret`
 entirely when there is none. PKCE is what binds the code to this process either
 way. That is pinned by a test, because inlining the form fields again would undo
 it silently.
+
+The **desktop** client does have a secret, and it is deliberately not in this
+repository — `vault-sync/build.rs` supplies it at build time. See
+[`SYNC.md`](./SYNC.md). None of that touches iOS, which has no secret to hide.
 
 **Not yet verified end to end.** The sign-in was confirmed to reach Google and
 present the consent page, and the cancel path is clean, but no successful
