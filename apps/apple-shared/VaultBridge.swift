@@ -44,7 +44,11 @@ enum VaultShared {
     /// ABI would otherwise be called through the wrong signatures and fail
     /// quietly — and "quietly wrong" in a credential provider means filling the
     /// wrong bytes into someone's login form.
-    static let requiredAbiVersion: Int32 = 5
+    /// v6 added the write surface (`vault_ffi_upsert_login`,
+    /// `vault_ffi_delete_item`). Bump this in the SAME commit that bumps
+    /// `ABI_VERSION`: nothing compiles against it, so a stale value is only ever
+    /// caught at runtime, by this guard, on a device.
+    static let requiredAbiVersion: Int32 = 6
 
     /// Info.plist key carrying the shared keychain access group. Both targets
     /// set it to `$(AppIdentifierPrefix)no.sybr.vault.shared`, which Xcode

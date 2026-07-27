@@ -82,8 +82,11 @@ targets:
       - *buildFfi
     dependencies:
       # Embeds the .appex into Arca.app/PlugIns, which is how the OS discovers
-      # the credential provider.
+      # the credential provider. `embed` is spelled out because the default did
+      # NOT copy it: the extension built fine and simply was not in the app.
       - target: ArcaAutoFill
+        embed: true
+        codeSign: true
 
   ArcaAutoFill:
     type: app-extension
