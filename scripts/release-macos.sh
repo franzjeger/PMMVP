@@ -80,6 +80,18 @@ UPDATER_KEY="${ARCA_UPDATER_KEY:-$HOME/.arca/arca-updater.key}"
      your backup, or (only if no release has ever shipped) generate a new one:
        cd apps/desktop && npx tauri signer generate -w \"$UPDATER_KEY\""
 
+# The Google OAuth client secret is not in the repository — crates/vault-sync's
+# build script reads it from here. A build without it works perfectly except
+# that Drive sync refuses to connect, which is a silent thing to discover after
+# shipping, so a release stops rather than going out half-working.
+CLIENT_SECRET_FILE="${ARCA_GOOGLE_CLIENT_SECRET_FILE:-$HOME/.arca/google-client-secret}"
+if [ -z "${ARCA_GOOGLE_CLIENT_SECRET:-}" ]; then
+  [ -s "$CLIENT_SECRET_FILE" ] || die "no Google client secret at $CLIENT_SECRET_FILE.
+     This build would ship with Drive sync switched off. Put the secret for the
+     desktop OAuth client there (one line, chmod 600), or export
+     ARCA_GOOGLE_CLIENT_SECRET. See docs/SYNC.md."
+fi
+
 step "Building the release bundle (Developer ID + hardened runtime)"
 # Tauri signs the bundle itself when these are set; the hardened runtime is
 # required for notarization.

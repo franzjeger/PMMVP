@@ -23,6 +23,15 @@ if [ "${SKIP_SMOKE:-}" != "1" ]; then
   bash "$REPO/scripts/smoke-test.sh" --full
 fi
 
+# The Google OAuth client secret lives outside the repository (it is public);
+# crates/vault-sync's build script picks it up from here. Say so out loud rather
+# than installing an app whose Settings pane refuses to connect for no visible
+# reason.
+if [ -z "${ARCA_GOOGLE_CLIENT_SECRET:-}" ] && [ ! -s "$HOME/.arca/google-client-secret" ]; then
+  echo "==> WARNING: no Google client secret at ~/.arca/google-client-secret."
+  echo "    This build will run fine but Drive sync cannot connect. See docs/SYNC.md."
+fi
+
 echo "==> Building release bundle…"
 (cd "$REPO/apps/desktop" && npm run tauri build -- --bundles app)
 

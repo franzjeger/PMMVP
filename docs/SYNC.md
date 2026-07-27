@@ -22,6 +22,41 @@ changes.
   **valid foreign** vault is refused (not clobbered). Tested.
 - Wired into `persist` and the bridge writes: every save is now sync-aware.
 
+## Google credentials, and why they are not in this repository
+
+Drive sync needs an OAuth client. There are two, both in the same Google Cloud
+project so every Arca reaches the same `appDataFolder`: a **desktop** client for
+macOS/Windows/Linux, and an **iOS** client, because Google ties the redirect to
+the client *type* and iOS cannot bind the loopback address a desktop client
+redirects to.
+
+The client **ids** are in `crates/vault-sync/src/drive.rs`, which is correct —
+an id is public by design, it appears on the consent screen and, on iOS, inside
+the app's own URL scheme.
+
+The desktop client **secret** is not. Google's documentation is clear that an
+installed-app secret is not confidential (it ships inside every binary, and PKCE
+is what binds an authorization code to the process that asked for it), but this
+repository is public, and a credential in public git history cannot be
+withdrawn — only rotated, which costs a release. One was published that way, and
+has since been rotated. So `crates/vault-sync/build.rs` supplies it at build
+time from, in order:
+
+1. `ARCA_GOOGLE_CLIENT_SECRET` in the environment.
+2. `~/.arca/google-client-secret` — one line, `chmod 600`, next to the updater
+   key, and backed up with it.
+
+An iOS client is a **public** client: Google issues no secret for it at all and
+rejects a request that sends an empty one, so the token calls omit the field
+entirely when there is none. That is pinned by a test.
+
+**A build without the secret is a supported build.** `drive::sync_configured()`
+returns false, and the desktop sign-in refuses before opening a browser rather
+than walking the user to a consent page that dies at the token exchange. That is
+what CI builds and what a clone of this repository builds; everything except
+Drive sync works. `release-macos.sh` refuses to build without it, because a
+release that silently cannot sync is a bad thing to discover after shipping.
+
 ## Not yet built (required before enabling user-facing sync)
 
 These are prospective — they only bite once the vault actually lives in a shared

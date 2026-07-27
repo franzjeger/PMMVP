@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
-use vault_sync::drive::{arca_credentials, DriveStore, RefreshTokenStore};
+use vault_sync::drive::{arca_credentials, sync_configured, DriveStore, RefreshTokenStore};
 use vault_sync::oauth::{OAuthClient, Pkce};
 use vault_sync::{LocalError, LocalVault, RemoteStore, SyncEngine, SyncObserver, SyncStatus};
 use zeroize::Zeroizing;
@@ -196,6 +196,13 @@ pub fn start_loop(app: AppHandle) {
 /// scheme instead — so the shared crate builds the URL and redeems the code,
 /// and each platform runs the middle step its own way.
 pub fn connect(app: &AppHandle) -> Result<String, String> {
+    // Before the browser opens, not after. An unconfigured build can still walk
+    // the user all the way through Google's consent screen and only fail at the
+    // token exchange, with a message from Google about a client they have never
+    // heard of.
+    if !sync_configured() {
+        return Err(vault_sync::drive::UNCONFIGURED.to_string());
+    }
     let pkce = Pkce::generate()?;
     let listener = TcpListener::bind(("127.0.0.1", 0)).map_err(|e| format!("bind failed: {e}"))?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();

@@ -31,8 +31,19 @@ use crate::{CycleError, RemoteFile, RemoteStore};
 #[cfg(not(target_os = "ios"))]
 pub const CLIENT_ID: &str =
     "269591410733-ger46m91l3ne5qmcrivhg1jo698gieck.apps.googleusercontent.com";
+
+/// Supplied at build time by `build.rs`, from the environment or from
+/// `~/.arca/google-client-secret` — deliberately not a literal here, because
+/// this repository is public and a credential in public git history can only
+/// be rotated, never withdrawn.
+///
+/// Empty means this build simply has no Google credentials. That is a state,
+/// not a bug: [`sync_configured`] reports it and the sign-in refuses up front.
 #[cfg(not(target_os = "ios"))]
-pub const CLIENT_SECRET: &str = "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";
+pub const CLIENT_SECRET: &str = match option_env!("ARCA_GOOGLE_CLIENT_SECRET") {
+    Some(secret) => secret,
+    None => "",
+};
 
 /// iOS client (bundle id `no.sybr.vault.ios`). Public: Google issues NO secret
 /// for this type, and sending an empty one is rejected — see `form_fields`.
@@ -48,6 +59,36 @@ pub const CLIENT_SECRET: &str = "";
 #[cfg(target_os = "ios")]
 pub const REDIRECT_URI: &str =
     "com.googleusercontent.apps.269591410733-ltlkje5t7p8gajnp8vvk3gp9223nheu7:/oauth2redirect";
+
+/// Whether this build's client type needs a secret at all.
+///
+/// An iOS client is a *public* client: Google issues none, and rejects a
+/// request that sends an empty one. So "has no secret" means two opposite
+/// things on the two platforms, and asking the question needs this flag.
+#[cfg(not(target_os = "ios"))]
+const SECRET_REQUIRED: bool = true;
+#[cfg(target_os = "ios")]
+const SECRET_REQUIRED: bool = false;
+
+/// Whether this build carries the credentials it needs to reach Google.
+///
+/// False for a build made without the client secret in place — CI's, and
+/// anyone's who clones the repository. Callers check it *before* starting a
+/// sign-in, so the user gets a sentence rather than being walked to a Google
+/// consent page that ends in an opaque 401 from the token endpoint.
+///
+/// Only the sign-in needs the guard. Everything else on this path — the
+/// background refresh, every Drive call — runs only when a refresh token is
+/// already stored, and the only way to store one is a sign-in that got past
+/// here. An iOS build cannot be unconfigured at all: its client needs no
+/// secret and its id is a literal.
+pub fn sync_configured() -> bool {
+    !CLIENT_ID.is_empty() && (!SECRET_REQUIRED || !CLIENT_SECRET.is_empty())
+}
+
+/// What to tell the user when it is not.
+pub const UNCONFIGURED: &str =
+    "This build has no Google credentials, so Drive sync is unavailable. See docs/SYNC.md.";
 
 /// Arca's own hidden folder, and nothing else in the user's Drive.
 pub const SCOPE: &str = "https://www.googleapis.com/auth/drive.appdata";
@@ -344,6 +385,28 @@ mod tests {
 
     fn store(tokens: Arc<FakeTokens>) -> DriveStore {
         DriveStore::new(arca_credentials(), tokens)
+    }
+
+    /// Deliberately NOT "a secret is present": CI builds without one, and that
+    /// build has to stay green. What must hold is that `sync_configured` tells
+    /// the truth about whatever this build got, so the sign-in guard is never
+    /// deciding on a stale assumption.
+    #[test]
+    fn configured_reports_what_this_build_actually_has() {
+        let credentials = arca_credentials();
+        assert!(
+            !credentials.client_id.is_empty(),
+            "the client id is a literal"
+        );
+
+        if SECRET_REQUIRED {
+            assert_eq!(sync_configured(), !credentials.client_secret.is_empty());
+        } else {
+            // A public client. An empty secret is correct here, and `oauth`
+            // must omit the field entirely rather than send it blank.
+            assert!(credentials.client_secret.is_empty());
+            assert!(sync_configured());
+        }
     }
 
     /// The tick-rate call must answer from presence alone. Reading the token
