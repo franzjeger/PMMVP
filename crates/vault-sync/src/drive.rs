@@ -45,11 +45,27 @@ pub const CLIENT_SECRET: &str = match option_env!("ARCA_GOOGLE_CLIENT_SECRET") {
     None => "",
 };
 
+/// The iOS client's identifier, written once.
+///
+/// Google renders the same registration two ways, and iOS needs both: the plain
+/// form as `client_id`, and the *reversed* form as the URL scheme it redirects
+/// to. Spelling the number out twice is how they drift, and a redirect that
+/// disagrees with the client by one character fails as `redirect_uri_mismatch`
+/// on the consent page with nothing to point at. It has to match
+/// `CFBundleURLSchemes` in the iOS app's Info.plist and `SyncSignIn.redirectURI`
+/// as well; those two cannot be reached from Rust, but two copies is better
+/// than four.
+#[cfg(target_os = "ios")]
+macro_rules! ios_client {
+    () => {
+        "269591410733-ltlkje5t7p8gajnp8vvk3gp9223nheu7"
+    };
+}
+
 /// iOS client (bundle id `no.sybr.vault.ios`). Public: Google issues NO secret
 /// for this type, and sending an empty one is rejected — see `form_fields`.
 #[cfg(target_os = "ios")]
-pub const CLIENT_ID: &str =
-    "269591410733-ltlkje5t7p8gajnp8vvk3gp9223nheu7.apps.googleusercontent.com";
+pub const CLIENT_ID: &str = concat!(ios_client!(), ".apps.googleusercontent.com");
 #[cfg(target_os = "ios")]
 pub const CLIENT_SECRET: &str = "";
 
@@ -57,8 +73,11 @@ pub const CLIENT_SECRET: &str = "";
 /// client id, which is the only form Google accepts for an iOS client; the
 /// desktop catches a loopback address chosen at runtime, so it has none here.
 #[cfg(target_os = "ios")]
-pub const REDIRECT_URI: &str =
-    "com.googleusercontent.apps.269591410733-ltlkje5t7p8gajnp8vvk3gp9223nheu7:/oauth2redirect";
+pub const REDIRECT_URI: &str = concat!(
+    "com.googleusercontent.apps.",
+    ios_client!(),
+    ":/oauth2redirect"
+);
 
 /// Whether this build's client type needs a secret at all.
 ///
