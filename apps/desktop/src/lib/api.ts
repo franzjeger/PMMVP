@@ -421,6 +421,18 @@ export function onAutofilled(cb: (what: string) => void): Promise<UnlistenFn> {
   return listen<string>("autofilled", (e) => cb(e.payload));
 }
 
+/** Fired when repeated declines have muted a site's passkey prompts for the
+ *  rest of the session. Worth surfacing: going quiet without saying so would
+ *  look like a bug the next time the user genuinely tried to sign in. */
+export function onPasskeySuppressed(
+  cb: (site: string, isCreate: boolean) => void,
+): Promise<UnlistenFn> {
+  return listen<{ site: string; is_create: boolean }>(
+    "passkey-suppressed",
+    (e) => cb(e.payload.site, e.payload.is_create),
+  );
+}
+
 /** Fired when a login is saved/updated from the browser (save-on-submit), so
  *  the UI can refresh its item list. */
 export function onLoginSaved(cb: (host: string) => void): Promise<UnlistenFn> {

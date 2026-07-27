@@ -819,41 +819,85 @@ fn passkeys_enabled(state: &Mutex<AppState>) -> bool {
 }
 
 /// How long a decline silences further passkey prompts for the same relying
-/// party. A background browser tab can fire passkey ceremonies repeatedly (the
-/// conditional-mediation autofill loop) even after the extension is updated —
-/// reloading the extension does not evict already-injected content scripts in
-/// open tabs. Once the user declines one prompt, we treat further prompts for
-/// that site as the same background loop and suppress them, so the nag stops
-/// without the user having to hunt down the offending tab. A genuine sign-in is
-/// completed on the first prompt, so it never records a decline and is never
-/// suppressed.
-const PASSKEY_DECLINE_COOLDOWN: Duration = Duration::from_secs(90);
+/// party, by how many times in a row it has been declined.
+///
+/// A single fixed cooldown was the original design and it was wrong: a page
+/// that keeps firing ceremonies just gets a fresh prompt every time the window
+/// expires, forever. Ninety seconds is not a cooldown, it is a snooze button
+/// nobody asked for, and from the user's chair it is indistinguishable from the
+/// nag never stopping.
+///
+/// The escalation matters more than the exact numbers. The browser side tries
+/// to tell a real "sign in with a passkey" click from a page auto-firing one,
+/// but it only has `navigator.userActivation`, which means "the user did
+/// *something* in the last few seconds" — click anywhere on a login page and a
+/// background ceremony sails straight through. That heuristic will always be
+/// approximate, so this side, which is the one that actually puts a Touch ID
+/// prompt on screen, must be the one that can say no permanently.
+const PASSKEY_DECLINE_BACKOFF: [Duration; 3] = [
+    Duration::from_secs(90),
+    Duration::from_secs(15 * 60),
+    Duration::from_secs(60 * 60),
+];
 
-/// Per-rp time of the last declined passkey prompt (see cooldown above).
-static PASSKEY_DECLINED_AT: LazyLock<Mutex<HashMap<String, Instant>>> =
+/// Consecutive declines after which a site is suppressed for the rest of the
+/// session. Deliberately not forever-across-restarts: quitting the app is a
+/// clear, discoverable way back, and persisting a refusal the user cannot see
+/// would strand a genuine sign-in with no explanation.
+const PASSKEY_DECLINE_LIMIT: u32 = 4;
+
+/// A handful of declines and then stop, not an unbounded ladder. Checked here
+/// rather than in a test because a test that loops to this value would hang
+/// instead of failing if it ever grew.
+const _: () = assert!(PASSKEY_DECLINE_LIMIT <= 10);
+
+struct PasskeyDecline {
+    at: Instant,
+    /// Consecutive declines with no approval in between.
+    count: u32,
+}
+
+/// Per-(site, action) decline state (see the backoff above).
+static PASSKEY_DECLINED_AT: LazyLock<Mutex<HashMap<String, PasskeyDecline>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn passkey_recently_declined(key: &str) -> bool {
-    let map = match PASSKEY_DECLINED_AT.lock() {
+fn passkey_decline_map() -> std::sync::MutexGuard<'static, HashMap<String, PasskeyDecline>> {
+    match PASSKEY_DECLINED_AT.lock() {
         Ok(m) => m,
         Err(e) => e.into_inner(),
+    }
+}
+
+/// Whether to stay silent instead of prompting again.
+fn passkey_suppressed(key: &str) -> bool {
+    let map = passkey_decline_map();
+    let Some(decline) = map.get(key) else {
+        return false;
     };
-    map.get(key)
-        .is_some_and(|at| at.elapsed() < PASSKEY_DECLINE_COOLDOWN)
-}
-
-fn record_passkey_decline(key: &str) {
-    if let Ok(mut map) = PASSKEY_DECLINED_AT.lock() {
-        map.insert(key.to_string(), Instant::now());
+    if decline.count >= PASSKEY_DECLINE_LIMIT {
+        return true;
     }
+    let step = (decline.count as usize).saturating_sub(1);
+    decline.at.elapsed() < PASSKEY_DECLINE_BACKOFF[step.min(PASSKEY_DECLINE_BACKOFF.len() - 1)]
 }
 
-/// Reset the decline cooldown for a key (after a successful approval, so a later
-/// genuine ceremony is not suppressed).
+/// Record a decline. Returns true when this one crossed into "suppressed for
+/// the session", so the caller can say so rather than going quiet unexplained.
+fn record_passkey_decline(key: &str) -> bool {
+    let mut map = passkey_decline_map();
+    let decline = map.entry(key.to_string()).or_insert(PasskeyDecline {
+        at: Instant::now(),
+        count: 0,
+    });
+    decline.at = Instant::now();
+    decline.count += 1;
+    decline.count == PASSKEY_DECLINE_LIMIT
+}
+
+/// Reset the backoff for a key (after a successful approval, so a later genuine
+/// ceremony is not suppressed).
 fn clear_passkey_decline(key: &str) {
-    if let Ok(mut map) = PASSKEY_DECLINED_AT.lock() {
-        map.remove(key);
-    }
+    passkey_decline_map().remove(key);
 }
 
 /// Approve a passkey ceremony. `is_create` distinguishes registering a NEW
@@ -872,17 +916,37 @@ fn approve_passkey(
     // is almost certainly re-firing it — suppress silently instead of nagging.
     // (Only active in production, where `app` drives a real prompt; unit tests
     // inject their own consent and must run every time.)
-    if app.is_some() && passkey_recently_declined(&cooldown_key) {
+    if app.is_some() && passkey_suppressed(&cooldown_key) {
         return None;
     }
     let result = approve_passkey_inner(rp_id, is_create, app, consent);
-    if app.is_some() {
+    if let Some(app) = app {
         match result {
-            None => record_passkey_decline(&cooldown_key),
+            None => {
+                if record_passkey_decline(&cooldown_key) {
+                    // Going quiet without saying so would look like a bug the
+                    // next time the user genuinely wanted to sign in.
+                    let _ = app.emit(
+                        "passkey-suppressed",
+                        PasskeySuppressedDto {
+                            site: rp_id.to_string(),
+                            is_create,
+                        },
+                    );
+                }
+            }
             Some(_) => clear_passkey_decline(&cooldown_key),
         }
     }
     result
+}
+
+/// Told to the UI when a site is muted for the session, so the user learns it
+/// from Arca rather than from a sign-in that mysteriously stops working.
+#[derive(Clone, serde::Serialize)]
+struct PasskeySuppressedDto {
+    site: String,
+    is_create: bool,
 }
 
 fn approve_passkey_inner(
@@ -1112,6 +1176,75 @@ mod tests {
     /// default, so this is only exercised when a test flips the setting on).
     fn allow() -> impl FnMut(&ConsentContext) -> bool {
         |_| true
+    }
+
+    /// The nag has to actually END. The original design suppressed for a fixed
+    /// 90 seconds, which just meant a fresh Touch ID prompt every 90 seconds
+    /// forever — and from the user's chair that is not a cooldown at all.
+    #[test]
+    fn declining_repeatedly_eventually_silences_a_site_for_good() {
+        let key = "github.com/get-nag-test";
+        clear_passkey_decline(key);
+
+        // Bounded independently of the constant under test. A loop whose length
+        // IS that constant hangs instead of failing when the value is wrong,
+        // which is the least useful way for a test to react to a regression.
+        // That the limit fits inside this bound is checked where it is declared,
+        // at compile time.
+        const TRIES: u32 = 10;
+
+        let mut announcements = 0;
+        for _ in 0..TRIES {
+            if record_passkey_decline(key) {
+                announcements += 1;
+            }
+            assert!(
+                passkey_suppressed(key),
+                "silent immediately after a decline"
+            );
+        }
+        assert_eq!(
+            announcements, 1,
+            "the permanent stop is announced exactly once, not on every later attempt"
+        );
+
+        // Past the limit the elapsed time stops mattering: no window reopens,
+        // which is the whole difference from the old behaviour.
+        {
+            let mut map = passkey_decline_map();
+            let decline = map.get_mut(key).unwrap();
+            decline.at = Instant::now() - Duration::from_secs(24 * 60 * 60);
+        }
+        assert!(
+            passkey_suppressed(key),
+            "a day later it must STILL be silent, or the nag simply resumes"
+        );
+
+        // An approval is the way back: a genuine sign-in later must not be
+        // swallowed by a refusal the user has no way to see.
+        clear_passkey_decline(key);
+        assert!(!passkey_suppressed(key));
+    }
+
+    /// Before the limit, silence expires — declining once must not lock a site
+    /// out of a real sign-in an hour later.
+    #[test]
+    fn an_early_decline_expires_instead_of_locking_the_site_out() {
+        let key = "example.com/get-expiry-test";
+        clear_passkey_decline(key);
+
+        record_passkey_decline(key);
+        assert!(passkey_suppressed(key));
+
+        {
+            let mut map = passkey_decline_map();
+            map.get_mut(key).unwrap().at = Instant::now() - Duration::from_secs(120);
+        }
+        assert!(
+            !passkey_suppressed(key),
+            "one decline is a snooze, not a ban"
+        );
+        clear_passkey_decline(key);
     }
 
     fn cheap_params() -> KdfParams {

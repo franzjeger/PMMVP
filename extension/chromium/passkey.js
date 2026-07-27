@@ -18,16 +18,32 @@
   const realCreate = creds.create.bind(creds);
   const realGet = creds.get.bind(creds);
 
-  // Whether this call was triggered by a real user gesture (WebAuthn transient
-  // activation). A genuine "sign in / add a passkey" click carries it; a
-  // page-load, timer, or background auto-fire does not. We only route a
-  // ceremony to Arca (which pops Touch ID) when the user actually initiated it,
-  // so a site auto-firing get()/create() on load can never nag. Conservative:
-  // if the API is unavailable (older browser), treat as user-initiated so we
-  // don't silently drop real ceremonies.
+  // Whether the user actually initiated THIS ceremony.
+  //
+  // `navigator.userActivation.isActive` alone was not enough, and the way it
+  // fails is worth spelling out: it does not mean "the user started this call",
+  // it means "the user did something in the last few seconds". Click anywhere
+  // on a login page — a link, a field, a cookie banner — and the site's own
+  // auto-fired get() sails straight through and pops Touch ID. That is the
+  // reported nag, and it survived the first fix because of exactly this.
+  //
+  // So watch for real input ourselves on a much tighter window, and CONSUME it:
+  // a genuine "sign in with a passkey" click produces one ceremony, not a
+  // stream. The window is generous enough for a site that fetches a challenge
+  // from its server between the click and the call.
+  const GESTURE_WINDOW_MS = 3000;
+  let lastGesture = 0;
+  for (const type of ["pointerdown", "keydown", "touchstart"]) {
+    // Capture phase: seen before the page's own handlers, which may call
+    // credentials.get() synchronously.
+    window.addEventListener(type, () => (lastGesture = Date.now()), true);
+  }
   function userInitiated() {
     const ua = navigator.userActivation;
-    return !ua || ua.isActive;
+    if (ua && !ua.isActive) return false;
+    if (Date.now() - lastGesture > GESTURE_WINDOW_MS) return false;
+    lastGesture = 0;
+    return true;
   }
 
   // Request/response correlation with the isolated content script.

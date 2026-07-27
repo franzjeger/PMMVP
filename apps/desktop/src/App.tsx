@@ -11,6 +11,7 @@ import {
   onFillConsentRequest,
   onLoginSaved,
   onPasskeyChanged,
+  onPasskeySuppressed,
   onPasskeyVerifyRequest,
   onSyncMerged,
   onVaultLocked,
@@ -121,6 +122,9 @@ export default function App() {
       }),
       onClipboardCleared(() => setToast("Clipboard cleared")),
       onAutofilled((what) => setToast(`Autofilled ${what}`)),
+      onPasskeySuppressed((site) =>
+        setToast(`Stopped asking about passkeys for ${site}. Quit Arca to reset.`),
+      ),
       onFillConsentRequest((req) => setConsent(req)),
       onPasskeyVerifyRequest((req) => setPasskeyVerify(req)),
       onPasskeyChanged((rp, kind) => {
