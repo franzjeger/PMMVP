@@ -55,13 +55,15 @@ Current version: **0.2.0**
 | **macOS** | Daily driver. Signed + notarizable releases, see [`docs/RELEASING.md`](./docs/RELEASING.md). |
 | **Windows** | Working, including the ssh-agent named pipe. Built in CI. |
 | **Linux** | Builds and passes CI (incl. X11/Wayland clipboard smoke tests) but has **never been run by a human**. Treat as untested. |
-| **iOS** | Scaffolded in `apps/ios/`. A read-only viewer + AutoFill provider, with Face ID quick unlock. Sync is wired end to end (C ABI v5 + Swift + its own Google OAuth client), but no successful sign-in has been completed yet. Compiled by CI, **never run on a device**. See [`docs/IOS.md`](./docs/IOS.md). |
+| **iOS** | In `apps/ios/`: unlock, search, add/edit/delete logins, an AutoFill provider, Face ID quick unlock, and sync (C ABI v6 + Swift + its own Google OAuth client). Runs in the simulator; **never run on a device**, and no Google sign-in has completed from the phone yet. See [`docs/IOS.md`](./docs/IOS.md). |
 | **Android** | Not built. |
 | **System-wide macOS AutoFill** | Shelved. It works technically, but Touch ID on every fill and a fight with Apple's own password menu made it worse than the browser extension. Source kept in `apps/macos/`. |
 
-Auto-update is prepared but **not wired up**: the signing key exists, the plugin
-and release manifest do not. A new version currently means replacing the app by
-hand ([`docs/RELEASING.md`](./docs/RELEASING.md)).
+Auto-update is **wired but has nothing to update to**: the signing key, the
+plugin and the endpoint are all in place, and no release has ever been
+published, so the manifest that endpoint points at does not exist. Until one is,
+a new version means replacing the app by hand
+([`docs/RELEASING.md`](./docs/RELEASING.md)).
 
 ## Architecture
 
@@ -122,7 +124,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cd apps/desktop && npm ci && npm test   # frontend component tests
 ```
 
-Around 173 Rust tests plus 9 frontend tests. `vault-core` has no I/O and is the
+Around 180 Rust tests plus 9 frontend tests. `vault-core` has no I/O and is the
 security-critical surface: its tests cover encrypt/decrypt round-trips,
 wrong-password failure, AEAD tamper detection, KDF determinism, TOTP RFC 6238
 vectors, the on-disk item codec, sync merge and quick-unlock key drift.
