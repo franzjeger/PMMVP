@@ -72,6 +72,12 @@ targets:
       # The Swift/Rust bridge is platform-agnostic and shared with apps/macos.
       - path: ../apple-shared/VaultBridge.swift
         group: Shared
+      # App target ONLY: the sign-in needs UIApplication for its presentation
+      # anchor, which is unavailable in an app extension — and an extension has
+      # no window to present from anyway. The extension only ever reads a vault
+      # somebody else synced.
+      - path: ../apple-shared/VaultSync.swift
+        group: Shared
     settings:
       base:
         PRODUCT_NAME: Arca

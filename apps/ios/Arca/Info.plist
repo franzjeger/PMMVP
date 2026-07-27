@@ -21,6 +21,21 @@
     <string>$(CURRENT_PROJECT_VERSION)</string>
     <!-- Required since iOS 14; without it the app is letterboxed at a smaller
          screen size on modern devices. Empty means "plain background colour". -->
+    <!-- Catches the Google OAuth redirect. ASWebAuthenticationSession will
+         not hand back a callback for a scheme the app does not claim, so sync
+         sign-in silently never completes without this. Must match
+         SyncSignIn.redirectURI and the redirect URI on the OAuth client. -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>no.sybr.vault.ios.oauth</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>no.sybr.vault.ios</string>
+            </array>
+        </dict>
+    </array>
     <key>UILaunchScreen</key>
     <dict/>
     <key>UISupportedInterfaceOrientations</key>

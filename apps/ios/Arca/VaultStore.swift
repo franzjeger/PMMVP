@@ -44,6 +44,11 @@ final class VaultStore {
 
     /// Held only while unlocked.
     private var session: VaultSession?
+    /// The sync engine, alive for as long as the session it wraps.
+    private var sync: VaultSync?
+    /// Last known sync state, for the UI. `nil` until asked.
+    private(set) var syncStatus: SyncStatus?
+    private(set) var syncing = false
 
     nonisolated init() {}
 
@@ -101,6 +106,9 @@ final class VaultStore {
             // QuickType bar, and it is metadata only, so nobody should be made
             // to wait behind it to see their own vault.
             autoFillEnabled = await CredentialIdentities.replace(with: self.identities)
+            // Sync last: it is network-bound and nobody should wait behind it to
+            // see their own vault.
+            await startSync(session)
         } catch {
             log.error("unlock failed: \(vaultLogMessage(for: error), privacy: .public)")
             failure = Self.cancelled(error) ? nil : Self.message(error, fallback: fallback)
@@ -143,6 +151,8 @@ final class VaultStore {
         //
         // Frees the Rust handle on the vault queue, which re-seals and zeroizes.
         session = nil
+        sync = nil
+        syncStatus = nil
         identities = []
         query = ""
         failure = nil
@@ -182,6 +192,8 @@ final class VaultStore {
             // we just changed; leaving either stale means the keyboard offers
             // yesterday's logins.
             await reload(session)
+            // Tell the engine there is something to push; the next cycle sends it.
+            await sync?.markDirty()
             return nil
         } catch {
             log.error("save login failed: \(vaultLogMessage(for: error), privacy: .public)")
@@ -217,6 +229,79 @@ final class VaultStore {
             log.error("reload failed: \(vaultLogMessage(for: error), privacy: .public)")
             failure = Self.message(error, fallback: "Saved, but the list is out of date.")
         }
+    }
+
+    // MARK: - Sync
+
+    /// Whether a Google credential is stored on this device (no keychain read).
+    var syncConnected: Bool { SyncCredentialStore.exists }
+
+    /// Build the engine for a freshly opened vault and, if this device is
+    /// already signed in, reconnect and pull.
+    private func startSync(_ session: VaultSession) async {
+        do {
+            let engine = try await session.makeSync()
+            sync = engine
+            guard let token = SyncCredentialStore.load() else { return }
+            try await engine.connect(refreshToken: token, account: nil)
+            await runSync()
+        } catch {
+            // A sync that cannot start must never block using the vault.
+            log.error("sync start failed: \(vaultLogMessage(for: error), privacy: .public)")
+        }
+    }
+
+    /// Run one cycle and fold the result into the UI.
+    func runSync() async {
+        guard let sync, !syncing else { return }
+        syncing = true
+        defer { syncing = false }
+        do {
+            let status = try await sync.syncNow()
+            syncStatus = status
+            // A merge rewrote the vault file AND the shared in-memory vault, so
+            // the list on screen is now behind what the engine already holds.
+            if status.merged, let session { await reload(session) }
+            if let message = status.lastError { failure = message }
+        } catch {
+            log.error("sync failed: \(vaultLogMessage(for: error), privacy: .public)")
+            failure = Self.message(error, fallback: "Sync failed.")
+        }
+    }
+
+    /// Sign in to Google and start syncing. The consent screen is presented by
+    /// `SyncSignIn`; the PKCE verifier never leaves Rust.
+    func connectSync() async {
+        guard let sync else { return }
+        syncing = true
+        defer { syncing = false }
+        do {
+            let (token, account) = try await SyncSignIn().run()
+            // Store BEFORE connecting: a token the engine uses but that was
+            // never persisted works until the app quits and then silently stops.
+            try SyncCredentialStore.save(token)
+            try await sync.connect(refreshToken: token, account: account)
+            await runSync()
+        } catch SyncError.cancelled {
+            // The user closed the sheet. Not an error.
+        } catch {
+            log.error("sync connect failed: \(vaultLogMessage(for: error), privacy: .public)")
+            failure = Self.message(error, fallback: "Couldn't connect to Google.")
+        }
+    }
+
+    /// Stop syncing and forget the credential on this device. The vault itself
+    /// and the copy in Drive are both left alone.
+    func disconnectSync() async {
+        do {
+            try await sync?.disconnect()
+        } catch {
+            log.error("sync disconnect failed: \(vaultLogMessage(for: error), privacy: .public)")
+        }
+        // Delete the token even if the engine call failed, or the next launch
+        // would reconnect to an account the user just asked to forget.
+        SyncCredentialStore.delete()
+        syncStatus = nil
     }
 
     /// Import a vault picked from Files. Takes the picker's `Result` whole so

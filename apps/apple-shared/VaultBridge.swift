@@ -550,6 +550,19 @@ final class VaultSession: @unchecked Sendable {
     /// Not cancellable: neither the biometric prompt nor Argon2id can be
     /// interrupted once started, so pretending otherwise would be a lie. They are
     /// bounded — the prompt by the user, the KDF by the header's parameters.
+    /// The same queue, for the sync surface in VaultSync.swift. Sharing it is
+    /// the point: `vault_ffi_sync_*` and `vault_ffi_*` touch the same vault, and
+    /// the C ABI forbids overlapping calls on it.
+    static func runSync<T: Sendable>(
+        _ work: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        try await run(work)
+    }
+
+    /// The raw handle, for `vault_ffi_sync_new`. Not for general use: everything
+    /// else goes through a method that keeps the call on the queue.
+    var rawHandle: OpaquePointer { handle }
+
     private static func run<T: Sendable>(
         _ work: @escaping @Sendable () throws -> T
     ) async throws -> T {

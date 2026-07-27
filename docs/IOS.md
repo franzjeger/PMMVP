@@ -83,9 +83,25 @@ portable form:
   keychain, and merged vault bytes come back from `_sync_now` for the app group
   container. `vault-core` is I/O-free and the FFI stays a thin wrapper over it.
 
-What is left is **Swift**: a `VaultSync` wrapper next to `VaultSession`, keychain
-storage for the refresh token, an `ASWebAuthenticationSession` sign-in, and the
-UI to drive them. Until that exists the phone still gets its vault by AirDrop.
+The Swift side now exists: `apps/apple-shared/VaultSync.swift` wraps the nine
+exports, `SyncCredentialStore` keeps the refresh token in the iOS keychain
+(`afterFirstUnlockThisDeviceOnly`, deliberately *without* a biometric ACL so a
+background cycle can run — it unlocks ciphertext, not the vault), and `SyncSignIn`
+drives `ASWebAuthenticationSession`. The list's menu offers connect / sync now /
+stop syncing, and a local save marks the engine dirty so the next cycle pushes it.
+
+**One blocker remains, and it is configuration, not code.** Run on a simulator,
+the flow reaches Google and comes back `400 redirect_uri_mismatch`. The project's
+OAuth client is a **desktop** client, whose only redirect is a loopback address;
+custom schemes cannot be added to that type. iOS needs its **own OAuth client**
+in the same GCP project, created as an iOS client for bundle id
+`no.sybr.vault.ios`, whose redirect is the reversed client id
+(`com.googleusercontent.apps.<id>:/oauth2redirect`).
+
+That has a code consequence: `vault-sync` hardcodes one client id, so it needs a
+per-platform one before an iOS sign-in can succeed. Everything on either side of
+that — the URL, the PKCE verifier staying in Rust, the session, the callback
+scheme, the cancel path — is verified working.
 
 ### 2. Widen the FFI to write
 

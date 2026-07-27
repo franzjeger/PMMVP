@@ -55,6 +55,21 @@ struct VaultListView: View {
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     Menu("Options", systemImage: "ellipsis.circle") {
+                        if store.syncConnected {
+                            Button("Sync now", systemImage: "arrow.triangle.2.circlepath") {
+                                Task { await store.runSync() }
+                            }
+                            .disabled(store.syncing)
+                            Button("Stop syncing", systemImage: "icloud.slash", role: .destructive) {
+                                Task { await store.disconnectSync() }
+                            }
+                        } else {
+                            Button("Sync with Google Drive", systemImage: "icloud") {
+                                Task { await store.connectSync() }
+                            }
+                            .disabled(store.syncing)
+                        }
+                        Divider()
                         if store.quickUnlockEnabled {
                             Button("Turn off quick unlock", systemImage: "faceid") {
                                 Task { await store.disableQuickUnlock() }
@@ -76,6 +91,9 @@ struct VaultListView: View {
                 VStack(spacing: 0) {
                     // A menu action that fails leaves no trace otherwise: the
                     // sheet is gone and the toggle simply did not move.
+                    if store.syncing {
+                        Banner(text: "Syncing with Google Drive…", bad: false)
+                    }
                     if let failure = store.failure { Banner(text: failure, bad: true) }
                     if store.autoFillEnabled == false { AutoFillHint() }
                 }
