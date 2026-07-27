@@ -101,6 +101,23 @@ impl OAuthClient {
     /// Redeem an authorization code. `redirect_uri` must be byte-identical to
     /// the one in [`authorization_url`](Self::authorization_url) — the server
     /// compares them and rejects a mismatch.
+    /// Form fields plus `client_secret` only when there is one.
+    ///
+    /// A public client (iOS) has no secret, and Google rejects the request when
+    /// an empty one is sent rather than ignoring it. PKCE is what binds the code
+    /// to this process either way.
+    fn with_client_auth<'a>(&'a self, base: Vec<(&'a str, &'a str)>) -> Vec<(&'a str, &'a str)> {
+        let mut fields = base;
+        fields.insert(0, ("client_id", self.credentials.client_id.as_str()));
+        if !self.credentials.client_secret.is_empty() {
+            fields.insert(
+                1,
+                ("client_secret", self.credentials.client_secret.as_str()),
+            );
+        }
+        fields
+    }
+
     pub fn exchange_code(
         &self,
         code: &str,
@@ -110,14 +127,12 @@ impl OAuthClient {
         let resp: serde_json::Value = self
             .http
             .post("https://oauth2.googleapis.com/token")
-            .form(&[
-                ("client_id", self.credentials.client_id.as_str()),
-                ("client_secret", self.credentials.client_secret.as_str()),
+            .form(&self.with_client_auth(vec![
                 ("code", code),
                 ("code_verifier", pkce.verifier.as_str()),
                 ("grant_type", "authorization_code"),
                 ("redirect_uri", redirect_uri),
-            ])
+            ]))
             .send()
             .map_err(|e| format!("token exchange failed: {e}"))?
             .json()
@@ -147,12 +162,10 @@ impl OAuthClient {
         let resp: serde_json::Value = self
             .http
             .post("https://oauth2.googleapis.com/token")
-            .form(&[
-                ("client_id", self.credentials.client_id.as_str()),
-                ("client_secret", self.credentials.client_secret.as_str()),
+            .form(&self.with_client_auth(vec![
                 ("refresh_token", refresh_token),
                 ("grant_type", "refresh_token"),
-            ])
+            ]))
             .send()
             .map_err(|e| format!("token refresh failed: {e}"))?
             .json()
@@ -251,5 +264,34 @@ mod tests {
             !url.contains("client_secret"),
             "the secret belongs in the token POST, never in a browser URL"
         );
+    }
+
+    // A public client (iOS) has no secret, and Google rejects a request that
+    // sends an empty one — so "omit it" is a correctness requirement, not
+    // tidiness. Easy to undo by inlining the form fields again, hence the test.
+    #[test]
+    fn client_secret_is_sent_only_when_there_is_one() {
+        let with = OAuthClient::new(AppCredentials {
+            client_id: "id".into(),
+            client_secret: "shhh".into(),
+            scope: "s".into(),
+        });
+        let fields = with.with_client_auth(vec![("grant_type", "refresh_token")]);
+        assert!(fields
+            .iter()
+            .any(|(k, v)| *k == "client_secret" && *v == "shhh"));
+        assert!(fields.iter().any(|(k, _)| *k == "client_id"));
+
+        let without = OAuthClient::new(AppCredentials {
+            client_id: "id".into(),
+            client_secret: String::new(),
+            scope: "s".into(),
+        });
+        let fields = without.with_client_auth(vec![("grant_type", "refresh_token")]);
+        assert!(
+            !fields.iter().any(|(k, _)| *k == "client_secret"),
+            "an empty secret must be omitted entirely, not sent as \"\""
+        );
+        assert!(fields.iter().any(|(k, _)| *k == "client_id"));
     }
 }

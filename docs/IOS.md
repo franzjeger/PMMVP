@@ -90,18 +90,32 @@ background cycle can run — it unlocks ciphertext, not the vault), and `SyncSig
 drives `ASWebAuthenticationSession`. The list's menu offers connect / sync now /
 stop syncing, and a local save marks the engine dirty so the next cycle pushes it.
 
-**One blocker remains, and it is configuration, not code.** Run on a simulator,
-the flow reaches Google and comes back `400 redirect_uri_mismatch`. The project's
-OAuth client is a **desktop** client, whose only redirect is a loopback address;
-custom schemes cannot be added to that type. iOS needs its **own OAuth client**
-in the same GCP project, created as an iOS client for bundle id
-`no.sybr.vault.ios`, whose redirect is the reversed client id
-(`com.googleusercontent.apps.<id>:/oauth2redirect`).
+**The OAuth client is now in place.** Running this on a simulator first came
+back `400 redirect_uri_mismatch`: the project had only a **desktop** client,
+whose sole redirect is a loopback address, and a custom scheme cannot be added
+to that type. An iOS client (`Arca iOS`, bundle id `no.sybr.vault.ios`) now
+exists in the same GCP project, so both platforms reach the same
+`appDataFolder` and sync with each other.
 
-That has a code consequence: `vault-sync` hardcodes one client id, so it needs a
-per-platform one before an iOS sign-in can succeed. Everything on either side of
-that — the URL, the PKCE verifier staying in Rust, the session, the callback
-scheme, the cancel path — is verified working.
+Three things follow from that, and all three have to carry the same value or the
+consent page fails the same way:
+
+- `REDIRECT_URI` / `CLIENT_ID` in `vault-sync/src/drive.rs`, behind
+  `cfg(target_os = "ios")`.
+- `SyncSignIn.redirectURI` and its callback scheme.
+- `CFBundleURLSchemes` in the app's Info.plist.
+
+An iOS client is a **public** client: Google issues no secret for it and rejects
+a request that sends an empty one, so the token calls now omit `client_secret`
+entirely when there is none. PKCE is what binds the code to this process either
+way. That is pinned by a test, because inlining the form fields again would undo
+it silently.
+
+**Not yet verified end to end.** The sign-in was confirmed to reach Google and
+present the consent page, and the cancel path is clean, but no successful
+sign-in has completed — that needs a real Google account, so it is Frank's to
+run. Google also warns that a new client can take from five minutes to a few
+hours to take effect.
 
 ### 2. Widen the FFI to write
 

@@ -236,20 +236,16 @@ private final class SyncAuthBox: @unchecked Sendable {
 
 @MainActor
 final class SyncSignIn: NSObject, ASWebAuthenticationPresentationContextProviding {
-    /// Must match a redirect URI registered for the OAuth client, and the app's
-    /// CFBundleURLSchemes.
+    /// Google accepts exactly one redirect for an iOS OAuth client: its own
+    /// reversed client id. Not a scheme we chose — the client id decides it, so
+    /// this string, `CFBundleURLSchemes` in Info.plist, and `REDIRECT_URI` in
+    /// vault-sync's drive.rs all have to carry the same value.
     ///
-    /// NOT YET REGISTERED. Verified against Google on a simulator: the whole
-    /// chain works and Google answers `400 redirect_uri_mismatch`, because the
-    /// project's OAuth client is a *desktop* client whose only redirect is a
-    /// loopback address — a custom scheme cannot be added to that type. iOS
-    /// needs its own client in the same GCP project (bundle id
-    /// no.sybr.vault.ios), whose redirect is the reversed client id
-    /// `com.googleusercontent.apps.<id>:/oauth2redirect`. That also means
-    /// `vault-sync` must carry a per-platform client id, since the desktop's
-    /// cannot be reused here. See docs/IOS.md.
-    nonisolated static let redirectURI = "no.sybr.vault.ios:/oauth2redirect"
-    nonisolated private static let scheme = "no.sybr.vault.ios"
+    /// Getting it wrong is not subtle: Google answers `400
+    /// redirect_uri_mismatch` on the consent page, which is exactly what the
+    /// desktop client's loopback redirect did here before this client existed.
+    nonisolated static let redirectURI = "com.googleusercontent.apps.269591410733-ltlkje5t7p8gajnp8vvk3gp9223nheu7:/oauth2redirect"
+    nonisolated private static let scheme = "com.googleusercontent.apps.269591410733-ltlkje5t7p8gajnp8vvk3gp9223nheu7"
 
     private var session: ASWebAuthenticationSession?
 

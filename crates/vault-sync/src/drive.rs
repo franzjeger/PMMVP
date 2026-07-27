@@ -17,12 +17,37 @@ use zeroize::Zeroizing;
 use crate::oauth::{AppCredentials, OAuthClient};
 use crate::{CycleError, RemoteFile, RemoteStore};
 
-/// The OAuth client for the "Arca" desktop app, shared by every Arca client so
-/// they all reach the same `appDataFolder`. See [`AppCredentials`] on why an
-/// installed-app secret is not a secret.
+/// The OAuth client, per platform. Both live in the same Google Cloud project
+/// and ask for the same scope, so every Arca client reaches the same
+/// `appDataFolder` and syncs with the others.
+///
+/// Two clients rather than one because Google ties the redirect to the client
+/// TYPE. The desktop client redirects to a loopback address, which iOS cannot
+/// bind and cannot register a custom scheme against; an iOS client redirects to
+/// its own reversed client id. Reusing the desktop client from the phone is
+/// what produces `400 redirect_uri_mismatch`.
+///
+/// See [`AppCredentials`] on why an installed-app secret is not a secret.
+#[cfg(not(target_os = "ios"))]
 pub const CLIENT_ID: &str =
     "269591410733-ger46m91l3ne5qmcrivhg1jo698gieck.apps.googleusercontent.com";
+#[cfg(not(target_os = "ios"))]
 pub const CLIENT_SECRET: &str = "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";
+
+/// iOS client (bundle id `no.sybr.vault.ios`). Public: Google issues NO secret
+/// for this type, and sending an empty one is rejected — see `form_fields`.
+#[cfg(target_os = "ios")]
+pub const CLIENT_ID: &str =
+    "269591410733-ltlkje5t7p8gajnp8vvk3gp9223nheu7.apps.googleusercontent.com";
+#[cfg(target_os = "ios")]
+pub const CLIENT_SECRET: &str = "";
+
+/// The redirect this build's client is registered for. iOS uses the reversed
+/// client id, which is the only form Google accepts for an iOS client; the
+/// desktop catches a loopback address chosen at runtime, so it has none here.
+#[cfg(target_os = "ios")]
+pub const REDIRECT_URI: &str =
+    "com.googleusercontent.apps.269591410733-ltlkje5t7p8gajnp8vvk3gp9223nheu7:/oauth2redirect";
 
 /// Arca's own hidden folder, and nothing else in the user's Drive.
 pub const SCOPE: &str = "https://www.googleapis.com/auth/drive.appdata";

@@ -21,10 +21,12 @@
     <string>$(CURRENT_PROJECT_VERSION)</string>
     <!-- Required since iOS 14; without it the app is letterboxed at a smaller
          screen size on modern devices. Empty means "plain background colour". -->
-    <!-- Catches the Google OAuth redirect. ASWebAuthenticationSession will
-         not hand back a callback for a scheme the app does not claim, so sync
-         sign-in silently never completes without this. Must match
-         SyncSignIn.redirectURI and the redirect URI on the OAuth client. -->
+    <!-- Catches the Google OAuth redirect. ASWebAuthenticationSession will not
+         hand back a callback for a scheme the app does not claim, so sync
+         sign-in silently never completes without this.
+         The value is the REVERSED client id of the iOS OAuth client: Google
+         accepts no other redirect for that client type. Keep it in step with
+         SyncSignIn.redirectURI and REDIRECT_URI in vault-sync/src/drive.rs. -->
     <key>CFBundleURLTypes</key>
     <array>
         <dict>
@@ -32,7 +34,7 @@
             <string>no.sybr.vault.ios.oauth</string>
             <key>CFBundleURLSchemes</key>
             <array>
-                <string>no.sybr.vault.ios</string>
+                <string>com.googleusercontent.apps.269591410733-ltlkje5t7p8gajnp8vvk3gp9223nheu7</string>
             </array>
         </dict>
     </array>
