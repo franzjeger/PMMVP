@@ -206,3 +206,45 @@ pub fn merge_remotes(vault: &mut vault_core::Vault, remotes: &[Vec<u8>]) -> Resu
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod merge_remotes_tests {
+    use super::*;
+    use vault_core::header::{KdfAlgorithm, KdfParams};
+    use vault_core::Vault;
+
+    fn cheap_vault() -> Vault {
+        // A deliberately weak KDF: these tests are about how a remote is
+        // classified, not about how long Argon2id takes.
+        Vault::create(
+            "pw",
+            KdfParams {
+                algorithm: KdfAlgorithm::Argon2id,
+                m_cost_kib: 256,
+                t_cost: 1,
+                p_cost: 1,
+                salt: vec![7u8; KdfParams::SALT_LEN],
+            },
+        )
+        .unwrap()
+    }
+
+    /// The distinction that protects the user's data. `Format` means "replace
+    /// it with ours", so a vault written by a newer Arca landing in that arm
+    /// would be overwritten and everything it holds lost.
+    #[test]
+    fn a_newer_container_is_refused_while_a_torn_one_is_skipped() {
+        let mut vault = cheap_vault();
+
+        let mut newer = b"SYBRVLT9".to_vec();
+        newer.extend_from_slice(&[0u8; 64]);
+        assert!(matches!(
+            merge_remotes(&mut vault, &[newer]),
+            Err(LocalError::RemoteTooNew)
+        ));
+
+        // Half an upload is not content worth keeping, and refusing it would
+        // wedge every future sync behind one bad file.
+        assert!(merge_remotes(&mut vault, &[b"garbage".to_vec()]).is_ok());
+    }
+}

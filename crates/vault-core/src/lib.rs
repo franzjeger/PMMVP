@@ -188,11 +188,16 @@ mod tests {
         vault.upsert_item(Item::new(sample_login(), 1)).unwrap();
         let mut bytes = vault.to_bytes().unwrap();
 
-        // Flip a byte well past the header/magic, inside the item ciphertext.
-        let last = bytes.len() - 1;
-        bytes[last] ^= 0xff;
+        // The body now ends with the purge list, which is empty here and so is
+        // exactly bincode's 8-byte length. The byte before that is the last
+        // byte of the item ciphertext. Flipping the length instead would break
+        // the parse rather than the AEAD, which is a different claim.
+        let last_ciphertext_byte = bytes.len() - 9;
+        bytes[last_ciphertext_byte] ^= 0xff;
 
-        let mut reloaded = Vault::from_bytes(&bytes).unwrap();
+        // Framing must survive, or the flip landed somewhere else and the
+        // assertion below would pass for the wrong reason.
+        let mut reloaded = Vault::from_bytes(&bytes).expect("framing must still parse");
         assert!(matches!(reloaded.unlock("pw"), Err(Error::Decryption)));
     }
 
@@ -211,9 +216,9 @@ mod tests {
         assert_eq!(vault.list_items(false).unwrap().len(), 1);
 
         vault.delete_item(id, 40).unwrap();
-        vault.purge_item(id).unwrap();
+        vault.purge_item(id, 50).unwrap();
         assert_eq!(vault.list_items(true).unwrap().len(), 0);
-        assert!(matches!(vault.purge_item(id), Err(Error::NotFound)));
+        assert!(matches!(vault.purge_item(id, 60), Err(Error::NotFound)));
     }
 
     #[test]

@@ -1617,7 +1617,7 @@ fn do_purge_item(state: &Mutex<AppState>, id: &str) -> Result<(), CmdError> {
     let mut st = guard(state)?;
     st.touch();
     let uuid = parse_id(id)?;
-    st.vault_mut()?.purge_item(uuid)?;
+    st.vault_mut()?.purge_item(uuid, now_millis())?;
     persist(&mut st)?;
     Ok(())
 }

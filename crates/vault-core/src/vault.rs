@@ -2,14 +2,19 @@
 //!
 //! On-disk layout produced by [`Vault::to_bytes`]:
 //! ```text
-//! "SYBRVLT2"            (8-byte magic + container version; V1 still readable)
+//! "SYBRVLT3"            (8-byte magic + container version; V2 and V1 readable)
 //! bincode(VaultBody {   (cleartext header + per-item ciphertext)
 //!     header,
 //!     items: [ { id, AeadBlob }, ... ],
+//!     purges: [ { id, at }, ... ],
 //! })
 //! ```
 //! The header is cleartext (public KDF params + wrapped keys); every item is
 //! sealed individually with the vault key, with the item id bound as AAD.
+//!
+//! `purges` is cleartext too, and holds nothing else: it is the record of a
+//! hard delete, so a peer that still has the item cannot push it back. See
+//! [`crate::sync::Purge`].
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -20,13 +25,15 @@ use crate::error::{Error, Result};
 use crate::header::{KdfParams, VaultHeader};
 use crate::item::{Item, ItemSummary};
 use crate::secret::SymmetricKey;
+use crate::sync::Purge;
 
-/// Container magics. V1 framed the v2 header (no rewrap epoch); V2 frames the
-/// current header. Both are readable; writes always use the current magic.
-/// (The outer bincode framing is positional, so a header field addition needs
-/// its own container magic rather than a serde default.)
+/// Container magics. V1 framed the v2 header (no rewrap epoch); V2 added the
+/// rewrap epoch; V3 adds the purge list. All are readable; writes always use
+/// the current magic. (The outer bincode framing is positional, so any field
+/// addition needs its own container magic rather than a serde default.)
 const MAGIC_V1: &[u8; 8] = b"SYBRVLT1";
-const MAGIC: &[u8; 8] = b"SYBRVLT2";
+const MAGIC_V2: &[u8; 8] = b"SYBRVLT2";
+const MAGIC: &[u8; 8] = b"SYBRVLT3";
 
 /// Fixed AAD context for the device-key (quick-unlock) wrap.
 const DEVICE_UNLOCK_AAD: &[u8] = b"sybr-vault/device-unlock/v1";
@@ -41,6 +48,14 @@ struct EncryptedItem {
 /// The serialized body following the magic bytes.
 #[derive(Serialize, Deserialize)]
 struct VaultBody {
+    header: VaultHeader,
+    items: Vec<EncryptedItem>,
+    purges: Vec<Purge>,
+}
+
+/// Body layout of `SYBRVLT2` containers: the current header, no purge list.
+#[derive(Deserialize)]
+struct BodyWithoutPurges {
     header: VaultHeader,
     items: Vec<EncryptedItem>,
 }
@@ -68,6 +83,9 @@ enum VaultState {
 /// existing (locked) one with [`Vault::from_bytes`] then [`Vault::unlock`].
 pub struct Vault {
     header: VaultHeader,
+    /// Hard deletes, so emptying the Trash survives a merge. Outside
+    /// [`VaultState`] because it is not secret and must persist while locked.
+    purges: Vec<Purge>,
     state: VaultState,
 }
 
@@ -90,6 +108,7 @@ impl Vault {
 
         Ok(Self {
             header,
+            purges: Vec::new(),
             state: VaultState::Unlocked {
                 vault_key,
                 items: Vec::new(),
@@ -103,23 +122,39 @@ impl Vault {
         if bytes.len() < MAGIC.len() {
             return Err(Error::Format);
         }
-        let (header, items) = match &bytes[..MAGIC.len()] {
+        let (header, items, purges) = match &bytes[..MAGIC.len()] {
             m if m == MAGIC => {
                 let body: VaultBody = bincode::deserialize(&bytes[MAGIC.len()..])
                     .map_err(|_| Error::Serialization)?;
-                (body.header, body.items)
+                (body.header, body.items, body.purges)
+            }
+            m if m == MAGIC_V2 => {
+                // Written before hard deletes left a record. An empty purge
+                // list is the truth about such a file, not a fallback.
+                let body: BodyWithoutPurges = bincode::deserialize(&bytes[MAGIC.len()..])
+                    .map_err(|_| Error::Serialization)?;
+                (body.header, body.items, Vec::new())
             }
             m if m == MAGIC_V1 => {
                 // Legacy container: v2 header without the rewrap epoch.
                 let body: LegacyBodyV2 = bincode::deserialize(&bytes[MAGIC.len()..])
                     .map_err(|_| Error::Serialization)?;
-                (body.header.into(), body.items)
+                (body.header.into(), body.items, Vec::new())
             }
+            // A container we do not know. Whether it is *ours* matters enormously:
+            // callers treat `Format` as a torn upload and replace the file with
+            // their own copy, which for a vault written by a NEWER Arca would
+            // destroy every change it holds. Every container we have ever
+            // written starts `SYBRVLT`, so that prefix means "newer than me",
+            // not "garbage" — and refusing costs a sync error, while guessing
+            // wrong costs data.
+            m if m.starts_with(b"SYBRVLT") => return Err(Error::UnsupportedVersion),
             _ => return Err(Error::Format),
         };
         header.check_supported()?;
         Ok(Self {
             header,
+            purges,
             state: VaultState::Locked { items },
         })
     }
@@ -135,7 +170,11 @@ impl Vault {
         // We always write the current container; stamp the version accordingly
         // (a legacy-loaded header still carries its old number).
         header.format_version = VaultHeader::FORMAT_VERSION;
-        let body = VaultBody { header, items };
+        let body = VaultBody {
+            header,
+            items,
+            purges: self.purges.clone(),
+        };
         let mut out = Vec::with_capacity(MAGIC.len() + 64);
         out.extend_from_slice(MAGIC);
         let encoded = bincode::serialize(&body).map_err(|_| Error::Serialization)?;
@@ -258,6 +297,7 @@ impl Vault {
     pub fn merge_remote(&mut self, remote_bytes: &[u8]) -> Result<()> {
         let remote = Self::from_bytes(remote_bytes)?;
         let remote_header = remote.header;
+        let remote_purges = remote.purges;
         let remote_enc = match remote.state {
             VaultState::Locked { items } => items,
             // `from_bytes` always yields a locked vault.
@@ -267,8 +307,11 @@ impl Vault {
             return Err(Error::Locked);
         };
         let remote_items = decrypt_items(vault_key, &remote_enc)?;
+        // Purges first, then applied to the union: a hard delete on either side
+        // has to reach items that only the other side still had.
+        self.purges = crate::sync::merge_purges(core::mem::take(&mut self.purges), remote_purges);
         let local = core::mem::take(items);
-        *items = crate::sync::merge(local, remote_items);
+        *items = crate::sync::apply_purges(crate::sync::merge(local, remote_items), &self.purges);
         // Header: adopt a NEWER master rewrap (password rotation / KDF upgrade)
         // from the peer. The vault key itself never changes on rotation, so the
         // local device wrap stays valid and is kept.
@@ -326,13 +369,22 @@ impl Vault {
     }
 
     /// Permanently remove an item (empties it from the Trash).
-    pub fn purge_item(&mut self, id: Uuid) -> Result<()> {
+    ///
+    /// Leaves a [`Purge`] behind. That record is the whole difference between
+    /// this and dropping the item on the floor: without it, the next merge with
+    /// a peer that still holds the item puts it straight back, and the one
+    /// credential a user destroys on purpose is the one most likely to return.
+    pub fn purge_item(&mut self, id: Uuid, now_unix_millis: i64) -> Result<()> {
         let items = self.unlocked_items_mut()?;
         let before = items.len();
         items.retain(|i| i.id != id);
         if items.len() == before {
             return Err(Error::NotFound);
         }
+        self.purges.push(Purge {
+            id,
+            at: now_unix_millis,
+        });
         Ok(())
     }
 
@@ -624,6 +676,114 @@ mod tests {
         a.merge_remote(&remote).unwrap();
         let item = a.get_item(Uuid::from_bytes([1; 16])).unwrap();
         assert_eq!(item.data.title(), "new");
+    }
+
+    /// The whole point, at the level a user would recognise: empty the Trash on
+    /// this device, sync with a phone that never heard about it, and the
+    /// credential must stay gone.
+    #[test]
+    fn a_purge_survives_a_merge_with_a_peer_that_still_has_the_item() {
+        let id = Uuid::from_bytes([1; 16]);
+        let mut desktop = Vault::create("pw", cheap_params()).unwrap();
+        desktop.upsert_item(login_item(1, "leaked", 10)).unwrap();
+
+        // The phone syncs, so it now holds the item too.
+        let shared = desktop.to_bytes().unwrap();
+        let mut phone = Vault::from_bytes(&shared).unwrap();
+        phone.unlock("pw").unwrap();
+
+        // The desktop deletes it for good.
+        desktop.delete_item(id, 20).unwrap();
+        desktop.purge_item(id, 30).unwrap();
+        assert!(matches!(desktop.get_item(id), Err(Error::NotFound)));
+
+        // Both directions: the phone's copy must not come back here, and the
+        // purge must reach the phone rather than only living on this device.
+        desktop.merge_remote(&phone.to_bytes().unwrap()).unwrap();
+        assert!(
+            matches!(desktop.get_item(id), Err(Error::NotFound)),
+            "the peer's copy resurrected a purged item"
+        );
+
+        phone.merge_remote(&desktop.to_bytes().unwrap()).unwrap();
+        assert!(
+            matches!(phone.get_item(id), Err(Error::NotFound)),
+            "the purge never propagated to the peer"
+        );
+    }
+
+    /// A purge record is worth nothing if it does not survive being written and
+    /// read back, which is the only form it ever travels in.
+    #[test]
+    fn purges_round_trip_through_the_container() {
+        let id = Uuid::from_bytes([7; 16]);
+        let mut vault = Vault::create("pw", cheap_params()).unwrap();
+        vault.upsert_item(login_item(7, "gone", 10)).unwrap();
+        vault.purge_item(id, 40).unwrap();
+
+        let mut reloaded = Vault::from_bytes(&vault.to_bytes().unwrap()).unwrap();
+        reloaded.unlock("pw").unwrap();
+        assert_eq!(reloaded.purges, vec![Purge { id, at: 40 }]);
+
+        // And still there after a lock/unlock cycle, which re-seals the items
+        // but must not quietly drop what sits outside them.
+        reloaded.lock();
+        assert_eq!(reloaded.purges.len(), 1);
+    }
+
+    /// Vaults written before purge records existed must still open. They simply
+    /// have none, which is the truth about them, not a degraded read.
+    #[test]
+    fn a_v2_container_still_opens_and_starts_with_no_purges() {
+        let mut vault = Vault::create("pw", cheap_params()).unwrap();
+        vault.upsert_item(login_item(1, "kept", 10)).unwrap();
+
+        // Rebuild the file in the old shape: same header and items, no purge
+        // list, old magic.
+        let items = match &vault.state {
+            VaultState::Unlocked { vault_key, items } => encrypt_items(vault_key, items).unwrap(),
+            VaultState::Locked { items } => items.clone(),
+        };
+        #[derive(Serialize)]
+        struct OldBody {
+            header: VaultHeader,
+            items: Vec<EncryptedItem>,
+        }
+        let mut old = MAGIC_V2.to_vec();
+        old.extend_from_slice(
+            &bincode::serialize(&OldBody {
+                header: vault.header.clone(),
+                items,
+            })
+            .unwrap(),
+        );
+
+        let mut reloaded = Vault::from_bytes(&old).unwrap();
+        reloaded.unlock("pw").unwrap();
+        assert_eq!(reloaded.list_items(true).unwrap().len(), 1);
+        assert!(reloaded.purges.is_empty());
+    }
+
+    /// A vault from a newer Arca must be REFUSED, never treated as garbage.
+    /// Callers replace an unparseable remote with their own copy, so getting
+    /// this wrong means an old client silently overwrites a newer vault and
+    /// every change in it is gone.
+    #[test]
+    fn a_container_from_a_newer_arca_is_refused_not_mistaken_for_junk() {
+        let mut future = b"SYBRVLT9".to_vec();
+        future.extend_from_slice(&[0u8; 64]);
+        assert!(matches!(
+            Vault::from_bytes(&future),
+            Err(Error::UnsupportedVersion)
+        ));
+
+        // Something that is not one of ours at all stays `Format`: replacing a
+        // half-written or foreign file IS the right move, and conflating the
+        // two the other way would wedge sync on a torn upload forever.
+        assert!(matches!(
+            Vault::from_bytes(b"NOTAVLT1________"),
+            Err(Error::Format)
+        ));
     }
 
     #[test]

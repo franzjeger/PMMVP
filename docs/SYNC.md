@@ -21,6 +21,20 @@ changes.
   mid-write) is treated as garbage and replaced (doesn't wedge saving); a
   **valid foreign** vault is refused (not clobbered). Tested.
 - Wired into `persist` and the bridge writes: every save is now sync-aware.
+- **`sync::Purge`** — a hard `purge_item` used to leave nothing behind, so the
+  next merge with a peer that still held the item put it straight back: a
+  credential deleted on purpose, resurrected. A purge now leaves an id and a
+  timestamp that travel with the vault, and `apply_purges` drops the item
+  wherever it reappears. An edit *after* the purge still wins, exactly as it
+  does against a soft-delete tombstone. The records are never expired, because
+  expiry would resurrect items on any device offline longer than the window.
+  This is why the container is `SYBRVLT3`; V2 and V1 still open, and simply have
+  no purges, which is the truth about them.
+- **A vault from a newer Arca is refused, not replaced.** `merge_remotes` treats
+  an unparseable remote as a torn upload and overwrites it, which is right for
+  half a file and catastrophic for a vault written by a version that knows more
+  than we do. `from_bytes` now answers `UnsupportedVersion` for any unknown
+  `SYBRVLT*` container instead of `Format`. Tested.
 
 ## Google credentials, and why they are not in this repository
 
@@ -79,8 +93,5 @@ folder, which needs the path-config UI below. Flagged by an adversarial review.
    password rotation (`change_master_password`, currently unwired) ships, a
    stale-header device would revert the rotation on its next save. Add a header
    version/epoch and take the newer header before wiring password change.
-5. **Purge vs sync.** A hard `purge_item` leaves no tombstone, so a peer
-   re-introduces the item on the next merge — a "permanently deleted" credential
-   can reappear. Gate purge while sync is active, or give it a tombstone.
-6. **Status/refresh UX.** Show sync state; refresh the item list when a
+5. **Status/refresh UX.** Show sync state; refresh the item list when a
    background merge brings in a peer's changes.
