@@ -10,12 +10,14 @@ import SwiftUI
 @main
 struct ArcaApp: App {
     @State private var store = VaultStore()
+    @State private var island = TotpActivityController()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environment(store)
+                .environment(island)
                 // iOS screenshots the window on the way to the app switcher and
                 // writes that snapshot to disk. Cover it while inactive so a
                 // list of sites and usernames is never the thing photographed.
@@ -26,7 +28,12 @@ struct ArcaApp: App {
                     // Backgrounded means gone. The desktop app locks on window
                     // blur for the same reason: a suspended process holding a
                     // decrypted vault is a worse trade than retyping.
-                    if phase == .background { store.lock() }
+                    if phase == .background {
+                        store.lock()
+                        // The vault is sealed; a code taken from it must not
+                        // outlive that on the lock screen.
+                        island.stop()
+                    }
                 }
         }
     }

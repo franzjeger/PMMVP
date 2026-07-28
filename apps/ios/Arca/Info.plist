@@ -38,6 +38,10 @@
             </array>
         </dict>
     </array>
+    <!-- Without this the app can create no Live Activity at all, and the
+         failure is a silent nil rather than an error. -->
+    <key>NSSupportsLiveActivities</key>
+    <true/>
     <key>NSFaceIDUsageDescription</key>
     <string>Face ID unlocks your vault so you don't have to type the master password every time. The vault stays encrypted either way.</string>
     <key>UILaunchScreen</key>

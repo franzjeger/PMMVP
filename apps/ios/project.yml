@@ -69,6 +69,11 @@ targets:
     platform: iOS
     sources:
       - Arca
+      # The Live Activity's data shape, compiled into BOTH this target and the
+      # widget. They are separate processes: ActivityKit encodes on one side and
+      # decodes on the other, so a divergence here is a silent no-show.
+      - path: Shared/TotpActivity.swift
+        group: Shared
       # The Swift/Rust bridge is platform-agnostic and shared with apps/macos.
       - path: ../apple-shared/VaultBridge.swift
         group: Shared
@@ -97,6 +102,9 @@ targets:
       - target: ArcaAutoFill
         embed: true
         codeSign: true
+      - target: ArcaWidgets
+        embed: true
+        codeSign: true
 
   ArcaAutoFill:
     type: app-extension
@@ -113,3 +121,26 @@ targets:
         CODE_SIGN_ENTITLEMENTS: ArcaAutoFill/ArcaAutoFill.entitlements
     preBuildScripts:
       - *buildFfi
+
+  # The Dynamic Island / lock-screen Live Activity. A WidgetKit extension
+  # because `ActivityConfiguration` is only reachable from one — nothing here is
+  # a home-screen widget. It links no Rust: everything it draws arrives inside
+  # the activity's own state.
+  ArcaWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - ArcaWidgets
+      - path: Shared/TotpActivity.swift
+        group: Shared
+    settings:
+      base:
+        PRODUCT_NAME: ArcaWidgets
+        PRODUCT_BUNDLE_IDENTIFIER: no.sybr.vault.ios.widgets
+        INFOPLIST_FILE: ArcaWidgets/Info.plist
+        # Deliberately NOT linking vault-ffi: this process never opens a vault,
+        # and a bridging header pointing at Rust it cannot use is reach without
+        # purpose. The base settings supply those, so they are cleared here.
+        SWIFT_OBJC_BRIDGING_HEADER: ""
+        HEADER_SEARCH_PATHS: ""
+        OTHER_LDFLAGS: ""

@@ -186,6 +186,7 @@ struct ItemDetailView: View {
 private struct TotpSection: View {
     let item: VaultItemMeta
     @Environment(VaultStore.self) private var store
+    @Environment(TotpActivityController.self) private var island
 
     @State private var totp: VaultTotp?
     @State private var copied = false
@@ -211,6 +212,23 @@ private struct TotpSection: View {
                     SecretPasteboard.copy(totp.code)
                     copied = true
                 }
+                // Opt-in, never automatic: a Live Activity outlives this sheet
+                // and shows on the LOCK SCREEN. That has to be something asked
+                // for, not something that happens because you opened an item.
+                if island.isAvailable {
+                    if island.showingItemID == item.id {
+                        Button("Remove from Dynamic Island", systemImage: "xmark.circle") {
+                            island.stop()
+                        }
+                    } else {
+                        Button("Show in Dynamic Island", systemImage: "iphone.gen3") {
+                            island.start(
+                                item: item,
+                                code: totp,
+                                label: item.subtitle.isEmpty ? item.title : item.subtitle)
+                        }
+                    }
+                }
                 if copied {
                     Text("Copied.").font(.footnote).foregroundStyle(.secondary)
                 }
@@ -222,7 +240,14 @@ private struct TotpSection: View {
             // Re-derived rather than counted down locally: a code that keeps
             // ticking while the app was backgrounded would be confidently wrong.
             while !Task.isCancelled {
-                totp = await store.totp(for: item)
+                let next = await store.totp(for: item)
+                // Push the new code to the island only when it actually rotated,
+                // rather than once a second: an update is a system call, and 29
+                // out of 30 of them would say nothing new.
+                if let next, next.code != totp?.code, island.showingItemID == item.id {
+                    await island.refresh(code: next)
+                }
+                totp = next
                 try? await Task.sleep(for: .seconds(1))
             }
         }
