@@ -24,6 +24,7 @@ struct LoginEditView: View {
     @State private var revealed = false
     @State private var loading = false
     @State private var saving = false
+    @State private var generating = false
     @State private var failure: String?
 
     private var isEdit: Bool { existing != nil }
@@ -73,6 +74,14 @@ struct LoginEditView: View {
                         }
                         .buttonStyle(.borderless)
                         .accessibilityLabel(revealed ? "Hide password" : "Show password")
+
+                        Button {
+                            generating = true
+                        } label: {
+                            Image(systemName: "wand.and.sparkles")
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Generate a password")
                     }
                 }
                 if let failure {
@@ -96,6 +105,15 @@ struct LoginEditView: View {
                 }
             }
             .task { await load() }
+            .sheet(isPresented: $generating) {
+                PasswordGeneratorView { generated in
+                    password = generated
+                    // Revealed on purpose: a password you just generated and
+                    // cannot see is one you have no reason to trust arrived
+                    // intact, and it is going to be saved in a moment anyway.
+                    revealed = true
+                }
+            }
         }
     }
 

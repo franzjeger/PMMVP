@@ -15,6 +15,7 @@ struct VaultListView: View {
     @State private var selected: VaultItemMeta?
     @State private var editing: VaultItemMeta?
     @State private var creating = false
+    @State private var generatingPassword = false
 
     var body: some View {
         @Bindable var store = store
@@ -77,6 +78,13 @@ struct VaultListView: View {
                             .disabled(store.syncing)
                         }
                         Divider()
+                        // Also reachable from the password field when editing,
+                        // but that is no help when the account is being created
+                        // in Safari and there is nothing to edit yet.
+                        Button("Generate a password", systemImage: "wand.and.sparkles") {
+                            generatingPassword = true
+                        }
+                        Divider()
                         if store.quickUnlockEnabled {
                             Button("Turn off quick unlock", systemImage: "faceid") {
                                 Task { await store.disableQuickUnlock() }
@@ -92,6 +100,9 @@ struct VaultListView: View {
             .sheet(item: $selected) { ItemDetailView(item: $0) }
             .sheet(item: $editing) { LoginEditView(existing: $0) }
             .sheet(isPresented: $creating) { LoginEditView(existing: nil) }
+            // No `onUse`: opened on its own there is no field to fill, so
+            // Copy is the only thing that would make sense.
+            .sheet(isPresented: $generatingPassword) { PasswordGeneratorView() }
             // Only after an unlock has actually asked the store — `nil` means
             // we don't know yet, and guessing would nag people who are set up.
             .safeAreaInset(edge: .bottom) {

@@ -71,7 +71,7 @@ pub mod sync;
 ///   (the restriction on `vault_ffi_vault_free` is unchanged);
 /// * a handle's contents can now change underneath the caller, because a sync
 ///   merges a peer's items into the very vault the handle exposes.
-pub const ABI_VERSION: i32 = 7;
+pub const ABI_VERSION: i32 = 8;
 
 // Return codes.
 pub(crate) const OK: i32 = 0;
@@ -800,6 +800,54 @@ pub unsafe extern "C" fn vault_ffi_password_for_id(
     }
 }
 
+/// Generate a password. SECRET: the returned buffer is zeroized by
+/// [`vault_ffi_free`].
+///
+/// Takes no vault handle, because generating a password has nothing to do with
+/// an open vault — you want one while creating the account, which is before
+/// there is anything to save it to. `ERR_INVALID` for a zero length or for all
+/// four classes switched off, rather than quietly substituting a default: a
+/// caller that asked for no digits and got digits has been lied to.
+///
+/// The flags are separate ints rather than a bitmask so the call site says
+/// which class it means. A `1` in the wrong bit position is a bug you find in
+/// production; a wrong argument name is one the compiler can help with.
+///
+/// # Safety
+/// Out pointers must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn vault_ffi_generate_password(
+    length: usize,
+    lowercase: i32,
+    uppercase: i32,
+    digits: i32,
+    symbols: i32,
+    out_password: *mut *mut u8,
+    out_password_len: *mut usize,
+) -> i32 {
+    if out_password.is_null() || out_password_len.is_null() {
+        return ERR_NULL_ARG;
+    }
+    let opts = vault_core::password::PasswordOptions {
+        length,
+        lowercase: lowercase != 0,
+        uppercase: uppercase != 0,
+        digits: digits != 0,
+        symbols: symbols != 0,
+    };
+    match guard_result(|| {
+        // `Zeroizing<String>` wipes on drop at the end of this closure; the copy
+        // handed out is wiped by `vault_ffi_free`. Neither is left to the GC.
+        vault_core::password::generate_password(&opts).map(|pw| pw.as_bytes().to_vec())
+    }) {
+        Ok(pw) => {
+            emit(pw, out_password, out_password_len);
+            OK
+        }
+        Err(code) => code,
+    }
+}
+
 /// Run a fallible closure inside a panic guard, flattening the core error to a
 /// return code. `Ok(value)` on success, `Err(code)` on error or panic.
 fn guard_result<T>(f: impl FnOnce() -> vault_core::Result<T>) -> Result<T, i32> {
@@ -1343,8 +1391,8 @@ mod tests {
     // Pinned deliberately: clients gate features on this number, so a bump has
     // to be a conscious edit here, not a side effect.
     #[test]
-    fn abi_version_is_7() {
-        assert_eq!(vault_ffi_abi_version(), 7);
+    fn abi_version_is_8() {
+        assert_eq!(vault_ffi_abi_version(), 8);
     }
 
     // ---- every-kind surface (ABI v7) -------------------------------------
@@ -2037,6 +2085,47 @@ mod tests {
         // Refused cleanly: the vault is untouched, so a retry still works.
         assert_eq!(unsafe { vault_ffi_has_device_unlock(handle) }, 0);
         unsafe { vault_ffi_vault_free(handle) };
+    }
+
+    /// The generator's promises, checked across the ABI rather than only in
+    /// core: a caller that switches a class off must not get it back. The core
+    /// test proves the algorithm; this proves the flags survive the boundary,
+    /// which is where an argument-order slip would land.
+    #[test]
+    fn generated_passwords_honour_the_flags_they_were_given() {
+        let take = |len: usize, lo: i32, up: i32, di: i32, sy: i32| -> Option<String> {
+            let mut ptr: *mut u8 = std::ptr::null_mut();
+            let mut n: usize = 0;
+            let rc = unsafe { vault_ffi_generate_password(len, lo, up, di, sy, &mut ptr, &mut n) };
+            if rc != OK {
+                return None;
+            }
+            let s = String::from_utf8(unsafe { std::slice::from_raw_parts(ptr, n) }.to_vec())
+                .expect("generated passwords are ASCII");
+            unsafe { vault_ffi_free(ptr, n) };
+            Some(s)
+        };
+
+        // Digits only: proves the other three classes are actually excluded,
+        // and that the length is the length asked for.
+        let digits = take(32, 0, 0, 1, 0).expect("digits-only must generate");
+        assert_eq!(digits.len(), 32);
+        assert!(digits.chars().all(|c| c.is_ascii_digit()), "{digits:?}");
+
+        // Every class on, long enough that each is guaranteed a slot.
+        let all = take(40, 1, 1, 1, 1).expect("all classes must generate");
+        assert!(all.chars().any(|c| c.is_ascii_lowercase()));
+        assert!(all.chars().any(|c| c.is_ascii_uppercase()));
+        assert!(all.chars().any(|c| c.is_ascii_digit()));
+        assert!(all.chars().any(|c| !c.is_ascii_alphanumeric()));
+
+        // Two passwords in a row are not the same one. A generator wired to a
+        // seeded or stuck RNG passes every test above and none of its purpose.
+        assert_ne!(take(24, 1, 1, 1, 1), take(24, 1, 1, 1, 1));
+
+        // Refused, not silently defaulted.
+        assert!(take(0, 1, 1, 1, 1).is_none(), "zero length must be refused");
+        assert!(take(20, 0, 0, 0, 0).is_none(), "no classes must be refused");
     }
 
     /// include/vault_ffi.h is the contract Swift compiles against, and it is

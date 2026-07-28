@@ -118,6 +118,21 @@ enum Request {
         username: String,
         password: String,
     },
+    /// A fresh random password for a sign-up form.
+    ///
+    /// Deliberately does NOT require an unlocked vault. Nothing here reads or
+    /// writes one — the answer is bytes from the CSPRNG — and requiring unlock
+    /// would put a master password between the user and the one moment they are
+    /// most likely to give up and type "Sommer2026!" instead.
+    ///
+    /// Saving it does require unlock, but that is the existing save-on-submit
+    /// path and it asks at a point where the user has already committed.
+    GeneratePassword {
+        #[serde(default)]
+        length: Option<usize>,
+        #[serde(default)]
+        symbols: Option<bool>,
+    },
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -150,6 +165,10 @@ enum Response {
     },
     /// A login was stored/updated via `SaveLogin`.
     Saved,
+    /// Result of `GeneratePassword`.
+    GeneratedPassword {
+        password: String,
+    },
     Error {
         message: String,
     },
@@ -803,6 +822,25 @@ fn handle_request(
             }
             Response::Saved
         }
+        Request::GeneratePassword { length, symbols } => {
+            // Clamped rather than refused. The caller is a browser extension,
+            // and a site that caps passwords at 16 is a real thing; failing the
+            // request would send the user to type one themselves, which is the
+            // outcome this whole feature exists to avoid.
+            let opts = vault_core::password::PasswordOptions {
+                length: length.unwrap_or(20).clamp(8, 64),
+                symbols: symbols.unwrap_or(true),
+                ..Default::default()
+            };
+            match vault_core::password::generate_password(&opts) {
+                Ok(pw) => Response::GeneratedPassword {
+                    password: pw.to_string(),
+                },
+                Err(_) => Response::Error {
+                    message: "internal".into(),
+                },
+            }
+        }
     }
 }
 
@@ -1357,6 +1395,59 @@ mod tests {
             "https://github.com"
         ));
         assert!(!domain_matches("https://github.com", "https://github.org"));
+    }
+
+    /// Generation must work with the vault LOCKED.
+    ///
+    /// Every other bridge request reads or writes the vault and is right to
+    /// refuse while locked, so "check unlocked first" is the reflex here — and
+    /// applying it to this one would put a master password between the user and
+    /// the exact moment they are deciding whether to invent a password instead.
+    /// Nothing secret is read: the answer is bytes from the CSPRNG.
+    #[test]
+    fn generating_a_password_does_not_need_an_unlocked_vault() {
+        let dir = TempDir::new().unwrap();
+        let store = VaultStore::new(dir.path().join("v.vault"), "svc", "acct");
+        let (clip, _) = ClipboardManager::memory();
+        // No vault at all: stricter than locked, and it still has to answer.
+        let state = Mutex::new(AppState::new(store, None, clip));
+        let mut authed = true;
+
+        let mut generate = |length: Option<usize>| {
+            handle_request(
+                Request::GeneratePassword {
+                    length,
+                    symbols: Some(true),
+                },
+                &state,
+                "t",
+                &mut authed,
+                None,
+                &mut allow(),
+            )
+        };
+
+        let Response::GeneratedPassword { password } = generate(Some(24)) else {
+            panic!("a locked vault must still generate");
+        };
+        assert_eq!(password.chars().count(), 24);
+
+        // Clamped, not refused: a site that caps at 6 characters is a real
+        // thing, and erroring would send the user off to type one by hand.
+        let Response::GeneratedPassword { password } = generate(Some(1)) else {
+            panic!("an absurd length must be clamped, not refused");
+        };
+        assert_eq!(password.chars().count(), 8);
+        let Response::GeneratedPassword { password } = generate(Some(9999)) else {
+            panic!("an absurd length must be clamped, not refused");
+        };
+        assert_eq!(password.chars().count(), 64);
+
+        // Default when the caller says nothing.
+        let Response::GeneratedPassword { password } = generate(None) else {
+            panic!("a missing length must fall back to the default");
+        };
+        assert_eq!(password.chars().count(), 20);
     }
 
     #[test]

@@ -75,6 +75,13 @@ enum Request {
         username: String,
         password: String,
     },
+    /// A fresh random password for a sign-up form.
+    GeneratePassword {
+        #[serde(default)]
+        length: Option<usize>,
+        #[serde(default)]
+        symbols: Option<bool>,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -120,6 +127,10 @@ enum Response {
     },
     /// A login was stored.
     Saved,
+    /// A generated password, on its way to a sign-up form. Never stored here.
+    GeneratedPassword {
+        password: String,
+    },
     Error {
         message: String,
     },
@@ -228,7 +239,29 @@ fn handle(request: Request) -> Response {
                 }
             }
         }
+        Request::GeneratePassword { length, symbols } => match generate_password(length, symbols) {
+            Some(password) => Response::GeneratedPassword { password },
+            // Unlike the others this cannot mean "locked": the app generates
+            // without an unlocked vault. If it failed, it is not running.
+            None => Response::Error {
+                message: "Could not generate a password (app not running).".to_string(),
+            },
+        },
     }
+}
+
+/// Ask the app for a generated password. This host does not link vault-core and
+/// should not start: it is the piece a hostile web page reaches first, and the
+/// less crypto lives behind that boundary the better. The app already owns the
+/// generator.
+fn generate_password(length: Option<usize>, symbols: Option<bool>) -> Option<String> {
+    let resp = bridge_request(serde_json::json!({
+        "type": "generate_password", "length": length, "symbols": symbols,
+    }))?;
+    if resp.get("type").and_then(|v| v.as_str()) != Some("generated_password") {
+        return None;
+    }
+    Some(resp.get("password")?.as_str()?.to_string())
 }
 
 /// Ask the app whether a submitted login is worth offering to save; returns the

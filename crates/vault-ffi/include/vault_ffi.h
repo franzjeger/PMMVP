@@ -1,6 +1,6 @@
 /* vault-ffi — C ABI over vault-core for native platform integrations.
  *
- * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 7). All
+ * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 8). All
  * out-buffers are heap-allocated by the library and must be released with
  * vault_ffi_free(ptr, len), which also zeroes them.
  *
@@ -117,6 +117,18 @@ int32_t vault_ffi_totp(VaultHandle *handle, const char *id_utf8,
 int32_t vault_ffi_password_for_id(VaultHandle *handle, const char *id_utf8,
                                   uint8_t **out_password,
                                   size_t *out_password_len);
+
+/* ---- Password generation (ABI v8) ---------------------------------------
+ *
+ * No vault handle: you want a generated password while creating the account,
+ * which is before there is anywhere to save it. Flags are 0/1. Returns
+ * ERR_INVALID for length 0 or all four classes off. SECRET — free with
+ * vault_ffi_free, which zeroes.
+ */
+int32_t vault_ffi_generate_password(size_t length, int32_t lowercase,
+                                    int32_t uppercase, int32_t digits,
+                                    int32_t symbols, uint8_t **out_password,
+                                    size_t *out_password_len);
 
 /* ---- Device-unlock surface (ABI v4) -------------------------------------
  *

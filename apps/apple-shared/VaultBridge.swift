@@ -47,10 +47,58 @@ enum VaultShared {
     /// v6 added the write surface (`vault_ffi_upsert_login`,
     /// `vault_ffi_delete_item`); v7 added `vault_ffi_items`,
     /// `vault_ffi_item_detail` and `vault_ffi_totp`, which is what finally lets
-    /// a phone see more than logins. Bump this in the SAME commit that bumps
-    /// `ABI_VERSION`: nothing compiles against it, so a stale value is only ever
-    /// caught at runtime, by this guard, on a device.
-    static let requiredAbiVersion: Int32 = 7
+    /// a phone see more than logins; v8 added `vault_ffi_generate_password`.
+    /// Bump this in the SAME commit that bumps `ABI_VERSION`: nothing compiles
+    /// against it, so a stale value is only ever caught at runtime, by this
+    /// guard, on a device.
+    static let requiredAbiVersion: Int32 = 8
+
+    // MARK: Password generation
+
+    /// What to generate. The defaults are what Arca offers first.
+    struct PasswordRecipe: Equatable, Sendable {
+        var length: Int = 20
+        var lowercase = true
+        var uppercase = true
+        var digits = true
+        var symbols = true
+
+        /// Whether the FFI would accept this. The UI checks it so the control
+        /// that would produce a refusal is disabled instead — turning off the
+        /// last class should grey out Generate, not fail after you press it.
+        var isUsable: Bool { length > 0 && (lowercase || uppercase || digits || symbols) }
+    }
+
+    /// Generate a password.
+    ///
+    /// Synchronous and handle-free, unlike everything else here: generation does
+    /// not touch the vault. That is the point — you want a password while making
+    /// the account, which is before there is an entry to put it in.
+    ///
+    /// The `String` cannot be wiped, same as `password(forID:)`. The Rust buffer
+    /// is zeroed the moment it is copied out.
+    static func generatePassword(_ recipe: PasswordRecipe) throws -> String {
+        var buffer: UnsafeMutablePointer<UInt8>?
+        var length = 0
+        let code = vault_ffi_generate_password(
+            recipe.length,
+            recipe.lowercase ? 1 : 0,
+            recipe.uppercase ? 1 : 0,
+            recipe.digits ? 1 : 0,
+            recipe.symbols ? 1 : 0,
+            &buffer,
+            &length)
+        guard code == VaultFFICode.ok else {
+            throw VaultError.ffi(code: code, operation: "generate_password")
+        }
+        // Unlike a password read from an entry, empty here is never legitimate:
+        // a zero-length result means the library returned success and nothing.
+        guard let buffer, length > 0 else {
+            throw VaultError.ffi(code: VaultFFICode.ok, operation: "generate_password returned nothing")
+        }
+        defer { vault_ffi_free(buffer, length) }
+        return String(decoding: UnsafeBufferPointer(start: buffer, count: length), as: UTF8.self)
+    }
 
     /// Info.plist key carrying the shared keychain access group. Both targets
     /// set it to `$(AppIdentifierPrefix)no.sybr.vault.shared`, which Xcode

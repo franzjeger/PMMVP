@@ -124,6 +124,16 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }).then(sendResponse);
       return true;
 
+    case "generatePassword":
+      // No url and no id: generating reads nothing from the vault, so there is
+      // nothing for the app to scope to an origin.
+      sendNative({
+        type: "generate_password",
+        length: msg.length,
+        symbols: msg.symbols,
+      }).then(sendResponse);
+      return true;
+
     case "saveLogin":
       sendNative({
         type: "save_login",

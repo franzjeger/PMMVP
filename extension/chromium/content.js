@@ -192,15 +192,108 @@
     return row;
   }
 
+  /** Visible password inputs in the same form as `el`, in document order. */
+  function passwordFieldsIn(el) {
+    const scope = el.form || document;
+    return Array.from(scope.querySelectorAll('input[type="password"]')).filter(
+      (f) => f === el || f.offsetParent !== null,
+    );
+  }
+
+  /** Whether this field is asking for a NEW password rather than a stored one.
+   *
+   * `autocomplete` is the field telling us directly, and is trusted both ways —
+   * "current-password" is an explicit no. The two-field fallback catches the
+   * many sign-up forms that set neither, where a password box and a confirm box
+   * appear together. */
+  function isNewPasswordField(el) {
+    if (!el || el.type !== "password") return false;
+    const ac = (el.getAttribute("autocomplete") || "").toLowerCase();
+    if (ac.includes("new-password")) return true;
+    if (ac.includes("current-password")) return false;
+    return passwordFieldsIn(el).length >= 2;
+  }
+
+  /** The confirmation box(es) to fill alongside `anchor`.
+   *
+   * Only fields AFTER the anchor, and never one marked current-password. On a
+   * change-password form (current, new, confirm) the user clicks the new field,
+   * so this fills the confirm and leaves the current one alone — overwriting it
+   * would replace the one value the form needs to verify them. */
+  function confirmationFieldsFor(anchor) {
+    const all = passwordFieldsIn(anchor);
+    const i = all.indexOf(anchor);
+    if (i < 0) return [];
+    return all.slice(i + 1).filter((f) => {
+      const ac = (f.getAttribute("autocomplete") || "").toLowerCase();
+      return !ac.includes("current-password");
+    });
+  }
+
+  /** A row offering a freshly generated password. */
+  function buildGenerateRow(anchor) {
+    const row = document.createElement("button");
+    row.className = "sybr-row";
+    row.innerHTML =
+      `<span class="sybr-line"><span class="sybr-title"></span>` +
+      `<span class="sybr-kind"></span></span><span class="sybr-user"></span>`;
+    row.querySelector(".sybr-title").textContent = "Use a strong password";
+    row.querySelector(".sybr-user").textContent = "20 characters, random";
+    const kindEl = row.querySelector(".sybr-kind");
+    kindEl.textContent = "Generate";
+    kindEl.classList.add("sybr-kind-password");
+    row.addEventListener("click", () => generateInto(anchor));
+    return row;
+  }
+
+  /** Ask Arca for a password and put it in the form. */
+  async function generateInto(anchor) {
+    let res;
+    try {
+      res = await api.runtime.sendMessage({
+        cmd: "generatePassword",
+        length: 20,
+        symbols: true,
+      });
+    } catch (e) {
+      openPanel(anchor, note(`Could not generate: ${String(e)}`));
+      return;
+    }
+    const out = res && res.ok ? res.response : null;
+    if (!out || out.type !== "generated_password" || !out.password) {
+      openPanel(
+        anchor,
+        note((out && out.message) || "Arca could not generate a password."),
+      );
+      return;
+    }
+    setNativeValue(anchor, out.password);
+    // The confirmation box too. A generated password the user has to retype by
+    // hand is one they will delete and replace with something memorable, which
+    // is the whole problem this is here to solve.
+    confirmationFieldsFor(anchor).forEach((f) => setNativeValue(f, out.password));
+    // Said out loud, because a random string appearing in a box is alarming if
+    // you don't know where it went. Submitting is what saves it — via the
+    // existing save-on-submit prompt — and until then it exists nowhere.
+    openPanel(
+      anchor,
+      note("Filled. Arca offers to save it when you submit the form."),
+    );
+  }
+
   /** Render the (filtered, ranked) picker. On an identifier field, filter by
       what's typed so far; empty result closes the panel. */
   function renderPicker(anchor, items, isIdentifier) {
     const filtered = isIdentifier ? rank(items, anchor.value) : items;
-    if (filtered.length === 0) {
+    const offerGenerate = isNewPasswordField(anchor);
+    if (filtered.length === 0 && !offerGenerate) {
       closePanel();
       return;
     }
     const list = document.createElement("div");
+    // First: on a sign-up form the stored logins are the less likely answer,
+    // and they are still right there underneath.
+    if (offerGenerate) list.appendChild(buildGenerateRow(anchor));
     filtered.forEach((it) => list.appendChild(buildRow(it, anchor, isIdentifier)));
     openPanel(anchor, list);
   }
@@ -266,6 +359,14 @@
             if (auto) lockedHintShown = true;
             openPanel(anchor, note("Open and unlock Arca to autofill."));
           }
+        } else if (isNewPasswordField(anchor)) {
+          // Nothing stored, and the field is asking for a new password: this is
+          // a sign-up. Offering to generate one is the useful answer, and it is
+          // worth showing on focus rather than only on a badge click — the
+          // moment someone is inventing a password is the moment to intervene.
+          const list = document.createElement("div");
+          list.appendChild(buildGenerateRow(anchor));
+          openPanel(anchor, list);
         } else if (!auto) {
           openPanel(anchor, note("No matching logins for this site."));
         } else {
