@@ -20,7 +20,11 @@ struct ImportVaultView: View {
                 .foregroundStyle(.tint)
             Text("No vault yet")
                 .font(.title2.bold())
-            Text("Arca has no sync on iOS yet. AirDrop `default.vault` from your Mac, then import it here.")
+            // Sync works on iOS now, but it cannot deliver the FIRST copy: the
+            // engine is built from an open vault, and there is nothing to open
+            // yet. Saying "no sync" would be wrong; saying nothing would leave
+            // someone waiting for a download that is never coming.
+            Text("AirDrop `default.vault` from your Mac and import it here. After that, Google Drive sync keeps this phone up to date.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

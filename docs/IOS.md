@@ -1,11 +1,27 @@
 # iOS: status and what it would take
 
-**There is an iOS scaffold, and no human has run it.** `apps/ios/` holds a
-SwiftUI app and an AutoFill Credential Provider extension over the existing Rust
-core, written on Linux where the Apple frameworks do not exist. CI now builds it
-unsigned on the macOS runner for every pull request — the first compiler it has
-met — but nothing has been on a device. See
+**It runs on a phone.** As of 2026-07-28 `apps/ios/` is installed on an iPhone 17
+Pro: the vault opens, Face ID unlocks it, logins can be added and edited, and
+Google Drive sync works both ways against the same folder the desktop uses. See
 [`apps/ios/README.md`](../apps/ios/README.md).
+
+That first device run paid for itself immediately. Three bugs were waiting that
+the simulator structurally cannot show, all in the quick-unlock path:
+
+- `hasStoredDeviceKey` passed `kSecUseAuthenticationUISkip` — which *silently
+  omits* items behind an access control, returning `errSecItemNotFound` — while
+  checking for the statuses `kSecUseAuthenticationUIFail` produces. The
+  simulator has no Secure Enclave and does not enforce the ACL, so the item was
+  never filtered and the probe answered yes. On real hardware it answered no
+  forever, including right after quick unlock was switched on. Face ID was not
+  failing; the question "is there a key?" was.
+- Neither `Info.plist` declared `NSFaceIDUsageDescription`. Masked by the bug
+  above, because nothing ever reached a real prompt. An extension is its own
+  process with its own privacy identity, so it needs its own copy.
+- The probe was read from inside a SwiftUI `body`, so a blocking XPC to
+  `securityd` ran on the main thread on every keystroke in the password field —
+  free in the simulator, not on a phone, and worst inside the watchdogged
+  AutoFill extension.
 
 This document is an honest account of how far the groundwork actually reaches,
 what is genuinely missing, and in what order it would have to be built. It
@@ -117,11 +133,14 @@ The **desktop** client does have a secret, and it is deliberately not in this
 repository — `vault-sync/build.rs` supplies it at build time. See
 [`SYNC.md`](./SYNC.md). None of that touches iOS, which has no secret to hide.
 
-**Not yet verified end to end.** The sign-in was confirmed to reach Google and
-present the consent page, and the cancel path is clean, but no successful
-sign-in has completed — that needs a real Google account, so it is Frank's to
-run. Google also warns that a new client can take from five minutes to a few
-hours to take effect.
+**Verified on a phone, 2026-07-28.** Sign-in completes and the vault syncs both
+ways against the same `appDataFolder` the desktop uses.
+
+One limit worth stating plainly: sync cannot deliver the **first** copy. The
+engine is built from an open vault (`VaultStore.startSync` runs inside `open`),
+so with no vault file there is no engine, and the app can only offer the file
+picker. A new phone still needs the vault handed to it once, by AirDrop or
+Files; sync takes over from there.
 
 ### 2. Widen the FFI to write
 

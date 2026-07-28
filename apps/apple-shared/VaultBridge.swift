@@ -657,14 +657,45 @@ final class VaultSession: @unchecked Sendable {
     /// Whether a device key is stored, WITHOUT prompting for it.
     ///
     /// Asking for the data would put a Face ID sheet on screen to answer what is
-    /// only a question about which button to draw. Querying attributes needs no
-    /// authentication; if the OS insists anyway it says so, and that is still a
+    /// only a question about which button to draw. So the probe must say "yes,
+    /// but it is behind authentication" rather than actually authenticating.
+    ///
+    /// This used to pass `kSecUseAuthenticationUISkip`, which does the opposite
+    /// of what the name suggests here: it *silently omits* every item that would
+    /// need an authentication prompt, so the one item we are asking about was
+    /// filtered out of the result set and the call returned `errSecItemNotFound`.
+    /// The accepted statuses below are the ones `kSecUseAuthenticationUIFail`
+    /// produces — the constant and the check disagreed.
+    ///
+    /// It looked fine for months because the simulator has no Secure Enclave and
+    /// does not enforce the access control, so nothing was ever classified as
+    /// needing UI and the item came straight back. On a real phone quick unlock
+    /// therefore reported "not set up" forever, including immediately after
+    /// being switched on.
+    ///
+    /// An `LAContext` with `interactionNotAllowed` is the documented way to ask:
+    /// an ACL-protected item answers `errSecInteractionNotAllowed`, which is a
     /// yes.
     static var hasStoredDeviceKey: Bool {
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        defer { context.invalidate() }
+
         var query = deviceKeyQuery()
-        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
+        // Ask for attributes, not data: an existence check with no return type
+        // at all is not a contract SecItem defines.
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        query[kSecUseAuthenticationContext as String] = context
+
         let status = SecItemCopyMatching(query as CFDictionary, nil)
-        return status == errSecSuccess || status == errSecInteractionNotAllowed
+        let stored = status == errSecSuccess || status == errSecInteractionNotAllowed
+        if !stored && status != errSecItemNotFound {
+            // Anything else is a real surprise, and the last bug here was
+            // invisible precisely because nothing was ever logged.
+            vaultLog.error("device-key probe: unexpected OSStatus \(status, privacy: .public)")
+        }
+        return stored
     }
 
     /// Read the device key from the shared keychain group, gated by Touch ID /

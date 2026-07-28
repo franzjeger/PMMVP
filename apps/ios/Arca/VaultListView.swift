@@ -96,6 +96,13 @@ struct VaultListView: View {
                     }
                     if let failure = store.failure { Banner(text: failure, bad: true) }
                     if store.autoFillEnabled == false { AutoFillHint() }
+                    // The toggle also lives in the Options menu, but that menu
+                    // is a "..." in the top-LEFT corner above a full-screen
+                    // list, and the first person to use this on a phone simply
+                    // never found it. Offer it where the eye already is.
+                    if !store.quickUnlockEnabled {
+                        QuickUnlockOffer { Task { await store.enableQuickUnlock() } }
+                    }
                 }
             }
         }
@@ -135,6 +142,29 @@ private struct AutoFillHint: View {
         Banner(
             text: "Turn Arca on in Settings ▸ General ▸ AutoFill & Passwords to fill from the keyboard.",
             bad: false)
+    }
+}
+
+/// An offer, not a warning: quick unlock is optional, and someone who has
+/// decided against it should not be shown an orange triangle forever. It
+/// disappears the moment it is accepted, because `quickUnlockEnabled` flips.
+private struct QuickUnlockOffer: View {
+    let enable: () -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: "faceid").foregroundStyle(.tint)
+            Text("Unlock with Face ID instead of typing your master password.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Button("Turn on", action: enable)
+                .font(.footnote.weight(.semibold))
+                .buttonStyle(.borderless)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity)
+        .background(.thinMaterial)
     }
 }
 

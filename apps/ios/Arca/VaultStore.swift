@@ -38,9 +38,14 @@ final class VaultStore {
     private(set) var quickUnlockEnabled = false
     var query = ""
 
-    /// Whether a quick-unlock key is stored on this device. Cheap, and does not
-    /// put a biometric prompt on screen just to decide which button to draw.
-    var quickUnlockAvailable: Bool { VaultSession.hasStoredDeviceKey }
+    /// Whether a quick-unlock key is stored on this device.
+    ///
+    /// Cached, not computed. It used to call straight into the keychain, and it
+    /// is read from inside `UnlockView.body` — so on a device, where every probe
+    /// is a synchronous XPC to securityd that also has to consult a biometric
+    /// access control, it ran again on every keystroke in the password field.
+    /// Three things change the answer, and all three refresh it themselves.
+    private(set) var quickUnlockAvailable = false
 
     /// Held only while unlocked.
     private var session: VaultSession?
@@ -67,6 +72,20 @@ final class VaultStore {
     func refresh() {
         guard phase != .unlocked else { return }
         phase = VaultFile.exists ? .locked : .needsVault
+        refreshQuickUnlockAvailability()
+    }
+
+    /// Re-probe the keychain off the main actor and publish the answer.
+    ///
+    /// Off the main actor because it is a blocking XPC round-trip: cheap in the
+    /// simulator, not on a phone. Called from the three places that can change
+    /// the answer — appearing, enabling, and forgetting the key — rather than
+    /// from a view body.
+    private func refreshQuickUnlockAvailability() {
+        Task.detached(priority: .userInitiated) {
+            let stored = VaultSession.hasStoredDeviceKey
+            await MainActor.run { self.quickUnlockAvailable = stored }
+        }
     }
 
     func unlock(password: String) async {
@@ -123,6 +142,7 @@ final class VaultStore {
         do {
             try await session.enableDeviceUnlock()
             quickUnlockEnabled = true
+            refreshQuickUnlockAvailability()
             failure = nil
         } catch {
             log.error("enable quick unlock failed: \(vaultLogMessage(for: error), privacy: .public)")
@@ -136,6 +156,7 @@ final class VaultStore {
         do {
             try await session.disableDeviceUnlock()
             quickUnlockEnabled = false
+            refreshQuickUnlockAvailability()
             failure = nil
         } catch {
             log.error("disable quick unlock failed: \(vaultLogMessage(for: error), privacy: .public)")
@@ -316,6 +337,7 @@ final class VaultStore {
             // and then fail.
             VaultSession.forgetDeviceKey()
             quickUnlockEnabled = false
+            refreshQuickUnlockAvailability()
             lock()
             // These describe the vault that was just replaced. The next unlock
             // publishes the new one's.
