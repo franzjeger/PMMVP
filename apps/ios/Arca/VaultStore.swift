@@ -75,17 +75,25 @@ final class VaultStore {
         refreshQuickUnlockAvailability()
     }
 
-    /// Re-probe the keychain off the main actor and publish the answer.
+    /// Resolve whether a device key is stored, and publish it.
     ///
     /// Off the main actor because it is a blocking XPC round-trip: cheap in the
-    /// simulator, not on a phone. Called from the three places that can change
-    /// the answer — appearing, enabling, and forgetting the key — rather than
-    /// from a view body.
+    /// simulator, not on a phone. `await` it before *deciding* anything — the
+    /// cached property is for drawing, and it is false until the first probe
+    /// lands. Reading it too early is what briefly turned the automatic Face ID
+    /// attempt into a button nobody asked for.
+    @discardableResult
+    func resolveQuickUnlockAvailability() async -> Bool {
+        let stored = await Task.detached(priority: .userInitiated) {
+            VaultSession.hasStoredDeviceKey
+        }.value
+        quickUnlockAvailable = stored
+        return stored
+    }
+
+    /// Fire-and-forget refresh, for the places that only need the UI to catch up.
     private func refreshQuickUnlockAvailability() {
-        Task.detached(priority: .userInitiated) {
-            let stored = VaultSession.hasStoredDeviceKey
-            await MainActor.run { self.quickUnlockAvailable = stored }
-        }
+        Task { await resolveQuickUnlockAvailability() }
     }
 
     func unlock(password: String) async {

@@ -35,7 +35,14 @@ final class AutoFillModel {
     private(set) var failure: String?
 
     /// Whether the password field should offer a biometric retry.
-    var canUseDeviceKey: Bool { VaultSession.hasStoredDeviceKey }
+    ///
+    /// Cached, and resolved off the main actor. It used to call the keychain
+    /// directly and is read from inside `UnlockForm.body`, so a blocking XPC to
+    /// securityd ran on the main thread on every redraw — in the one process
+    /// iOS kills outright for wedging its main thread. It answers `false` until
+    /// the probe lands, which is the safe way round: the worst case is that the
+    /// retry button appears a moment late.
+    private(set) var canUseDeviceKey = false
 
     private let domains: Set<String>
     private let direct: DirectRequest?
@@ -58,10 +65,22 @@ final class AutoFillModel {
 
     func cancel() { onCancel() }
 
+    /// The keychain existence check, off the main actor.
+    private static func probeDeviceKey() async -> Bool {
+        await Task.detached(priority: .userInitiated) {
+            VaultSession.hasStoredDeviceKey
+        }.value
+    }
+
+
     /// Try the device key straight away. Falls through to the password form when
     /// there is no key or the biometric is declined — never blocks on it.
     func start() async {
-        guard canUseDeviceKey else { return }
+        // Probe here rather than trusting the cached value: this runs before the
+        // first redraw, so nothing has populated it yet.
+        let stored = await Self.probeDeviceKey()
+        canUseDeviceKey = stored
+        guard stored else { return }
         await open(fallback: "Couldn't unlock with Face ID.") {
             try await VaultSession.openWithDeviceKey(reason: "fill a password from Arca")
         }

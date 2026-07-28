@@ -78,7 +78,13 @@ struct UnlockView: View {
             // Once per appearance. Backgrounding locks the vault, which brings
             // this view back and legitimately re-arms the prompt; a failed or
             // declined attempt must not loop.
-            if store.quickUnlockAvailable, !didTryBiometrics {
+            //
+            // `await` the probe rather than reading the cached flag: this runs
+            // before the first refresh has landed, so the flag is still false
+            // here and reading it would silently skip the whole thing — turning
+            // an automatic unlock into a button. Face ID should happen because
+            // you opened the app, not because you asked twice.
+            if !didTryBiometrics, await store.resolveQuickUnlockAvailability() {
                 didTryBiometrics = true
                 await store.unlockWithDeviceKey()
             }
