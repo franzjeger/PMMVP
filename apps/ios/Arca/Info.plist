@@ -45,6 +45,11 @@
     <key>UISupportedInterfaceOrientations</key>
     <array>
         <string>UIInterfaceOrientationPortrait</string>
+        <!-- Apple rejects a universal build whose orientation list omits this
+             one: iPad multitasking requires all four. Caught by
+             `altool --validate-app`, which is why the release script validates
+             before it uploads. -->
+        <string>UIInterfaceOrientationPortraitUpsideDown</string>
         <string>UIInterfaceOrientationLandscapeLeft</string>
         <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
