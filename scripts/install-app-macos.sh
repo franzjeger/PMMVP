@@ -52,7 +52,7 @@ PROFILE_SRC="$REPO/apps/macos/profiles/Arca_Vault_macOS_Dev.provisionprofile"
 [ -f "$PROFILE_SRC" ] || PROFILE_SRC="$(ls -t "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"/*.provisionprofile 2>/dev/null | head -1)"
 
 IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
-  | grep -Eo '"Apple Development[^"]*"' | head -1 | tr -d '"')"
+  | grep -Eo '"Apple Development[^"]*"' | head -1 | tr -d '"' || true)"
 if [ -n "$IDENTITY" ] && [ -n "$PROFILE_SRC" ] && [ -f "$PROFILE_SRC" ]; then
   echo "==> Embedding provisioning profile: $PROFILE_SRC"
   cp "$PROFILE_SRC" "$APP_SRC/Contents/embedded.provisionprofile"
@@ -63,7 +63,7 @@ else
   # the app still launches; only cross-app autofill sharing is unavailable.
   echo "==> No Apple Development identity/profile; signing WITHOUT shared entitlements"
   FALLBACK_ID="$(security find-identity -v -p codesigning 2>/dev/null \
-    | grep -Eo '"Developer ID Application[^"]*"' | head -1 | tr -d '"')"
+    | grep -Eo '"Developer ID Application[^"]*"' | head -1 | tr -d '"' || true)"
   codesign --force --deep -s "${FALLBACK_ID:--}" "$APP_SRC"
 fi
 codesign --verify --deep --strict "$APP_SRC"

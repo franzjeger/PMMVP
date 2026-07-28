@@ -65,8 +65,11 @@ fi
 step "Smoke test"
 bash "$REPO/scripts/smoke-test.sh"
 
+# `|| true`: `head -1` can SIGPIPE the upstream `grep`, and with `pipefail` that
+# aborts the script with a message about a missing certificate that is in fact
+# right there. Emptiness is the real test, and it is the next line.
 IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
-  | grep -Eo '"Developer ID Application[^"]*"' | head -1 | tr -d '"')"
+  | grep -Eo '"Developer ID Application[^"]*"' | head -1 | tr -d '"' || true)"
 [ -n "$IDENTITY" ] || die "no 'Developer ID Application' certificate in the keychain."
 echo "   signing identity: $IDENTITY"
 
@@ -92,12 +95,28 @@ if [ -z "${ARCA_GOOGLE_CLIENT_SECRET:-}" ]; then
      ARCA_GOOGLE_CLIENT_SECRET. See docs/SYNC.md."
 fi
 
+# A DMG build that dies part-way leaves its scratch image mounted, and the next
+# run then fails on a name that is already taken — reporting only "failed to run
+# bundle_dmg.sh", which says nothing about the actual cause. Clear them first.
+for vol in /Volumes/dmg.*; do
+  [ -d "$vol" ] || continue
+  echo "   ejecting a leftover build volume: $vol"
+  hdiutil detach "$vol" -force >/dev/null 2>&1 || true
+done
+find "$REPO/target/release/bundle/macos" -maxdepth 1 -name "rw.*.dmg" -delete 2>/dev/null || true
+
 step "Building the release bundle (Developer ID + hardened runtime)"
 # Tauri signs the bundle itself when these are set; the hardened runtime is
 # required for notarization.
 export APPLE_SIGNING_IDENTITY="$IDENTITY"
 export APPLE_TEAM_ID="$TEAM_ID"
-export TAURI_SIGNING_PRIVATE_KEY_PATH="$UPDATER_KEY"
+# TAURI_SIGNING_PRIVATE_KEY, not ..._KEY_PATH: this CLI reads the former and
+# accepts either the key itself or a path to it. With only the PATH variable set
+# it found the public key, found no private one, and failed AFTER bundling
+# everything — so the run looked like it had worked right up until the end.
+# A path rather than the key's contents keeps the material out of the process
+# environment.
+export TAURI_SIGNING_PRIVATE_KEY="$UPDATER_KEY"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${ARCA_UPDATER_KEY_PASSWORD:-}"
 # createUpdaterArtifacts is passed HERE, not in tauri.conf.json: in the shared
 # config it made every local dev build demand the release signing key.
@@ -111,9 +130,16 @@ DMG="$(ls -t "$REPO/target/release/bundle/dmg/"*.dmg 2>/dev/null | head -1 || tr
 step "Verifying the signature"
 codesign --verify --deep --strict --verbose=2 "$APP" 2>&1 | tail -3
 # Hardened runtime must be on, or notarization rejects the upload.
-codesign -d --verbose=2 "$APP" 2>&1 | grep -q "flags=.*runtime" \
-  || die "the app is not signed with the hardened runtime."
-echo "   hardened runtime: on"
+#
+# Read into a variable rather than piping into `grep -q`. That pipeline failed
+# whenever the flag was PRESENT: grep exits the moment it matches, codesign dies
+# on SIGPIPE (141), and `pipefail` turns that into the whole check failing. A
+# test that only fails when its subject is correct is worse than no test.
+SIG_INFO="$(codesign -d --verbose=2 "$APP" 2>&1 || true)"
+case "$SIG_INFO" in
+  *"flags="*"runtime"*) echo "   hardened runtime: on" ;;
+  *) die "the app is not signed with the hardened runtime." ;;
+esac
 
 if [ "$NOTARIZE" = "0" ]; then
   printf '\nSigned but NOT notarized (--no-notarize).\n  %s\n' "$APP"
@@ -181,7 +207,12 @@ PYEOF
   echo "   Publish it AND $(basename "$UPD_ARCHIVE") on the v$VERSION GitHub release,"
   echo "   or installed copies will never see the update."
 else
-  echo "   no updater artifacts produced; skipping (is createUpdaterArtifacts on?)"
+  # Fatal, not a note. A release with no signed updater archive cannot be
+  # delivered as an update to anyone, and this used to print a shrug at the very
+  # end of an otherwise successful-looking run.
+  die "no signed updater archive was produced.
+     Everything else built, but installed copies could never update to this.
+     Check TAURI_SIGNING_PRIVATE_KEY and createUpdaterArtifacts."
 fi
 
 printf '\nRELEASE OK\n  app: %s\n' "$APP"

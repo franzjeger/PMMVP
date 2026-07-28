@@ -5556,14 +5556,14 @@ dependencies = [
 
 [[package]]
 name = "vault-appgroup"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "vault-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "argon2",
  "bincode",
@@ -5587,7 +5587,7 @@ dependencies = [
 
 [[package]]
 name = "vault-desktop"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arboard",
  "csv",
@@ -5615,7 +5615,7 @@ dependencies = [
 
 [[package]]
 name = "vault-ffi"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "p256",
  "serde",
@@ -5628,7 +5628,7 @@ dependencies = [
 
 [[package]]
 name = "vault-native-host"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dirs 5.0.1",
  "serde",
@@ -5637,7 +5637,7 @@ dependencies = [
 
 [[package]]
 name = "vault-secmem"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "region",
  "zeroize",
@@ -5645,7 +5645,7 @@ dependencies = [
 
 [[package]]
 name = "vault-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "data-encoding",
  "keyring",
@@ -5659,7 +5659,7 @@ dependencies = [
 
 [[package]]
 name = "vault-sync"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "data-encoding",
  "getrandom 0.2.17",
