@@ -12,7 +12,7 @@ import SwiftUI
 
 struct LoginEditView: View {
     /// nil creates a new login; otherwise the item being edited.
-    let existing: VaultIdentity?
+    let existing: VaultItemMeta?
 
     @Environment(VaultStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -99,21 +99,25 @@ struct LoginEditView: View {
         }
     }
 
-    /// Prefill from the item being edited. The password is fetched separately
-    /// because the identity list deliberately carries no secrets.
+    /// Prefill from the item being edited.
+    ///
+    /// From the DETAIL, not the list row. The row carries the host — `host_of`
+    /// applied to the URL — so prefilling from it silently rewrote
+    /// "https://github.com/login" to "github.com" on every edit, quietly
+    /// discarding the path the site actually needs.
     private func load() async {
         guard let existing else { return }
-        title = existing.label
-        username = existing.user
-        url = existing.domain
         loading = true
         defer { loading = false }
-        if let secret = await store.password(for: existing) {
-            password = secret
-        } else {
-            // Saving now would overwrite the real password with an empty one.
-            failure = "Could not read the current password. Close and try again."
+        guard case let .login(t, u, p, link, _, _) = await store.detail(for: existing) else {
+            // Saving now would overwrite real fields with empty ones.
+            failure = "Could not read that login. Close and try again."
+            return
         }
+        title = t
+        username = u
+        url = link
+        password = p
     }
 
     private func save() async {

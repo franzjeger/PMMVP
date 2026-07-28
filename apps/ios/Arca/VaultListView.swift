@@ -1,15 +1,19 @@
-// The unlocked vault: search, pick, look at one login.
+// The unlocked vault: search, pick, look at one item.
 //
-// Logins only. `vault_ffi_identities` filters to ItemKind::Login, so passkeys,
-// SSH keys, Wi-Fi networks and secure notes are simply not visible from here —
-// the ABI has no way to ask for them.
+// EVERY kind, since ABI v7. For six ABI versions this list called
+// `vault_ffi_identities`, which filters to logins — so passkeys, SSH keys,
+// Wi-Fi networks and secure notes were not hidden here, they were unaskable.
+// A phone showed a fifth of the vault and gave no sign the rest existed.
+//
+// `vault_ffi_identities` still exists and still filters, because it feeds the
+// AutoFill credential store, where a Wi-Fi password would be nonsense.
 
 import SwiftUI
 
 struct VaultListView: View {
     @Environment(VaultStore.self) private var store
-    @State private var selected: VaultIdentity?
-    @State private var editing: VaultIdentity?
+    @State private var selected: VaultItemMeta?
+    @State private var editing: VaultItemMeta?
     @State private var creating = false
 
     var body: some View {
@@ -17,35 +21,38 @@ struct VaultListView: View {
 
         NavigationStack {
             Group {
-                if store.identities.isEmpty {
+                if store.items.isEmpty {
                     ContentUnavailableView {
-                        Label("No logins", systemImage: "key")
+                        Label("Empty vault", systemImage: "tray")
                     } description: {
-                        Text("This vault has no login items.")
+                        Text("Nothing in this vault yet.")
                     } actions: {
                         Button("Add a login") { creating = true }
                     }
                 } else if store.results.isEmpty {
                     ContentUnavailableView.search(text: store.query)
                 } else {
-                    List(store.results) { identity in
-                        Button { selected = identity } label: { row(identity) }
+                    List(store.results) { item in
+                        Button { selected = item } label: { row(item) }
                             .buttonStyle(.plain)
                             .swipeActions(edge: .trailing) {
                                 Button("Delete", systemImage: "trash", role: .destructive) {
-                                    Task { await store.deleteLogin(identity) }
+                                    Task { await store.deleteItem(item) }
                                 }
-                                Button("Edit", systemImage: "pencil") {
-                                    editing = identity
+                                // Only logins have an editor. Offering Edit on a
+                                // Wi-Fi entry and then showing a login form is
+                                // worse than not offering it.
+                                if item.kind == .login {
+                                    Button("Edit", systemImage: "pencil") { editing = item }
+                                        .tint(.accentColor)
                                 }
-                                .tint(.accentColor)
                             }
                     }
                     .listStyle(.plain)
                 }
             }
-            .navigationTitle("Logins")
-            .searchable(text: $store.query, prompt: "Search logins")
+            .navigationTitle("Vault")
+            .searchable(text: $store.query, prompt: "Search the vault")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Lock", systemImage: "lock") { store.lock() }
@@ -82,7 +89,7 @@ struct VaultListView: View {
                     }
                 }
             }
-            .sheet(item: $selected) { ItemDetailView(identity: $0) }
+            .sheet(item: $selected) { ItemDetailView(item: $0) }
             .sheet(item: $editing) { LoginEditView(existing: $0) }
             .sheet(isPresented: $creating) { LoginEditView(existing: nil) }
             // Only after an unlock has actually asked the store — `nil` means
@@ -108,18 +115,26 @@ struct VaultListView: View {
         }
     }
 
-    private func row(_ identity: VaultIdentity) -> some View {
+    private func row(_ item: VaultItemMeta) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: "person.crop.circle")
-                .font(.title2)
-                .foregroundStyle(.secondary)
+            // The icon is the kind. Five types in one list are unreadable
+            // otherwise — you cannot tell an SSH key from a note by its name.
+            Image(systemName: item.kind.symbol)
+                .font(.title3)
+                .foregroundStyle(.tint)
+                .frame(width: 28)
             VStack(alignment: .leading, spacing: 2) {
-                Text(Self.title(for: identity))
-                Text(identity.domain)
+                Text(Self.title(for: item))
+                Text(item.subtitle.isEmpty ? item.kind.label : item.subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            if item.hasTotp {
+                Image(systemName: "clock.badge.checkmark")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Image(systemName: "chevron.right")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
@@ -127,10 +142,10 @@ struct VaultListView: View {
         .contentShape(Rectangle())
     }
 
-    /// The username, falling back to the item's title and then its domain — a
-    /// login saved without a username shouldn't render as a blank row.
-    static func title(for identity: VaultIdentity) -> String {
-        [identity.user, identity.label].first { !$0.isEmpty } ?? identity.domain
+    /// Title first, then whatever the kind puts in the subtitle — an item saved
+    /// without a title shouldn't render as a blank row.
+    static func title(for item: VaultItemMeta) -> String {
+        [item.title, item.subtitle].first { !$0.isEmpty } ?? item.kind.label
     }
 }
 

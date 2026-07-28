@@ -27,6 +27,14 @@ final class VaultStore {
     }
 
     private(set) var phase: Phase = .locked
+    /// Everything in the vault, of every kind — what the list shows.
+    private(set) var items: [VaultItemMeta] = []
+    /// Logins only, and only for the AutoFill credential store.
+    ///
+    /// Two calls rather than deriving one from the other, on purpose: the
+    /// credential store needs the login's HOST, and `host_of` lives in Rust
+    /// precisely because a second implementation of it drifted once already.
+    /// Both are cheap metadata reads.
     private(set) var identities: [VaultIdentity] = []
     /// The last failure, already phrased for a person.
     private(set) var failure: String?
@@ -57,15 +65,34 @@ final class VaultStore {
 
     nonisolated init() {}
 
-    /// Identities matching the current search, in a stable order.
-    var results: [VaultIdentity] {
+    /// Items matching the current search, in a stable order.
+    var results: [VaultItemMeta] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !needle.isEmpty else { return identities }
-        return identities.filter {
-            $0.user.lowercased().contains(needle)
-                || $0.domain.lowercased().contains(needle)
-                || $0.label.lowercased().contains(needle)
+        guard !needle.isEmpty else { return items }
+        return items.filter {
+            $0.title.lowercased().contains(needle)
+                || $0.subtitle.lowercased().contains(needle)
+                || $0.url.lowercased().contains(needle)
+                || $0.kind.label.lowercased().contains(needle)
         }
+    }
+
+    /// The full payload of one item. SECRET — hold it no longer than the sheet.
+    func detail(for item: VaultItemMeta) async -> VaultItemDetail? {
+        guard let session else { return nil }
+        do {
+            return try await session.detail(forID: item.id)
+        } catch {
+            log.error("detail fetch failed: \(vaultLogMessage(for: error), privacy: .public)")
+            failure = Self.message(error, fallback: "Couldn't read that item.")
+            return nil
+        }
+    }
+
+    /// The live TOTP code, or nil when the item has none.
+    func totp(for item: VaultItemMeta) async -> VaultTotp? {
+        guard let session, item.hasTotp else { return nil }
+        return try? await session.totp(forID: item.id)
     }
 
     /// Re-check whether there is a vault to open. Cheap; call it on appear.
@@ -121,12 +148,8 @@ final class VaultStore {
         failure = nil
         do {
             let session = try await makeSession()
-            let identities = try await session.identities()
             self.session = session
-            self.identities = identities.sorted {
-                ($0.domain.lowercased(), $0.user.lowercased())
-                    < ($1.domain.lowercased(), $1.user.lowercased())
-            }
+            try await load(session)
             quickUnlockEnabled = await session.hasDeviceUnlock()
             phase = .unlocked
             // After the phase flip on purpose: this is what puts Arca in the
@@ -140,6 +163,25 @@ final class VaultStore {
             log.error("unlock failed: \(vaultLogMessage(for: error), privacy: .public)")
             failure = Self.cancelled(error) ? nil : Self.message(error, fallback: fallback)
             phase = VaultFile.exists ? .locked : .needsVault
+        }
+    }
+
+    /// Read both lists and sort them the one way the whole app agrees on.
+    ///
+    /// One function so a save cannot reshuffle the list under the user by
+    /// sorting differently from the unlock that drew it.
+    private func load(_ session: VaultSession) async throws {
+        let items = try await session.items()
+        let identities = try await session.identities()
+        // Kind first, then title: a vault with logins, keys and notes mixed by
+        // name is a list you have to read rather than scan.
+        self.items = items.sorted {
+            ($0.kind.label, $0.title.lowercased(), $0.subtitle.lowercased())
+                < ($1.kind.label, $1.title.lowercased(), $1.subtitle.lowercased())
+        }
+        self.identities = identities.sorted {
+            ($0.domain.lowercased(), $0.user.lowercased())
+                < ($1.domain.lowercased(), $1.user.lowercased())
         }
     }
 
@@ -182,6 +224,7 @@ final class VaultStore {
         session = nil
         sync = nil
         syncStatus = nil
+        items = []
         identities = []
         query = ""
         failure = nil
@@ -189,10 +232,10 @@ final class VaultStore {
     }
 
     /// One password, fetched on demand and never stored here.
-    func password(for identity: VaultIdentity) async -> String? {
+    func password(for item: VaultItemMeta) async -> String? {
         guard let session else { return nil }
         do {
-            return try await session.password(forID: identity.id)
+            return try await session.password(forID: item.id)
         } catch {
             log.error("password fetch failed: \(vaultLogMessage(for: error), privacy: .public)")
             failure = Self.message(error, fallback: "Couldn't read that password.")
@@ -231,14 +274,14 @@ final class VaultStore {
     }
 
     /// Move a login to the Trash (restorable on the desktop).
-    func deleteLogin(_ identity: VaultIdentity) async {
+    func deleteItem(_ item: VaultItemMeta) async {
         guard let session else { return }
         do {
-            try await session.deleteItem(id: identity.id)
+            try await session.deleteItem(id: item.id)
             await reload(session)
         } catch {
             log.error("delete failed: \(vaultLogMessage(for: error), privacy: .public)")
-            failure = Self.message(error, fallback: "Couldn't delete that login.")
+            failure = Self.message(error, fallback: "Couldn't delete that item.")
         }
     }
 
@@ -248,11 +291,7 @@ final class VaultStore {
     /// the list under the user.
     private func reload(_ session: VaultSession) async {
         do {
-            let fresh = try await session.identities()
-            identities = fresh.sorted {
-                ($0.domain.lowercased(), $0.user.lowercased())
-                    < ($1.domain.lowercased(), $1.user.lowercased())
-            }
+            try await load(session)
             autoFillEnabled = await CredentialIdentities.replace(with: identities)
         } catch {
             log.error("reload failed: \(vaultLogMessage(for: error), privacy: .public)")

@@ -1,6 +1,6 @@
 /* vault-ffi — C ABI over vault-core for native platform integrations.
  *
- * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 6). All
+ * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 7). All
  * out-buffers are heap-allocated by the library and must be released with
  * vault_ffi_free(ptr, len), which also zeroes them.
  *
@@ -86,6 +86,30 @@ void vault_ffi_vault_free(VaultHandle *handle);
  * Out-buffer freed by the caller with vault_ffi_free. */
 int32_t vault_ffi_identities(VaultHandle *handle, uint8_t **out_json,
                              size_t *out_json_len);
+
+/* Every active item, of EVERY kind, as JSON. Metadata only, never a secret:
+ * [{ id, kind, title, subtitle, url, has_totp }] where kind is one of
+ * "login" | "passkey" | "ssh_key" | "wifi" | "secure_note".
+ *
+ * Distinct from vault_ffi_identities, which stays logins-only because it feeds
+ * the platform credential store. This is what an app's own list should call.
+ * Free with vault_ffi_free. */
+int32_t vault_ffi_items(VaultHandle *handle, uint8_t **out_json,
+                        size_t *out_json_len);
+
+/* The full payload of one item, tagged by kind, as JSON.
+ *
+ * SECRET: carries the Wi-Fi password and note body in the clear. An SSH item's
+ * PRIVATE key deliberately does NOT cross — a phone has no ssh-agent to spend
+ * it with. Free with vault_ffi_free. */
+int32_t vault_ffi_item_detail(VaultHandle *handle, const char *id_utf8,
+                              uint8_t **out_json, size_t *out_json_len);
+
+/* The live TOTP code for a login: { code, period, remaining }. The TOTP SECRET
+ * never crosses; only the derived code, which expires. ERR_NOT_FOUND when the
+ * id is unknown, is not a login, or has no TOTP. Free with vault_ffi_free. */
+int32_t vault_ffi_totp(VaultHandle *handle, const char *id_utf8,
+                       uint8_t **out_json, size_t *out_json_len);
 
 /* The password for one identity id (the "id" from vault_ffi_identities).
  * SECRET: the buffer is zeroed by vault_ffi_free; copy it into the platform

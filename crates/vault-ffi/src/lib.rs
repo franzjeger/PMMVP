@@ -71,7 +71,7 @@ pub mod sync;
 ///   (the restriction on `vault_ffi_vault_free` is unchanged);
 /// * a handle's contents can now change underneath the caller, because a sync
 ///   merges a peer's items into the very vault the handle exposes.
-pub const ABI_VERSION: i32 = 6;
+pub const ABI_VERSION: i32 = 7;
 
 // Return codes.
 pub(crate) const OK: i32 = 0;
@@ -299,6 +299,196 @@ struct Identity {
     label: String,
 }
 
+/// One item of ANY kind, for the app's list. Metadata only, never a secret.
+///
+/// Separate from [`Identity`] on purpose. `vault_ffi_identities` feeds the
+/// platform credential store, which must stay logins-only — a Wi-Fi password is
+/// not something a browser can fill, and publishing one would put nonsense in
+/// the QuickType bar. This is the app's own view, and it shows everything.
+#[derive(Serialize)]
+struct ItemMeta {
+    id: String,
+    /// "login" | "passkey" | "ssh_key" | "wifi" | "secure_note"
+    kind: String,
+    title: String,
+    subtitle: String,
+    url: String,
+    has_totp: bool,
+}
+
+fn kind_name(kind: ItemKind) -> &'static str {
+    match kind {
+        ItemKind::Login => "login",
+        ItemKind::Passkey => "passkey",
+        ItemKind::SshKey => "ssh_key",
+        ItemKind::Wifi => "wifi",
+        ItemKind::SecureNote => "secure_note",
+    }
+}
+
+/// Every active item, whatever its kind.
+fn items_json(vault: &Vault) -> vault_core::Result<String> {
+    let items: Vec<ItemMeta> = vault
+        .list_items(false)?
+        .into_iter()
+        .map(|s| ItemMeta {
+            id: s.id.to_string(),
+            kind: kind_name(s.kind).to_string(),
+            title: s.title,
+            subtitle: s.subtitle,
+            url: s.url,
+            has_totp: s.has_totp,
+        })
+        .collect();
+    serde_json::to_string(&items).map_err(|_| Error::Serialization)
+}
+
+/// The full decrypted payload of one item, tagged by kind.
+///
+/// SECRET, all of it: this is the private SSH key, the Wi-Fi password, the note
+/// body. Every variant carries what that kind actually holds rather than a
+/// lowest common denominator, so the UI never has to guess which fields mean
+/// something.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ItemDetail {
+    Login {
+        title: String,
+        username: String,
+        password: String,
+        url: String,
+        has_totp: bool,
+        notes: String,
+    },
+    Passkey {
+        title: String,
+        rp_id: String,
+        user_name: String,
+    },
+    SshKey {
+        title: String,
+        comment: String,
+        key_type: String,
+        /// OpenSSH one-liner, the form you paste into authorized_keys.
+        public_key: String,
+        fingerprint: String,
+    },
+    Wifi {
+        title: String,
+        ssid: String,
+        password: String,
+        security: String,
+        hidden: bool,
+        notes: String,
+    },
+    SecureNote {
+        title: String,
+        body: String,
+    },
+}
+
+fn item_detail_json(vault: &Vault, id_str: &str) -> vault_core::Result<String> {
+    let id = uuid::Uuid::parse_str(id_str).map_err(|_| Error::NotFound)?;
+    let item = vault.get_item(id)?;
+    // Matched by REFERENCE and cloned: `VaultItem` zeroizes on drop, so moving
+    // a field out of it would take the secret with it and leave nothing to
+    // wipe. The clones are short-lived and die with the JSON buffer, which
+    // `vault_ffi_free` zeroizes.
+    let detail = match &item.data {
+        VaultItem::Login {
+            title,
+            username,
+            password,
+            url,
+            totp_secret,
+            notes,
+        } => ItemDetail::Login {
+            title: title.clone(),
+            username: username.clone(),
+            password: password.clone(),
+            url: url.clone(),
+            // The SECRET never crosses; only whether a code can be asked for.
+            has_totp: totp_secret.as_ref().is_some_and(|s| !s.is_empty()),
+            notes: notes.clone(),
+        },
+        VaultItem::Passkey {
+            title,
+            rp_id,
+            user_name,
+            ..
+        } => ItemDetail::Passkey {
+            title: title.clone(),
+            rp_id: rp_id.clone(),
+            user_name: user_name.clone(),
+        },
+        VaultItem::SshKey {
+            title,
+            comment,
+            key_type,
+            public_key,
+            fingerprint,
+            ..
+        } => ItemDetail::SshKey {
+            title: title.clone(),
+            comment: comment.clone(),
+            key_type: key_type.clone(),
+            // The PRIVATE key deliberately does not cross. A phone cannot use
+            // it — there is no ssh-agent here — so sending it would be pure
+            // exposure for a value nothing on this side can spend.
+            //
+            // Formatted by vault-core rather than assembled here: the
+            // authorized_keys line has a wire format, and two places building
+            // it their own way is how they drift.
+            public_key: vault_core::ssh::authorized_key_from_blob(public_key, comment)
+                .unwrap_or_default(),
+            fingerprint: fingerprint.clone(),
+        },
+        VaultItem::Wifi {
+            title,
+            ssid,
+            password,
+            security,
+            hidden,
+            notes,
+        } => ItemDetail::Wifi {
+            title: title.clone(),
+            ssid: ssid.clone(),
+            password: password.clone(),
+            security: security.clone(),
+            hidden: *hidden,
+            notes: notes.clone(),
+        },
+        VaultItem::SecureNote { title, body } => ItemDetail::SecureNote {
+            title: title.clone(),
+            body: body.clone(),
+        },
+    };
+    serde_json::to_string(&detail).map_err(|_| Error::Serialization)
+}
+
+/// The live TOTP code for a login, with how long it stays valid.
+fn totp_json(vault: &Vault, id_str: &str) -> vault_core::Result<String> {
+    let id = uuid::Uuid::parse_str(id_str).map_err(|_| Error::NotFound)?;
+    let secret = match &vault.get_item(id)?.data {
+        VaultItem::Login {
+            totp_secret: Some(s),
+            ..
+        } if !s.is_empty() => s.clone(),
+        _ => return Err(Error::NotFound),
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| Error::Serialization)?
+        .as_secs();
+    let code = vault_core::current_totp(&secret, now)?;
+    serde_json::to_string(&serde_json::json!({
+        "code": code.code,
+        "period": code.period,
+        "remaining": code.remaining,
+    }))
+    .map_err(|_| Error::Serialization)
+}
+
 /// Build the JSON identity array from the unlocked vault's active logins.
 fn identities_json(vault: &Vault) -> vault_core::Result<String> {
     let ids: Vec<Identity> = vault
@@ -463,6 +653,112 @@ pub unsafe extern "C" fn vault_ffi_identities(
         Err(code) => return code,
     };
     match guard_result(|| identities_json(&vault)) {
+        Ok(json) => {
+            emit(json.into_bytes(), out_json, out_json_len);
+            OK
+        }
+        Err(code) => code,
+    }
+}
+
+/// Every active item, of every kind, as JSON. Metadata only, never a secret.
+///
+/// Distinct from [`vault_ffi_identities`], which stays logins-only because it
+/// feeds the platform credential store. This is what an app's own list should
+/// call: before it existed, four of the five item kinds were invisible on iOS.
+///
+/// Free the buffer with [`vault_ffi_free`].
+///
+/// # Safety
+/// `handle` must be valid; `out_json`/`out_json_len` writable pointers.
+#[no_mangle]
+pub unsafe extern "C" fn vault_ffi_items(
+    handle: *mut VaultHandle,
+    out_json: *mut *mut u8,
+    out_json_len: *mut usize,
+) -> i32 {
+    if handle.is_null() || out_json.is_null() || out_json_len.is_null() {
+        return ERR_NULL_ARG;
+    }
+    let vault = match lock_vault(&(*handle).vault) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    match guard_result(|| items_json(&vault)) {
+        Ok(json) => {
+            emit(json.into_bytes(), out_json, out_json_len);
+            OK
+        }
+        Err(code) => code,
+    }
+}
+
+/// The full payload of one item, tagged by kind, as JSON.
+///
+/// SECRET: this carries the Wi-Fi password and the note body in the clear. The
+/// buffer is zeroized by [`vault_ffi_free`]; do not retain it.
+///
+/// One thing deliberately does NOT cross: an SSH item's PRIVATE key. There is no
+/// ssh-agent on a phone, so nothing on that side can spend it, and shipping it
+/// would be exposure bought for nothing. The public key and fingerprint do come,
+/// because those are what you actually need to read off a screen.
+///
+/// # Safety
+/// `handle` valid; `id_utf8` a NUL-terminated C string; out pointers writable.
+#[no_mangle]
+pub unsafe extern "C" fn vault_ffi_item_detail(
+    handle: *mut VaultHandle,
+    id_utf8: *const c_char,
+    out_json: *mut *mut u8,
+    out_json_len: *mut usize,
+) -> i32 {
+    if handle.is_null() || id_utf8.is_null() || out_json.is_null() || out_json_len.is_null() {
+        return ERR_NULL_ARG;
+    }
+    let Some(id) = cstr(id_utf8) else {
+        return ERR_UTF8;
+    };
+    let vault = match lock_vault(&(*handle).vault) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    match guard_result(|| item_detail_json(&vault, id)) {
+        Ok(json) => {
+            emit(json.into_bytes(), out_json, out_json_len);
+            OK
+        }
+        Err(code) => code,
+    }
+}
+
+/// The live TOTP code for a login: `{ code, period, remaining }`.
+///
+/// SECRET-adjacent: the code is short-lived but is a second factor while it
+/// lasts. The TOTP *secret* never crosses this boundary — only the derived code
+/// does, so a caller that leaks one leaks thirty seconds rather than forever.
+///
+/// `ERR_NOT_FOUND` when the id is unknown, is not a login, or has no TOTP set.
+///
+/// # Safety
+/// `handle` valid; `id_utf8` a NUL-terminated C string; out pointers writable.
+#[no_mangle]
+pub unsafe extern "C" fn vault_ffi_totp(
+    handle: *mut VaultHandle,
+    id_utf8: *const c_char,
+    out_json: *mut *mut u8,
+    out_json_len: *mut usize,
+) -> i32 {
+    if handle.is_null() || id_utf8.is_null() || out_json.is_null() || out_json_len.is_null() {
+        return ERR_NULL_ARG;
+    }
+    let Some(id) = cstr(id_utf8) else {
+        return ERR_UTF8;
+    };
+    let vault = match lock_vault(&(*handle).vault) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    match guard_result(|| totp_json(&vault, id)) {
         Ok(json) => {
             emit(json.into_bytes(), out_json, out_json_len);
             OK
@@ -1047,8 +1343,190 @@ mod tests {
     // Pinned deliberately: clients gate features on this number, so a bump has
     // to be a conscious edit here, not a side effect.
     #[test]
-    fn abi_version_is_6() {
-        assert_eq!(vault_ffi_abi_version(), 6);
+    fn abi_version_is_7() {
+        assert_eq!(vault_ffi_abi_version(), 7);
+    }
+
+    // ---- every-kind surface (ABI v7) -------------------------------------
+
+    /// Open a handle with the device key, or fail the test loudly.
+    fn open_handle(bytes: &[u8], key: &[u8; KEY_LEN]) -> *mut VaultHandle {
+        let mut handle: *mut VaultHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                vault_ffi_vault_open(
+                    bytes.as_ptr(),
+                    bytes.len(),
+                    key.as_ptr(),
+                    KEY_LEN,
+                    &mut handle,
+                )
+            },
+            OK
+        );
+        handle
+    }
+
+    /// Call a `(handle, **out, *len)` export and take the JSON as a String,
+    /// freeing the buffer the way a real caller must.
+    fn json_call(
+        handle: *mut VaultHandle,
+        f: unsafe extern "C" fn(*mut VaultHandle, *mut *mut u8, *mut usize) -> i32,
+    ) -> String {
+        let (mut out, mut len) = (ptr::null_mut(), 0usize);
+        assert_eq!(unsafe { f(handle, &mut out, &mut len) }, OK);
+        let s =
+            unsafe { std::str::from_utf8(slice::from_raw_parts(out, len)).unwrap() }.to_string();
+        unsafe { vault_ffi_free(out, len) };
+        s
+    }
+
+    /// Same, for the exports that take an id.
+    fn json_call_id(
+        handle: *mut VaultHandle,
+        id: *const c_char,
+        f: unsafe extern "C" fn(*mut VaultHandle, *const c_char, *mut *mut u8, *mut usize) -> i32,
+    ) -> String {
+        let (mut out, mut len) = (ptr::null_mut(), 0usize);
+        assert_eq!(unsafe { f(handle, id, &mut out, &mut len) }, OK);
+        let s =
+            unsafe { std::str::from_utf8(slice::from_raw_parts(out, len)).unwrap() }.to_string();
+        unsafe { vault_ffi_free(out, len) };
+        s
+    }
+
+    /// A vault holding one of EVERY kind, which is the case that matters: for
+    /// six ABI versions `identities` filtered to logins, so four kinds were
+    /// invisible to any caller that had no other way to ask.
+    fn every_kind_vault() -> (Vec<u8>, [u8; KEY_LEN]) {
+        use vault_core::{Item, KdfAlgorithm, KdfParams};
+        let params = KdfParams {
+            algorithm: KdfAlgorithm::Argon2id,
+            m_cost_kib: 256,
+            t_cost: 1,
+            p_cost: 1,
+            salt: vec![7u8; KdfParams::SALT_LEN],
+        };
+        let mut v = Vault::create("pw", params).unwrap();
+        let device = SymmetricKey::generate().unwrap();
+        v.enable_device_unlock(&device).unwrap();
+        for data in [
+            VaultItem::Login {
+                title: "GitHub".into(),
+                username: "frank@sybr.no".into(),
+                password: "pw".into(),
+                url: "https://github.com".into(),
+                // RFC 4648 base32, so `current_totp` has something real to chew.
+                totp_secret: Some("JBSWY3DPEHPK3PXP".into()),
+                notes: String::new(),
+            },
+            VaultItem::Wifi {
+                title: "Home".into(),
+                ssid: "Sybr".into(),
+                password: "wifi-pw".into(),
+                security: "WPA2".into(),
+                hidden: false,
+                notes: String::new(),
+            },
+            VaultItem::SecureNote {
+                title: "Recovery".into(),
+                body: "the body".into(),
+            },
+        ] {
+            v.upsert_item(Item::new(data, 0)).unwrap();
+        }
+        let mut key = [0u8; KEY_LEN];
+        key.copy_from_slice(device.as_bytes());
+        (v.to_bytes().unwrap(), key)
+    }
+
+    /// The bug this ABI version exists to fix.
+    #[test]
+    fn items_returns_every_kind_while_identities_stays_logins_only() {
+        let (bytes, key) = every_kind_vault();
+        let handle = open_handle(&bytes, &key);
+
+        let all: serde_json::Value =
+            serde_json::from_str(&json_call(handle, vault_ffi_items)).unwrap();
+        let kinds: Vec<&str> = all
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds.len(), 3, "every kind should be listed");
+        assert!(kinds.contains(&"wifi"));
+        assert!(kinds.contains(&"secure_note"));
+
+        // And the credential-store feed must NOT have widened: a Wi-Fi password
+        // in the QuickType bar is nonsense, and AutoFill depends on this.
+        let ids: serde_json::Value =
+            serde_json::from_str(&json_call(handle, vault_ffi_identities)).unwrap();
+        assert_eq!(
+            ids.as_array().unwrap().len(),
+            1,
+            "identities stays logins-only"
+        );
+
+        unsafe { vault_ffi_vault_free(handle) };
+    }
+
+    #[test]
+    fn detail_carries_each_kinds_own_fields_and_no_ssh_private_key() {
+        let (bytes, key) = every_kind_vault();
+        let handle = open_handle(&bytes, &key);
+        let all: serde_json::Value =
+            serde_json::from_str(&json_call(handle, vault_ffi_items)).unwrap();
+
+        for item in all.as_array().unwrap() {
+            let id = std::ffi::CString::new(item["id"].as_str().unwrap()).unwrap();
+            let detail: serde_json::Value =
+                serde_json::from_str(&json_call_id(handle, id.as_ptr(), vault_ffi_item_detail))
+                    .unwrap();
+            assert_eq!(detail["kind"], item["kind"]);
+            match detail["kind"].as_str().unwrap() {
+                "wifi" => assert_eq!(detail["password"], "wifi-pw"),
+                "secure_note" => assert_eq!(detail["body"], "the body"),
+                "login" => {
+                    assert_eq!(detail["password"], "pw");
+                    // The TOTP SECRET must never appear — only the flag.
+                    assert_eq!(detail["has_totp"], true);
+                    assert!(detail.get("totp_secret").is_none());
+                }
+                other => panic!("unexpected kind {other}"),
+            }
+        }
+        unsafe { vault_ffi_vault_free(handle) };
+    }
+
+    #[test]
+    fn totp_returns_a_live_code_and_refuses_items_without_one() {
+        let (bytes, key) = every_kind_vault();
+        let handle = open_handle(&bytes, &key);
+        let all: serde_json::Value =
+            serde_json::from_str(&json_call(handle, vault_ffi_items)).unwrap();
+
+        for item in all.as_array().unwrap() {
+            let id = std::ffi::CString::new(item["id"].as_str().unwrap()).unwrap();
+            let mut out: *mut u8 = std::ptr::null_mut();
+            let mut len: usize = 0;
+            let rc = unsafe { vault_ffi_totp(handle, id.as_ptr(), &mut out, &mut len) };
+            if item["kind"] == "login" {
+                assert_eq!(rc, OK);
+                let json: serde_json::Value = serde_json::from_str(&unsafe {
+                    String::from_utf8_lossy(std::slice::from_raw_parts(out, len)).into_owned()
+                })
+                .unwrap();
+                assert_eq!(json["code"].as_str().unwrap().len(), 6);
+                assert_eq!(json["period"], 30);
+                unsafe { vault_ffi_free(out, len) };
+            } else {
+                // Not "empty code" — an item with no TOTP has no answer, and
+                // saying so is what lets the UI hide the row entirely.
+                assert_eq!(rc, ERR_NOT_FOUND);
+            }
+        }
+        unsafe { vault_ffi_vault_free(handle) };
     }
 
     // ---- device-unlock surface (ABI v4) ---------------------------------

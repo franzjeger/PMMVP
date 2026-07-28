@@ -45,10 +45,12 @@ enum VaultShared {
     /// quietly — and "quietly wrong" in a credential provider means filling the
     /// wrong bytes into someone's login form.
     /// v6 added the write surface (`vault_ffi_upsert_login`,
-    /// `vault_ffi_delete_item`). Bump this in the SAME commit that bumps
+    /// `vault_ffi_delete_item`); v7 added `vault_ffi_items`,
+    /// `vault_ffi_item_detail` and `vault_ffi_totp`, which is what finally lets
+    /// a phone see more than logins. Bump this in the SAME commit that bumps
     /// `ABI_VERSION`: nothing compiles against it, so a stale value is only ever
     /// caught at runtime, by this guard, on a device.
-    static let requiredAbiVersion: Int32 = 6
+    static let requiredAbiVersion: Int32 = 7
 
     /// Info.plist key carrying the shared keychain access group. Both targets
     /// set it to `$(AppIdentifierPrefix)no.sybr.vault.shared`, which Xcode
@@ -246,6 +248,119 @@ func vaultLogMessage(for error: Error) -> String {
     return "unexpected(\(ns.domain):\(ns.code))"
 }
 
+/// One item of any kind, as produced by `vault_ffi_items`. Metadata only.
+struct VaultItemMeta: Decodable, Identifiable, Hashable {
+    enum Kind: String, Decodable {
+        case login, passkey, wifi
+        case sshKey = "ssh_key"
+        case secureNote = "secure_note"
+
+        /// The SF Symbol for this kind. Here rather than in a view because two
+        /// screens draw the same list and must not disagree about what a Wi-Fi
+        /// entry looks like.
+        var symbol: String {
+            switch self {
+            case .login: return "key.fill"
+            case .passkey: return "person.badge.key.fill"
+            case .sshKey: return "terminal.fill"
+            case .wifi: return "wifi"
+            case .secureNote: return "note.text"
+            }
+        }
+
+        var label: String {
+            switch self {
+            case .login: return "Login"
+            case .passkey: return "Passkey"
+            case .sshKey: return "SSH key"
+            case .wifi: return "Wi-Fi"
+            case .secureNote: return "Note"
+            }
+        }
+    }
+
+    let id: String
+    let kind: Kind
+    let title: String
+    let subtitle: String
+    let url: String
+    let hasTotp: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, title, subtitle, url
+        case hasTotp = "has_totp"
+    }
+}
+
+/// The full payload of one item. SECRET.
+enum VaultItemDetail: Decodable {
+    case login(title: String, username: String, password: String, url: String, hasTotp: Bool, notes: String)
+    case passkey(title: String, rpID: String, userName: String)
+    case sshKey(title: String, comment: String, keyType: String, publicKey: String, fingerprint: String)
+    case wifi(title: String, ssid: String, password: String, security: String, hidden: Bool, notes: String)
+    case secureNote(title: String, body: String)
+
+    private enum CodingKeys: String, CodingKey {
+        case kind, title, username, password, url, notes, body
+        case ssid, security, hidden, comment, fingerprint
+        case hasTotp = "has_totp"
+        case rpID = "rp_id"
+        case userName = "user_name"
+        case keyType = "key_type"
+        case publicKey = "public_key"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try c.decode(String.self, forKey: .kind)
+        let title = try c.decode(String.self, forKey: .title)
+        switch kind {
+        case "login":
+            self = .login(
+                title: title,
+                username: try c.decode(String.self, forKey: .username),
+                password: try c.decode(String.self, forKey: .password),
+                url: try c.decode(String.self, forKey: .url),
+                hasTotp: try c.decode(Bool.self, forKey: .hasTotp),
+                notes: try c.decode(String.self, forKey: .notes))
+        case "passkey":
+            self = .passkey(
+                title: title,
+                rpID: try c.decode(String.self, forKey: .rpID),
+                userName: try c.decode(String.self, forKey: .userName))
+        case "ssh_key":
+            self = .sshKey(
+                title: title,
+                comment: try c.decode(String.self, forKey: .comment),
+                keyType: try c.decode(String.self, forKey: .keyType),
+                publicKey: try c.decode(String.self, forKey: .publicKey),
+                fingerprint: try c.decode(String.self, forKey: .fingerprint))
+        case "wifi":
+            self = .wifi(
+                title: title,
+                ssid: try c.decode(String.self, forKey: .ssid),
+                password: try c.decode(String.self, forKey: .password),
+                security: try c.decode(String.self, forKey: .security),
+                hidden: try c.decode(Bool.self, forKey: .hidden),
+                notes: try c.decode(String.self, forKey: .notes))
+        case "secure_note":
+            self = .secureNote(title: title, body: try c.decode(String.self, forKey: .body))
+        default:
+            // A kind this build has not learned. Refusing beats rendering a
+            // blank card that looks like an empty item.
+            throw DecodingError.dataCorruptedError(
+                forKey: .kind, in: c, debugDescription: "unknown item kind \(kind)")
+        }
+    }
+}
+
+/// A live TOTP code and the seconds it has left.
+struct VaultTotp: Decodable {
+    let code: String
+    let period: UInt64
+    let remaining: UInt64
+}
+
 /// One login identity (metadata only) as produced by `vault_ffi_identities`.
 struct VaultIdentity: Decodable, Sendable, Identifiable {
     let id: String
@@ -342,6 +457,74 @@ final class VaultSession: @unchecked Sendable {
     // MARK: Reading
 
     /// Login identities — metadata only, never a secret.
+    /// Every item, of every kind. Metadata only.
+    ///
+    /// `identities()` stays logins-only because it feeds the platform
+    /// credential store. This is what a LIST should call: until ABI v7 four of
+    /// the five kinds simply had no way to be asked for, so a phone showed a
+    /// fifth of the vault and gave no sign the rest existed.
+    func items() async throws -> [VaultItemMeta] {
+        try await Self.run {
+            var json: UnsafeMutablePointer<UInt8>?
+            var length = 0
+            let code = vault_ffi_items(self.handle, &json, &length)
+            guard code == VaultFFICode.ok else {
+                throw VaultError.ffi(code: code, operation: "items")
+            }
+            guard let json else { return [] }
+            defer { vault_ffi_free(json, length) }
+            do {
+                return try JSONDecoder()
+                    .decode([VaultItemMeta].self, from: Data(bytes: json, count: length))
+            } catch {
+                throw VaultError.malformedIdentities
+            }
+        }
+    }
+
+    /// The full payload of one item, tagged by kind.
+    ///
+    /// SECRET: carries the Wi-Fi password and note body. Hold it no longer than
+    /// the screen that shows it.
+    func detail(forID id: String) async throws -> VaultItemDetail {
+        try await Self.run {
+            var json: UnsafeMutablePointer<UInt8>?
+            var length = 0
+            let code = id.withCString { vault_ffi_item_detail(self.handle, $0, &json, &length) }
+            guard code == VaultFFICode.ok else {
+                throw VaultError.ffi(code: code, operation: "item detail")
+            }
+            guard let json else { throw VaultError.malformedIdentities }
+            defer { vault_ffi_free(json, length) }
+            do {
+                return try JSONDecoder()
+                    .decode(VaultItemDetail.self, from: Data(bytes: json, count: length))
+            } catch {
+                throw VaultError.malformedIdentities
+            }
+        }
+    }
+
+    /// The live TOTP code for a login, and how long it has left.
+    ///
+    /// Returns nil when the item has no TOTP — which the ABI reports as
+    /// `notFound` rather than an empty code, so the UI can hide the row instead
+    /// of showing six blanks.
+    func totp(forID id: String) async throws -> VaultTotp? {
+        try await Self.run {
+            var json: UnsafeMutablePointer<UInt8>?
+            var length = 0
+            let code = id.withCString { vault_ffi_totp(self.handle, $0, &json, &length) }
+            if code == VaultFFICode.notFound { return nil }
+            guard code == VaultFFICode.ok, let json else {
+                throw VaultError.ffi(code: code, operation: "totp")
+            }
+            defer { vault_ffi_free(json, length) }
+            return try? JSONDecoder()
+                .decode(VaultTotp.self, from: Data(bytes: json, count: length))
+        }
+    }
+
     func identities() async throws -> [VaultIdentity] {
         try await Self.run {
             var json: UnsafeMutablePointer<UInt8>?
