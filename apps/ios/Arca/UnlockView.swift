@@ -14,9 +14,26 @@ import SwiftUI
 struct UnlockView: View {
     @Environment(VaultStore.self) private var store
 
+    @Environment(\.scenePhase) private var scenePhase
+
     @State private var password = ""
     @State private var didTryBiometrics = false
     @FocusState private var focused: Bool
+
+    /// Ask for Face ID once per stretch of being the app in front.
+    ///
+    /// Not once per appearance: locking the PHONE backgrounds Arca, which locks
+    /// the vault and puts this view on screen while the device itself is still
+    /// locked — where a biometric prompt cannot possibly succeed. Firing there
+    /// spent the one attempt on nothing, so coming back to an unlocked phone
+    /// offered a button instead of a face. The attempt now belongs to becoming
+    /// active, and leaving active re-arms it.
+    private func attemptBiometrics() async {
+        guard scenePhase == .active, !didTryBiometrics else { return }
+        guard await store.resolveQuickUnlockAvailability() else { return }
+        didTryBiometrics = true
+        await store.unlockWithDeviceKey()
+    }
 
     private var isUnlocking: Bool { store.phase == .unlocking }
 
@@ -75,20 +92,20 @@ struct UnlockView: View {
         }
         .padding(28)
         .task {
-            // Once per appearance. Backgrounding locks the vault, which brings
-            // this view back and legitimately re-arms the prompt; a failed or
-            // declined attempt must not loop.
-            //
-            // `await` the probe rather than reading the cached flag: this runs
-            // before the first refresh has landed, so the flag is still false
-            // here and reading it would silently skip the whole thing — turning
-            // an automatic unlock into a button. Face ID should happen because
-            // you opened the app, not because you asked twice.
-            if !didTryBiometrics, await store.resolveQuickUnlockAvailability() {
-                didTryBiometrics = true
-                await store.unlockWithDeviceKey()
-            }
+            // Covers arriving here while already in front — locking from inside
+            // the app, or a fresh launch. `scenePhase` does not change in that
+            // case, so `onChange` alone would never fire.
+            await attemptBiometrics()
             focused = store.phase != .unlocked
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                Task { await attemptBiometrics() }
+            } else {
+                // Going away re-arms it. A declined or failed attempt still does
+                // not loop, because nothing re-triggers until the app comes back.
+                didTryBiometrics = false
+            }
         }
     }
 
