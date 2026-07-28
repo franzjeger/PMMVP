@@ -55,7 +55,7 @@ Current version: **0.3.0** — see [`CHANGELOG.md`](./CHANGELOG.md)
 | **macOS** | Daily driver. Signed + notarizable releases, see [`docs/RELEASING.md`](./docs/RELEASING.md). |
 | **Windows** | Working, including the ssh-agent named pipe. Built in CI. |
 | **Linux** | Builds and passes CI (incl. X11/Wayland clipboard smoke tests) but has **never been run by a human**. Treat as untested. |
-| **iOS** | In `apps/ios/`: unlock, search, add/edit/delete logins, an AutoFill provider, Face ID quick unlock, and sync (C ABI v6 + Swift + its own Google OAuth client). Runs in the simulator; **never run on a device**, and no Google sign-in has completed from the phone yet. See [`docs/IOS.md`](./docs/IOS.md). |
+| **iOS** | Running on a phone since 2026-07-28: unlock, Face ID, search, add/edit/delete logins, an AutoFill provider, and Google Drive sync both ways (C ABI v6). Sideloaded — no TestFlight — and a new phone still needs its first vault handed to it by AirDrop, because sync is built from an already-open vault. See [`docs/IOS.md`](./docs/IOS.md). |
 | **Android** | Not built. |
 | **System-wide macOS AutoFill** | Shelved. It works technically, but Touch ID on every fill and a fight with Apple's own password menu made it worse than the browser extension. Source kept in `apps/macos/`. |
 
