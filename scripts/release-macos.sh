@@ -120,12 +120,37 @@ export TAURI_SIGNING_PRIVATE_KEY="$UPDATER_KEY"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${ARCA_UPDATER_KEY_PASSWORD:-}"
 # createUpdaterArtifacts is passed HERE, not in tauri.conf.json: in the shared
 # config it made every local dev build demand the release signing key.
-(cd "$REPO/apps/desktop" && npm run tauri build -- --bundles app,dmg \
+#
+# `--bundles app`, not `app,dmg`. Tauri's DMG bundler drives Finder over
+# AppleScript to arrange the icons in the window, and that step fails at random
+# ("Can't get disk (-1728)"): the same command succeeded by hand and failed
+# under the build minutes apart, and all Tauri reports is "failed to run
+# bundle_dmg.sh" with no cause. Prettiness is not worth a release that fails
+# every other attempt for reasons nobody can see. The disk image is built below
+# with hdiutil instead — no Finder, no automation, same contents.
+(cd "$REPO/apps/desktop" && npm run tauri build -- --bundles app \
   --config '{"bundle":{"createUpdaterArtifacts":true}}')
 
 APP="$REPO/target/release/bundle/macos/Arca.app"
-DMG="$(ls -t "$REPO/target/release/bundle/dmg/"*.dmg 2>/dev/null | head -1 || true)"
 [ -d "$APP" ] || die "no app bundle at $APP"
+
+step "Building the disk image"
+VERSION="$(python3 -c "import json;print(json.load(open('$REPO/apps/desktop/src-tauri/tauri.conf.json'))['version'])")"
+DMG="$REPO/target/release/bundle/dmg/Arca_${VERSION}_aarch64.dmg"
+mkdir -p "$(dirname "$DMG")"
+rm -f "$DMG"
+DMG_STAGE="$(mktemp -d)"
+# `ditto` rather than `cp -R`: it preserves the signature's extended attributes,
+# and a DMG holding a subtly broken copy would fail notarization with something
+# far less obvious than this comment.
+ditto "$APP" "$DMG_STAGE/Arca.app"
+ln -s /Applications "$DMG_STAGE/Applications"
+hdiutil create -volname "Arca" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG" >/dev/null
+rm -rf "$DMG_STAGE"
+# Sign the image too, so what the user downloads is itself attributable and not
+# merely a container for something that is.
+codesign --force --sign "$IDENTITY" "$DMG"
+echo "   $(basename "$DMG") ($(du -h "$DMG" | cut -f1))"
 
 step "Verifying the signature"
 codesign --verify --deep --strict --verbose=2 "$APP" 2>&1 | tail -3
@@ -184,7 +209,6 @@ step "Writing the update manifest"
 # createUpdaterArtifacts is on. latest.json is what installed copies poll.
 UPD_ARCHIVE="$(ls -t "$REPO/target/release/bundle/macos/"*.app.tar.gz 2>/dev/null | head -1 || true)"
 if [ -n "$UPD_ARCHIVE" ] && [ -f "$UPD_ARCHIVE.sig" ]; then
-  VERSION="$(python3 -c "import json;print(json.load(open('$REPO/apps/desktop/src-tauri/tauri.conf.json'))['version'])")"
   LATEST="$REPO/target/release/bundle/latest.json"
   SIG="$(cat "$UPD_ARCHIVE.sig")" VER="$VERSION" ARCH="$(basename "$UPD_ARCHIVE")" \
   python3 - > "$LATEST" <<'PYEOF'
