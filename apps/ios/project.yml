@@ -84,6 +84,10 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: no.sybr.vault.ios
         INFOPLIST_FILE: Arca/Info.plist
         CODE_SIGN_ENTITLEMENTS: Arca/Arca.entitlements
+        # One 1024px image; Xcode derives every size it needs. The source
+        # is the same artwork the desktop ships, flattened — an app icon
+        # with an alpha channel is rejected outright.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     preBuildScripts:
       - *buildFfi
     dependencies:
