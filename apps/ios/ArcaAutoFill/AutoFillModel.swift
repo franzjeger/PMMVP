@@ -92,7 +92,32 @@ final class AutoFillModel {
         }
     }
 
+    /// Argon2id needs the vault header's memory cost in one block — 64 MiB at
+    /// Arca's defaults — and an AutoFill extension has a hard memory ceiling it
+    /// is KILLED for crossing, not slowed. `os_proc_available_memory` is
+    /// Apple's documented way to ask whether an expensive operation will fit
+    /// before starting it.
+    ///
+    /// The headroom is for everything the derivation does not account for: the
+    /// decrypted vault, SwiftUI, and the allocator's own slack. Refusing with a
+    /// sentence beats being terminated mid-fill, which the user sees as the
+    /// keyboard simply forgetting Arca exists.
+    private static let argon2Budget = 64 << 20
+    private static let headroom = 24 << 20
+
+    private static var canAffordPasswordUnlock: Bool {
+        os_proc_available_memory() > argon2Budget + headroom
+    }
+
     func unlock(password: String) async {
+        guard Self.canAffordPasswordUnlock else {
+            log.error("refusing password unlock: \(os_proc_available_memory(), privacy: .public) bytes available")
+            failure = """
+                Not enough memory here to derive the key. Open Arca and turn on \
+                Face ID — filling then costs a fraction of this.
+                """
+            return
+        }
         await open(fallback: "Couldn't unlock the vault.") {
             try await VaultSession.openWithMasterPassword(password)
         }
