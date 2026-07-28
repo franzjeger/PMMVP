@@ -59,10 +59,12 @@ Current version: **0.3.0** — see [`CHANGELOG.md`](./CHANGELOG.md)
 | **Android** | Not built. |
 | **System-wide macOS AutoFill** | Shelved. It works technically, but Touch ID on every fill and a fight with Apple's own password menu made it worse than the browser extension. Source kept in `apps/macos/`. |
 
-Auto-update is **wired but has nothing to update to**: the signing key, the
-plugin and the endpoint are all in place, and no release has ever been
-published, so the manifest that endpoint points at does not exist. Until one is,
-a new version means replacing the app by hand
+**Download:** [`Arca_0.3.0_aarch64.dmg`](https://github.com/franzjeger/PMMVP/releases/latest)
+— signed, notarized and stapled, so it opens without a Gatekeeper warning.
+Apple Silicon only; there is no Intel or Windows build yet.
+
+Auto-update works from 0.3.0 onward. Copies older than that were only ever
+built on one machine and have to be replaced by hand
 ([`docs/RELEASING.md`](./docs/RELEASING.md)).
 
 ## Architecture
