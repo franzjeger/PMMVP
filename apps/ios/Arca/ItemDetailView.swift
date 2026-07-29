@@ -212,21 +212,13 @@ private struct TotpSection: View {
                     SecretPasteboard.copy(totp.code)
                     copied = true
                 }
-                // Opt-in, never automatic: a Live Activity outlives this sheet
-                // and shows on the LOCK SCREEN. That has to be something asked
-                // for, not something that happens because you opened an item.
-                if island.isAvailable {
-                    if island.showingItemID == item.id {
-                        Button("Remove from Dynamic Island", systemImage: "xmark.circle") {
-                            island.stop()
-                        }
-                    } else {
-                        Button("Show in Dynamic Island", systemImage: "iphone.gen3") {
-                            island.start(
-                                item: item,
-                                code: totp,
-                                label: item.subtitle.isEmpty ? item.title : item.subtitle)
-                        }
+                // Off, not on: it starts by itself the moment this section
+                // appears (see `.task`), because needing a tap first defeats
+                // the purpose — you press it, leave for the app you are
+                // signing in to, and that is when it becomes visible.
+                if island.isAvailable, island.showingItemID == item.id {
+                    Button("Keep off the Dynamic Island", systemImage: "xmark.circle") {
+                        island.stop()
                     }
                 }
                 if copied {
@@ -241,11 +233,24 @@ private struct TotpSection: View {
             // ticking while the app was backgrounded would be confidently wrong.
             while !Task.isCancelled {
                 let next = await store.totp(for: item)
-                // Push the new code to the island only when it actually rotated,
-                // rather than once a second: an update is a system call, and 29
-                // out of 30 of them would say nothing new.
-                if let next, next.code != totp?.code, island.showingItemID == item.id {
-                    await island.refresh(code: next)
+                if let next {
+                    if island.showingItemID == item.id {
+                        // Push the new code only when it actually rotated,
+                        // rather than once a second: an update is a system
+                        // call, and 29 out of 30 would say nothing new.
+                        if next.code != totp?.code {
+                            await island.refresh(code: next)
+                        }
+                    } else if island.isAvailable {
+                        // Automatic, on opening the item. Opening a code you
+                        // are about to type somewhere else IS the request; a
+                        // separate button to say so again only means the
+                        // people who need it most never find it.
+                        island.start(
+                            item: item,
+                            code: next,
+                            label: item.subtitle.isEmpty ? item.title : item.subtitle)
+                    }
                 }
                 totp = next
                 try? await Task.sleep(for: .seconds(1))

@@ -30,8 +30,24 @@ struct ArcaApp: App {
                     // decrypted vault is a worse trade than retyping.
                     if phase == .background {
                         store.lock()
-                        // The vault is sealed; a code taken from it must not
-                        // outlive that on the lock screen.
+                    }
+                    // The Live Activity deliberately SURVIVES that lock.
+                    //
+                    // It used to be stopped here, on the reasoning that a code
+                    // taken from the vault must not outlive the vault being
+                    // sealed. That sounds principled and made the feature
+                    // impossible: iOS never shows an app's own activity while
+                    // that app is in front, so the only moment it could appear
+                    // was the moment this killed it.
+                    //
+                    // It also protected nothing. The digits are redacted by
+                    // `.privacySensitive()` on a locked device, the code dies
+                    // within thirty seconds, and anyone holding the phone
+                    // unlocked can simply open Arca.
+                    //
+                    // Coming BACK is where it ends: you are in the app again,
+                    // the code is on screen, and the island is noise.
+                    if phase == .active {
                         island.stop()
                     }
                 }
