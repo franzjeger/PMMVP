@@ -40,12 +40,12 @@ struct TotpLiveActivity: Widget {
                         .lineLimit(1)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    CountdownText(to: context.state.expiresAt)
+                    CountdownText(to: context.state.expiresAt, expired: context.isStale)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
                 DynamicIslandExpandedRegion(.center) {
-                    CodeText(state: context.state, size: .title)
+                    CodeText(state: context.state, expired: context.isStale, size: .title)
                 }
             } compactLeading: {
                 Image(systemName: "key.fill").foregroundStyle(.tint)
@@ -53,7 +53,7 @@ struct TotpLiveActivity: Widget {
                 // The compact trailing slot is a few characters wide, so it gets
                 // the seconds rather than the code — enough to decide whether to
                 // tap now or wait for the next one.
-                CountdownText(to: context.state.expiresAt)
+                CountdownText(to: context.state.expiresAt, expired: context.isStale)
                     .font(.caption2.monospacedDigit())
                     .frame(width: 32)
             } minimal: {
@@ -77,10 +77,10 @@ private struct LockScreenView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                CodeText(state: context.state, size: .title2)
+                CodeText(state: context.state, expired: context.isStale, size: .title2)
             }
             Spacer()
-            CountdownText(to: context.state.expiresAt)
+            CountdownText(to: context.state.expiresAt, expired: context.isStale)
                 .font(.body.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
@@ -93,12 +93,22 @@ private struct LockScreenView: View {
 /// After `expiresAt` the app may well be closed, so there is no new code to show
 /// and no way to fetch one. Saying so beats leaving six stale digits on screen
 /// that look current and are not.
+///
+/// EXPIRY COMES FROM `context.isStale`, NOT FROM `Date()`.
+///
+/// This body runs when the system decides to draw, not once a second. Comparing
+/// `Date()` to the expiry samples the clock at construction — always before
+/// expiry, since that is when the activity was created — so the else branch was
+/// unreachable and six dead digits stayed on the lock screen looking current.
+/// ActivityKit sets `isStale` when the content's `staleDate` passes AND redraws
+/// at that moment, which is the only signal here that ever changes.
 private struct CodeText: View {
     let state: TotpActivityAttributes.ContentState
+    let expired: Bool
     let size: Font
 
     var body: some View {
-        if Date() < state.expiresAt {
+        if !expired {
             Text(spaced(state.code))
                 .font(size.monospaced().weight(.semibold))
                 .privacySensitive()
@@ -118,11 +128,16 @@ private struct CodeText: View {
 }
 
 /// A countdown the SYSTEM renders, so it stays right with Arca not running.
+///
+/// Same `isStale` reasoning as `CodeText`: a `Date()` comparison here left the
+/// timer parked on 0:00 for as long as the activity lived, because nothing ever
+/// re-evaluated it.
 private struct CountdownText: View {
     let to: Date
+    let expired: Bool
 
     var body: some View {
-        if Date() < to {
+        if !expired {
             Text(timerInterval: Date()...to, countsDown: true)
                 .multilineTextAlignment(.trailing)
         } else {
