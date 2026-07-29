@@ -45,6 +45,8 @@ final class VaultStore {
     /// unlocked; `quickUnlockAvailable` is the question to ask before that.
     private(set) var quickUnlockEnabled = false
     var query = ""
+    /// Which slice of the vault the list is showing.
+    var category: VaultCategory = .all
 
     /// Whether a quick-unlock key is stored on this device.
     ///
@@ -65,16 +67,54 @@ final class VaultStore {
 
     nonisolated init() {}
 
-    /// Items matching the current search, in a stable order.
+    /// Items matching the current search AND category, in a stable order.
     var results: [VaultItemMeta] {
+        let inCategory = items.filter(category.contains)
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !needle.isEmpty else { return items }
-        return items.filter {
+        guard !needle.isEmpty else { return inCategory }
+        return inCategory.filter {
             $0.title.lowercased().contains(needle)
                 || $0.subtitle.lowercased().contains(needle)
                 || $0.url.lowercased().contains(needle)
                 || $0.kind.label.lowercased().contains(needle)
         }
+    }
+
+    /// How many items a category holds, ignoring the search.
+    ///
+    /// Shown next to each category so the ones that are empty say so before you
+    /// tap them. In a vault of six hundred logins, six passkeys are otherwise
+    /// indistinguishable from none.
+    func count(of category: VaultCategory) -> Int {
+        items.reduce(into: 0) { $0 += category.contains($1) ? 1 : 0 }
+    }
+
+    /// `results` cut into alphabetical sections, with the index letters.
+    ///
+    /// A phone cannot show six hundred rows usefully as one strip. Sections give
+    /// the list an index bar, which is the difference between scrolling to "S"
+    /// and scrolling past everything before it.
+    var sections: [(letter: String, items: [VaultItemMeta])] {
+        Dictionary(grouping: results, by: Self.indexLetter)
+            .sorted { lhs, rhs in
+                // "#" last: a bucket of numbers and symbols at the top pushes
+                // the alphabet down and is never what anyone is looking for.
+                if (lhs.key == "#") != (rhs.key == "#") { return rhs.key == "#" }
+                return lhs.key < rhs.key
+            }
+            .map { (letter: $0.key, items: $0.value) }
+    }
+
+    /// The section an item belongs in — its first letter, or "#".
+    private static func indexLetter(for item: VaultItemMeta) -> String {
+        let name = VaultListView.title(for: item)
+        guard let first = name.first(where: { !$0.isWhitespace }) else { return "#" }
+        // Folded so "Ørsted" files under Ø rather than by its underlying scalar,
+        // and "élan" under E. Norwegian vaults are full of both.
+        let folded = String(first).folding(
+            options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+        guard let letter = folded.first, letter.isLetter else { return "#" }
+        return String(letter).uppercased()
     }
 
     /// The full payload of one item. SECRET — hold it no longer than the sheet.
@@ -214,7 +254,57 @@ final class VaultStore {
         }
     }
 
+    // MARK: Auto-lock
+
+    /// How long the vault may stay open while Arca is not in front.
+    ///
+    /// It used to lock the moment the app was backgrounded, which is defensible
+    /// on paper and punishing in use: switching to Safari to paste a password
+    /// and switching back cost a Face ID prompt, so signing in once meant
+    /// authenticating three times. People do not tolerate that; they turn the
+    /// protection off, or they stop using the app.
+    /// Stored, not computed over `UserDefaults`: `@Observable` tracks stored
+    /// properties, so a computed one would leave the picker's checkmark on the
+    /// old row until the menu was reopened — looking like the setting refused.
+    var lockAfter: AutoLockDelay = AutoLockDelay(
+        stored: UserDefaults.standard.string(forKey: VaultStore.lockAfterKey)
+    ) {
+        didSet { UserDefaults.standard.set(lockAfter.rawValue, forKey: Self.lockAfterKey) }
+    }
+
+    fileprivate static let lockAfterKey = "arca.autoLockDelay"
+
+    /// When Arca last went to the background, if it is still there.
+    private var leftAt: Date?
+
+    /// Arca went to the background. Note the time; do not lock yet.
+    ///
+    /// The cost of this choice, stated plainly: between here and the deadline a
+    /// suspended process holds the decrypted vault in memory. That is real, and
+    /// it is bounded by `lockAfter` and by the device passcode — reaching that
+    /// memory needs the phone unlocked, and anyone with an unlocked phone can
+    /// open Arca and pass Face ID anyway.
+    func noteBackgrounded() {
+        guard phase == .unlocked else { return }
+        leftAt = Date()
+        if lockAfter == .immediately { lock() }
+    }
+
+    /// Arca came back. Lock if it was away longer than the user allows.
+    ///
+    /// Checked on return rather than by a timer, because a suspended app runs no
+    /// timers — a deadline that only fires while the app is awake is not a
+    /// deadline. `Date()` can be moved by changing the clock; the cost of that
+    /// is one early or late lock on a phone the attacker already holds unlocked.
+    func lockIfExpired() {
+        guard phase == .unlocked, let leftAt else { return }
+        defer { self.leftAt = nil }
+        guard let limit = lockAfter.seconds else { return }
+        if Date().timeIntervalSince(leftAt) >= limit { lock() }
+    }
+
     func lock() {
+        leftAt = nil
         // NOT clearing the credential identity store: it holds no secrets, and
         // it is what makes iOS offer Arca at all. The extension does its own
         // unlock when a suggestion is picked, so dropping the identities here

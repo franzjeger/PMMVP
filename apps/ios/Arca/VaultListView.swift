@@ -30,31 +30,74 @@ struct VaultListView: View {
                     } actions: {
                         Button("Add a login") { creating = true }
                     }
-                } else if store.results.isEmpty {
+                } else if store.results.isEmpty, !store.query.isEmpty {
                     ContentUnavailableView.search(text: store.query)
+                } else if store.results.isEmpty {
+                    // An empty CATEGORY, not an empty vault. Said in the
+                    // category's own words so it is obvious the filter is
+                    // working rather than the data missing.
+                    ContentUnavailableView {
+                        Label(store.category.label, systemImage: store.category.symbol)
+                    } description: {
+                        Text(store.category.emptyMessage)
+                    }
                 } else {
-                    List(store.results) { item in
-                        Button { selected = item } label: { row(item) }
-                            .buttonStyle(.plain)
-                            .swipeActions(edge: .trailing) {
-                                Button("Delete", systemImage: "trash", role: .destructive) {
-                                    Task { await store.deleteItem(item) }
-                                }
-                                // Only logins have an editor. Offering Edit on a
-                                // Wi-Fi entry and then showing a login form is
-                                // worse than not offering it.
-                                if item.kind == .login {
-                                    Button("Edit", systemImage: "pencil") { editing = item }
-                                        .tint(.accentColor)
+                    List {
+                        ForEach(store.sections, id: \.letter) { section in
+                            Section(section.letter) {
+                                ForEach(section.items) { item in
+                                    Button { selected = item } label: { row(item) }
+                                        .buttonStyle(.plain)
+                                        .swipeActions(edge: .trailing) {
+                                            Button("Delete", systemImage: "trash", role: .destructive) {
+                                                Task { await store.deleteItem(item) }
+                                            }
+                                            // Only logins have an editor. Offering
+                                            // Edit on a Wi-Fi entry and then showing
+                                            // a login form is worse than not
+                                            // offering it.
+                                            if item.kind == .login {
+                                                Button("Edit", systemImage: "pencil") { editing = item }
+                                                    .tint(.accentColor)
+                                            }
+                                        }
                                 }
                             }
+                        }
                     }
                     .listStyle(.plain)
+                    // The index bar is the whole point of sectioning: six
+                    // hundred rows are reachable in one drag instead of thirty
+                    // flicks. Hidden while searching, where the result set is
+                    // short and the letters would be a column of stubs.
+                    .modifier(SectionIndex(enabled: store.query.isEmpty))
                 }
             }
-            .navigationTitle("Vault")
+            .navigationTitle(store.category.shortLabel)
             .searchable(text: $store.query, prompt: "Search the vault")
             .toolbar {
+                // In the title position rather than buried in the "..." menu:
+                // the category IS what the screen is showing, so it belongs
+                // where the screen says what it is.
+                ToolbarItem(placement: .principal) {
+                    Menu {
+                        Picker("Category", selection: $store.category) {
+                            ForEach(VaultCategory.allCases) { cat in
+                                Label(
+                                    "\(cat.label)  (\(store.count(of: cat)))",
+                                    systemImage: cat.symbol
+                                ).tag(cat)
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(store.category.shortLabel).font(.headline)
+                            Image(systemName: "chevron.down").font(.caption2)
+                        }
+                        .foregroundStyle(.primary)
+                    }
+                    .accessibilityLabel("Category: \(store.category.label)")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Lock", systemImage: "lock") { store.lock() }
                 }
@@ -76,6 +119,17 @@ struct VaultListView: View {
                                 Task { await store.connectSync() }
                             }
                             .disabled(store.syncing)
+                        }
+                        Divider()
+                        Menu("Auto-lock", systemImage: "timer") {
+                            Picker("Auto-lock", selection: Binding(
+                                get: { store.lockAfter },
+                                set: { store.lockAfter = $0 })
+                            ) {
+                                ForEach(AutoLockDelay.allCases) { delay in
+                                    Text(delay.label).tag(delay)
+                                }
+                            }
                         }
                         Divider()
                         // Also reachable from the password field when editing,
@@ -210,5 +264,22 @@ private struct Banner: View {
         .padding(12)
         .frame(maxWidth: .infinity)
         .background(.thinMaterial)
+    }
+}
+
+
+/// `.listSectionIndex` where the OS has it, nothing where it does not.
+///
+/// Its own modifier so the availability check sits in one place instead of
+/// splitting the whole list body into two nearly identical branches.
+private struct SectionIndex: ViewModifier {
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.listSectionIndexVisibility(enabled ? .visible : .hidden)
+        } else {
+            content
+        }
     }
 }

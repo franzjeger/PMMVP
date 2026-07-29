@@ -29,7 +29,11 @@ struct ArcaApp: App {
                     // blur for the same reason: a suspended process holding a
                     // decrypted vault is a worse trade than retyping.
                     if phase == .background {
-                        store.lock()
+                        // Not an unconditional lock any more. Leaving to paste a
+                        // password and coming straight back used to cost a Face
+                        // ID prompt each way, which is how a protection becomes
+                        // something people switch off.
+                        store.noteBackgrounded()
                     }
                     // The Live Activity deliberately SURVIVES that lock.
                     //
@@ -48,6 +52,9 @@ struct ArcaApp: App {
                     // Coming BACK is where it ends: you are in the app again,
                     // the code is on screen, and the island is noise.
                     if phase == .active {
+                        // Order matters: lock first, so a vault that timed out
+                        // is sealed before anything on screen can read from it.
+                        store.lockIfExpired()
                         island.stop()
                     }
                 }
