@@ -45,8 +45,21 @@ final class TotpActivityController {
     /// `staleDate` is the code's expiry: after it, iOS stops treating the
     /// content as current, and the widget swaps the digits for "Open Arca"
     /// rather than leaving six numbers that look valid and are not.
+    /// Why the code is not on the Dynamic Island, when it is not.
+    ///
+    /// Every way this can fail was silent: activities switched off in Settings
+    /// returned early, and a refused request only reached the log. From the
+    /// user's chair those are identical to a feature that does not work, and
+    /// there is nothing to try next. Now the section says which one it was.
+    private(set) var lastFailure: String?
+
     func start(item: VaultItemMeta, code: VaultTotp, label: String) {
-        guard isAvailable else { return }
+        guard isAvailable else {
+            lastFailure = "Live Activities are turned off for Arca. "
+                + "Settings ▸ Arca ▸ Live Activities."
+            return
+        }
+        lastFailure = nil
         stop()
 
         let expiresAt = Date().addingTimeInterval(TimeInterval(code.remaining))
@@ -59,9 +72,7 @@ final class TotpActivityController {
             activityID = activity.id
             showingItemID = item.id
         } catch {
-            // Denied, or too many activities. Not worth a banner: the user asked
-            // for a convenience and did not get it, and the code is still on
-            // screen right in front of them.
+            lastFailure = "iOS refused the Live Activity: \(error.localizedDescription)"
             log.error("could not start the live activity: \(error.localizedDescription, privacy: .public)")
         }
     }

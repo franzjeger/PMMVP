@@ -190,6 +190,9 @@ private struct TotpSection: View {
 
     @State private var totp: VaultTotp?
     @State private var copied = false
+    /// One attempt per appearance. `start` records why it failed, so retrying
+    /// every second would only rewrite the same sentence sixty times a minute.
+    @State private var triedIsland = false
 
     var body: some View {
         Section("Verification code") {
@@ -224,6 +227,13 @@ private struct TotpSection: View {
                 if copied {
                     Text("Copied.").font(.footnote).foregroundStyle(.secondary)
                 }
+                // Said, not logged. "Nothing happens" is the one failure the
+                // user cannot act on.
+                if let failure = island.lastFailure {
+                    Label(failure, systemImage: "exclamationmark.circle")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             } else {
                 ProgressView()
             }
@@ -241,11 +251,15 @@ private struct TotpSection: View {
                         if next.code != totp?.code {
                             await island.refresh(code: next)
                         }
-                    } else if island.isAvailable {
+                    } else if !triedIsland {
                         // Automatic, on opening the item. Opening a code you
                         // are about to type somewhere else IS the request; a
                         // separate button to say so again only means the
                         // people who need it most never find it.
+                        //
+                        // Attempted even when unavailable, so `start` can say
+                        // why rather than the caller deciding to stay quiet.
+                        triedIsland = true
                         island.start(
                             item: item,
                             code: next,
