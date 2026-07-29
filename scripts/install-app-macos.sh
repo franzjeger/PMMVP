@@ -69,6 +69,27 @@ fi
 codesign --verify --deep --strict "$APP_SRC"
 
 echo "==> Installing to /Applications…"
+# A running Arca keeps running the OLD binary: replacing the bundle on disk does
+# not touch a process that already mapped it. That failure is silent and very
+# convincing — the app is there, the version string in Settings is the new one
+# because it reads the bundle, and yet a feature added in this build is missing.
+# It cost an afternoon once, chasing a bridge command the running app had never
+# heard of.
+WAS_RUNNING=0
+if pgrep -f "$APP_DST/Contents/MacOS/vault-desktop" >/dev/null 2>&1; then
+  WAS_RUNNING=1
+  echo "    Arca is running the previous build — quitting it (your vault locks)."
+  osascript -e 'quit app "Arca"' >/dev/null 2>&1 || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -f "$APP_DST/Contents/MacOS/vault-desktop" >/dev/null 2>&1 || break
+    sleep 1
+  done
+  # Only after asking nicely: a graceful quit lets it clear the clipboard and
+  # release the bridge socket.
+  pkill -f "$APP_DST/Contents/MacOS/vault-desktop" 2>/dev/null || true
+  sleep 1
+fi
+
 rm -rf "$APP_DST"
 ditto "$APP_SRC" "$APP_DST"
 
@@ -78,4 +99,10 @@ rm -rf "$APP_SRC"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 [ -x "$LSREGISTER" ] && "$LSREGISTER" -f "$APP_DST" 2>/dev/null || true
 
-echo "Done: $APP_DST (launch it from Spotlight: 'Arca')"
+if [ "$WAS_RUNNING" = 1 ]; then
+  echo "==> Relaunching Arca (it was running before this install)…"
+  open -a "$APP_DST"
+  echo "Done: $APP_DST — running the build you just made. Unlock it again."
+else
+  echo "Done: $APP_DST (launch it from Spotlight: 'Arca')"
+fi
