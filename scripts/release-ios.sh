@@ -84,6 +84,35 @@ xcodebuild -project apps/ios/Arca.xcodeproj -scheme Arca -configuration Release 
   archive
 [ -d "$ARCHIVE" ] || die "no archive at $ARCHIVE"
 
+# Export signs MANUALLY, against a certificate and profiles this machine owns.
+#
+# Automatic signing wanted a cloud-managed distribution certificate — one whose
+# private key lives at Apple and is fetched at export time. That fetch is only
+# authorized by the Apple ID signed into Xcode, never by an API key, whatever
+# role the key has (an Admin key reads /v1/certificates fine and still gets
+# "Cloud signing permission error" here). And xcodebuild launched outside Xcode
+# cannot use that account, so the two halves never met.
+#
+# scripts/setup-ios-signing.sh mints a real Apple Distribution certificate
+# through the same API, keeps the private key on this machine, and creates the
+# three App Store profiles. Nothing then has to be asked of Apple at export.
+step "Checking the signing identity and profiles are present"
+security find-identity -v -p codesigning 2>/dev/null | grep -q "Apple Distribution" \
+  || die "no Apple Distribution identity in the keychain search list.
+     Run scripts/setup-ios-signing.sh — it creates one and installs the profiles."
+for suffix in "" ".autofill" ".widgets"; do
+  name="Arca App Store no.sybr.vault.ios$suffix"
+  found=0
+  for f in "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"/*.mobileprovision; do
+    [ -f "$f" ] || continue
+    if security cms -D -i "$f" 2>/dev/null | plutil -extract Name raw - 2>/dev/null \
+       | grep -qx "$name"; then found=1; break; fi
+  done
+  [ "$found" = 1 ] || die "missing provisioning profile \"$name\".
+     Run scripts/setup-ios-signing.sh."
+done
+echo "   Apple Distribution + 3 App Store profiles"
+
 step "Exporting for the App Store"
 rm -rf "$EXPORT_DIR"
 cat > "$REPO/target/ios/ExportOptions.plist" <<PLIST
@@ -93,7 +122,14 @@ cat > "$REPO/target/ios/ExportOptions.plist" <<PLIST
 <dict>
     <key>method</key><string>app-store-connect</string>
     <key>teamID</key><string>$TEAM_ID</string>
-    <key>signingStyle</key><string>automatic</string>
+    <key>signingStyle</key><string>manual</string>
+    <key>signingCertificate</key><string>Apple Distribution</string>
+    <key>provisioningProfiles</key>
+    <dict>
+        <key>no.sybr.vault.ios</key><string>Arca App Store no.sybr.vault.ios</string>
+        <key>no.sybr.vault.ios.autofill</key><string>Arca App Store no.sybr.vault.ios.autofill</string>
+        <key>no.sybr.vault.ios.widgets</key><string>Arca App Store no.sybr.vault.ios.widgets</string>
+    </dict>
     <key>uploadSymbols</key><true/>
     <key>destination</key><string>export</string>
 </dict>
