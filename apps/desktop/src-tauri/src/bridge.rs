@@ -135,6 +135,29 @@ enum Request {
     },
 }
 
+impl Request {
+    /// Whether this request is the user deciding to use the vault, as opposed
+    /// to the extension talking to us on its own.
+    ///
+    /// Only the deliberate ones reset the idle timer. `Hello` and `Ping` are
+    /// connection checks, `Match` fires when a password field takes focus, and
+    /// `SaveProbe` fires on every submitted form — counting any of those would
+    /// let one open tab hold the vault unlocked indefinitely. That is not a
+    /// longer timeout, it is no timeout, arrived at by accident.
+    fn is_deliberate_use(&self) -> bool {
+        match self {
+            // Picked a credential, approved a passkey, chose to save, asked for
+            // a password. Each is a click.
+            Request::Fill { .. }
+            | Request::PasskeyCreate { .. }
+            | Request::PasskeyGet { .. }
+            | Request::SaveLogin { .. }
+            | Request::GeneratePassword { .. } => true,
+            Request::Hello { .. } | Request::Match { .. } | Request::SaveProbe { .. } => false,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Response {
@@ -274,6 +297,18 @@ fn handle_request(
     app: Option<&AppHandle>,
     consent: &mut dyn FnMut(&ConsentContext) -> bool,
 ) -> Response {
+    // Using the passwords IS using Arca.
+    //
+    // The idle timer only ever saw the Arca window, so an hour spent filling
+    // logins in the browser looked exactly like an hour away from the desk: the
+    // vault locked underneath you, and the next fill wanted Touch ID. That is
+    // the largest single source of "it keeps asking me to unlock", and the fix
+    // is one line that was never there.
+    if *authed && req.is_deliberate_use() {
+        if let Ok(mut st) = state.lock() {
+            st.touch();
+        }
+    }
     match req {
         Request::Hello { token: presented } => {
             if presented == token {
@@ -1395,6 +1430,54 @@ mod tests {
             "https://github.com"
         ));
         assert!(!domain_matches("https://github.com", "https://github.org"));
+    }
+
+    /// Filling from the browser has to count as using Arca — and the automatic
+    /// chatter must not.
+    ///
+    /// Both halves fail silently. Miss the first and the vault locks while you
+    /// work, which is the complaint this came from. Miss the second and one open
+    /// tab keeps it unlocked for ever, which looks like a generous timeout and
+    /// is the absence of one.
+    #[test]
+    fn browser_use_resets_the_idle_timer_but_polling_does_not() {
+        let deliberate = [
+            Request::Fill {
+                id: "x".into(),
+                url: "https://github.com".into(),
+            },
+            Request::SaveLogin {
+                url: "https://github.com".into(),
+                username: "u".into(),
+                password: "p".into(),
+            },
+            Request::GeneratePassword {
+                length: None,
+                symbols: None,
+            },
+        ];
+        for req in deliberate {
+            assert!(req.is_deliberate_use(), "{req:?} is the user acting");
+        }
+
+        let automatic = [
+            Request::Hello {
+                token: "t".into(),
+            },
+            Request::Match {
+                url: "https://github.com".into(),
+            },
+            // Sent on EVERY submitted form, including ones with nothing to do
+            // with Arca. The clearest case for not counting it.
+            Request::SaveProbe {
+                url: "https://github.com".into(),
+                username: "u".into(),
+                password: "p".into(),
+            },
+        ];
+        for req in automatic {
+            assert!(!req.is_deliberate_use(), "{req:?} is the extension talking");
+        }
     }
 
     /// Generation must work with the vault LOCKED.
