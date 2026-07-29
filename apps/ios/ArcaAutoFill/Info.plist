@@ -42,6 +42,21 @@
                      passkey chooser only to fail. See docs/PASSKEYS.md. -->
                 <key>ProvidesPasskeys</key>
                 <false/>
+                <!-- "Use Strong Password" on any sign-up field, system-wide:
+                     Safari, native apps, anywhere iOS offers AutoFill.
+                     Requires iOS 26.2; older systems ignore these keys and lose
+                     nothing else. Unavailable on macOS at all — there the
+                     browser extension is the only route. -->
+                <key>SupportsGeneratePasswordCredentials</key>
+                <true/>
+                <!-- Opted OUT of presenting our own UI, which is the unusual
+                     choice and the right one here. Generating touches no vault,
+                     so there is nothing to unlock and nothing to choose: the
+                     extension answers instantly and the system draws its own
+                     picker. Showing a sheet would mean launching this
+                     memory-capped process to render a list it already knows. -->
+                <key>SupportsGeneratePasswordCredentialsWithUI</key>
+                <false/>
             </dict>
         </dict>
         <key>NSExtensionPointIdentifier</key>

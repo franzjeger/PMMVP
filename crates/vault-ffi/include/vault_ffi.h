@@ -1,6 +1,6 @@
 /* vault-ffi — C ABI over vault-core for native platform integrations.
  *
- * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 8). All
+ * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 9). All
  * out-buffers are heap-allocated by the library and must be released with
  * vault_ffi_free(ptr, len), which also zeroes them.
  *
@@ -129,6 +129,18 @@ int32_t vault_ffi_generate_password(size_t length, int32_t lowercase,
                                     int32_t uppercase, int32_t digits,
                                     int32_t symbols, uint8_t **out_password,
                                     size_t *out_password_len);
+
+/* ---- Generation against a site's rules (ABI v9) -------------------------
+ *
+ * `rules_utf8` is Apple's Password Rules format, the same string iOS passes to
+ * an AutoFill extension and HTML fields carry in `passwordrules`. Empty or
+ * unparseable yields a strong default, never an error. SECRET — free with
+ * vault_ffi_free.
+ */
+int32_t vault_ffi_generate_password_for_rules(const char *rules_utf8,
+                                              size_t default_length,
+                                              uint8_t **out_password,
+                                              size_t *out_password_len);
 
 /* ---- Device-unlock surface (ABI v4) -------------------------------------
  *

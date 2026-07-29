@@ -71,7 +71,7 @@ pub mod sync;
 ///   (the restriction on `vault_ffi_vault_free` is unchanged);
 /// * a handle's contents can now change underneath the caller, because a sync
 ///   merges a peer's items into the very vault the handle exposes.
-pub const ABI_VERSION: i32 = 8;
+pub const ABI_VERSION: i32 = 9;
 
 // Return codes.
 pub(crate) const OK: i32 = 0;
@@ -848,6 +848,45 @@ pub unsafe extern "C" fn vault_ffi_generate_password(
     }
 }
 
+/// Generate a password that satisfies a site's Password Rules string.
+///
+/// `rules_utf8` is Apple's Password Rules format, which arrives from two places
+/// and is the same string in both: iOS hands it to an AutoFill extension with a
+/// generate request, and HTML password fields carry it in a `passwordrules`
+/// attribute. An empty or unparseable string yields a strong default rather
+/// than an error — it comes from arbitrary websites, and refusing to help
+/// because a site wrote nonsense just sends the user back to inventing one.
+///
+/// SECRET: the returned buffer is zeroized by [`vault_ffi_free`].
+///
+/// # Safety
+/// `rules_utf8` a NUL-terminated C string; out pointers writable.
+#[no_mangle]
+pub unsafe extern "C" fn vault_ffi_generate_password_for_rules(
+    rules_utf8: *const c_char,
+    default_length: usize,
+    out_password: *mut *mut u8,
+    out_password_len: *mut usize,
+) -> i32 {
+    if out_password.is_null() || out_password_len.is_null() {
+        return ERR_NULL_ARG;
+    }
+    let Some(rules) = cstr(rules_utf8) else {
+        return ERR_UTF8;
+    };
+    let length = if default_length == 0 { 20 } else { default_length };
+    match guard_result(|| {
+        let opts = vault_core::password::options_from_rules(rules, length);
+        vault_core::password::generate_password(&opts).map(|pw| pw.as_bytes().to_vec())
+    }) {
+        Ok(pw) => {
+            emit(pw, out_password, out_password_len);
+            OK
+        }
+        Err(code) => code,
+    }
+}
+
 /// Run a fallible closure inside a panic guard, flattening the core error to a
 /// return code. `Ok(value)` on success, `Err(code)` on error or panic.
 fn guard_result<T>(f: impl FnOnce() -> vault_core::Result<T>) -> Result<T, i32> {
@@ -1391,8 +1430,8 @@ mod tests {
     // Pinned deliberately: clients gate features on this number, so a bump has
     // to be a conscious edit here, not a side effect.
     #[test]
-    fn abi_version_is_8() {
-        assert_eq!(vault_ffi_abi_version(), 8);
+    fn abi_version_is_9() {
+        assert_eq!(vault_ffi_abi_version(), 9);
     }
 
     // ---- every-kind surface (ABI v7) -------------------------------------

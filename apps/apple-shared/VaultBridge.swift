@@ -47,11 +47,14 @@ enum VaultShared {
     /// v6 added the write surface (`vault_ffi_upsert_login`,
     /// `vault_ffi_delete_item`); v7 added `vault_ffi_items`,
     /// `vault_ffi_item_detail` and `vault_ffi_totp`, which is what finally lets
-    /// a phone see more than logins; v8 added `vault_ffi_generate_password`.
+    /// a phone see more than logins; v8 added `vault_ffi_generate_password`;
+    /// v9 added `vault_ffi_generate_password_for_rules`, which is what lets the
+    /// AutoFill extension answer a system generate request without producing
+    /// something the site will reject.
     /// Bump this in the SAME commit that bumps `ABI_VERSION`: nothing compiles
     /// against it, so a stale value is only ever caught at runtime, by this
     /// guard, on a device.
-    static let requiredAbiVersion: Int32 = 8
+    static let requiredAbiVersion: Int32 = 9
 
     // MARK: Password generation
 
@@ -69,15 +72,38 @@ enum VaultShared {
         var isUsable: Bool { length > 0 && (lowercase || uppercase || digits || symbols) }
     }
 
-    /// Generate a password.
+    /// Generate a password satisfying a site's Password Rules string.
     ///
-    /// Synchronous and handle-free, unlike everything else here: generation does
-    /// not touch the vault. That is the point — you want a password while making
-    /// the account, which is before there is an entry to put it in.
-    ///
-    /// The `String` cannot be wiped, same as `password(forID:)`. The Rust buffer
-    /// is zeroed the moment it is copied out.
+    /// Empty or unparseable rules give a strong default. The library never
+    /// errors on the rules themselves — they arrive from arbitrary websites,
+    /// and a site that writes nonsense should cost the user nothing.
+    static func generatePassword(rules: String, defaultLength: Int = 20) throws -> String {
+        try requireMatchingAbi()
+        var buffer: UnsafeMutablePointer<UInt8>?
+        var length = 0
+        let code = rules.withCString {
+            vault_ffi_generate_password_for_rules($0, defaultLength, &buffer, &length)
+        }
+        guard code == VaultFFICode.ok, let buffer, length > 0 else {
+            throw VaultError.ffi(code: code, operation: "generate_password_for_rules")
+        }
+        defer { vault_ffi_free(buffer, length) }
+        return String(decoding: UnsafeBufferPointer(start: buffer, count: length), as: UTF8.self)
+    }
+
+    /// The ABI guard normally runs when a vault is opened. Generation never
+    /// opens one, so without this it is the only surface that would call into a
+    /// mismatched library unchecked — and a wrong signature here hands back
+    /// whatever bytes happen to be at that address.
+    private static func requireMatchingAbi() throws {
+        let linked = vault_ffi_abi_version()
+        guard linked == requiredAbiVersion else {
+            throw VaultError.abiMismatch(linked: linked, expected: requiredAbiVersion)
+        }
+    }
+
     static func generatePassword(_ recipe: PasswordRecipe) throws -> String {
+        try requireMatchingAbi()
         var buffer: UnsafeMutablePointer<UInt8>?
         var length = 0
         let code = vault_ffi_generate_password(

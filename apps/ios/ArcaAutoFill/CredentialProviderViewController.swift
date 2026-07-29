@@ -32,6 +32,56 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
         cancel(.userInteractionRequired)
     }
 
+    // MARK: Strong-password suggestion (no UI, no unlock)
+
+    /// "Use Strong Password" on any sign-up field, system-wide.
+    ///
+    /// This is the one AutoFill entry point that answers instantly. Everything
+    /// else here needs the vault open, which needs a biometric or the master
+    /// password; generating needs neither, because nothing is read. So no
+    /// `userInteractionRequired`, no sheet, no launch cost — the suggestion is
+    /// simply there, the way Keychain's is.
+    ///
+    /// The rules matter. A site that caps at 16 characters or forbids symbols
+    /// will reject a generated password, and a suggestion that gets rejected
+    /// teaches people the feature is broken. `passwordRulesFromQuirks` is
+    /// Apple's own correction for sites whose declared rules are wrong or
+    /// missing, so it wins when present.
+    @available(iOS 26.2, *)
+    override func performWithoutUserInteraction(
+        generatePasswordsRequest request: ASGeneratePasswordsRequest
+    ) {
+        let rules = request.passwordRulesFromQuirks
+            ?? request.passwordFieldPasswordRules
+            ?? request.confirmPasswordFieldPasswordRules
+            ?? ""
+
+        do {
+            var results: [ASGeneratedPassword] = [
+                ASGeneratedPassword(kind: .strong, value:
+                    try VaultShared.generatePassword(rules: rules))
+            ]
+            // A second, letters-and-digits option. Sites reject symbols far
+            // more often than they admit to in their rules, and the fallback
+            // is otherwise for the user to invent one.
+            let alphanumeric = try VaultShared.generatePassword(
+                rules: rules.isEmpty
+                    ? "allowed: lower, upper, digit;"
+                    : rules + "; allowed: lower, upper, digit;")
+            if alphanumeric != results[0].value {
+                results.append(ASGeneratedPassword(kind: .alphanumeric, value: alphanumeric))
+            }
+            log.info("generate -> \(results.count, privacy: .public) suggestion(s)")
+            extensionContext.completeGeneratePasswordRequest(results: results)
+        } catch {
+            // Cancelled rather than answered with something weak. The system
+            // falls back to its own suggestion, which is a fine outcome; a
+            // password from a library we could not call is not.
+            log.error("generate failed: \(String(describing: error), privacy: .public)")
+            cancel(.failed)
+        }
+    }
+
     // MARK: UI paths
 
     override func prepareInterfaceToProvideCredential(for credentialRequest: ASCredentialRequest) {
