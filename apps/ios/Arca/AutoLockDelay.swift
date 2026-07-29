@@ -18,10 +18,22 @@ enum AutoLockDelay: String, CaseIterable, Identifiable {
     case oneHour
     case never
 
-    /// Five minutes: long enough to switch to Safari, paste, and come back
-    /// twice; short enough that a phone left on a table re-locks before anyone
-    /// wanders past. Not "never", which would make the choice for the user.
-    static let `default` = AutoLockDelay.fiveMinutes
+    /// Immediately, and the reasoning is worth keeping.
+    ///
+    /// This shipped once as five minutes, which quietly loosened every existing
+    /// install: the app had always locked on leaving the foreground, and a
+    /// default is exactly what nobody revisits. Relaxing a security property for
+    /// people who never asked is not a default to choose casually.
+    ///
+    /// It also costs less than it looks. Filling a password does NOT go through
+    /// this — the AutoFill extension is its own process and opens the vault
+    /// itself from the shared container and keychain, with no app session
+    /// involved. So this governs only the app you deliberately open to browse,
+    /// and locking it at once leaves the everyday path untouched.
+    ///
+    /// Anyone who does browse a lot can move it, which is the point of having
+    /// the setting rather than an opinion baked into the code.
+    static let `default` = AutoLockDelay.immediately
 
     init(stored: String?) {
         self = stored.flatMap(AutoLockDelay.init(rawValue:)) ?? .default

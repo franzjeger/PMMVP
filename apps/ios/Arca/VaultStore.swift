@@ -258,11 +258,11 @@ final class VaultStore {
 
     /// How long the vault may stay open while Arca is not in front.
     ///
-    /// It used to lock the moment the app was backgrounded, which is defensible
-    /// on paper and punishing in use: switching to Safari to paste a password
-    /// and switching back cost a Face ID prompt, so signing in once meant
-    /// authenticating three times. People do not tolerate that; they turn the
-    /// protection off, or they stop using the app.
+    /// Defaults to locking at once, and stays there — see `AutoLockDelay`.
+    /// This governs ONLY the app opened to browse: filling a password never
+    /// touches it, because the AutoFill extension is a separate process that
+    /// opens the vault itself. Someone doing a run of lookups can relax it;
+    /// nobody has to, to use Arca normally.
     /// Stored, not computed over `UserDefaults`: `@Observable` tracks stored
     /// properties, so a computed one would leave the picker's checkmark on the
     /// old row until the menu was reopened — looking like the setting refused.
