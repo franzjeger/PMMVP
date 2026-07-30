@@ -1426,6 +1426,7 @@ pub unsafe extern "C" fn vault_ffi_upsert_login(
 /// `upsert_login` keeps its own body because its TOTP keep-on-null semantics
 /// need the previous item BEFORE the payload can be built; these two have no
 /// such dependency and share everything else.
+#[allow(clippy::too_many_arguments)] // the C out-param convention, like its callers
 unsafe fn upsert_of_kind(
     handle: *mut VaultHandle,
     id: *const c_char,
