@@ -92,6 +92,15 @@ pub struct AppState {
     /// dialogs (e.g. the CSV import file picker) is open, since that blurs the
     /// main window without the user actually leaving the app.
     pub suppress_blur_lock: bool,
+    /// Ignore window-blur auto-lock until this moment, because the BROWSER asked
+    /// us to unlock and the user must go back to it to use what they unlocked.
+    ///
+    /// Without this, lock-on-blur makes browser autofill impossible rather than
+    /// merely strict: Arca comes forward, you authenticate, and then reaching
+    /// the picker means blurring Arca — which locks it again before you can
+    /// click. Bounded by a deadline rather than a bare flag, so a missed reset
+    /// costs a minute instead of disabling the setting silently.
+    pub blur_grace_until: Option<Instant>,
 }
 
 impl AppState {
@@ -103,7 +112,16 @@ impl AppState {
             last_activity: Instant::now(),
             clipboard,
             suppress_blur_lock: false,
+            blur_grace_until: None,
         }
+    }
+
+    /// Whether window-blur auto-lock should be ignored right now.
+    pub fn blur_lock_suppressed(&self) -> bool {
+        self.suppress_blur_lock
+            || self
+                .blur_grace_until
+                .is_some_and(|deadline| Instant::now() < deadline)
     }
 
     /// Record user activity (resets the idle timer).

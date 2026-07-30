@@ -183,10 +183,11 @@ fn handle(request: Request) -> Response {
             },
         },
         Request::Fill { id, url } => match fill_credential(&id, &url) {
-            Some((username, password)) => Response::Credentials { username, password },
-            None => Response::Error {
-                message: "Could not fill (app locked, origin mismatch, or not found).".to_string(),
-            },
+            Ok((username, password)) => Response::Credentials { username, password },
+            // The reason verbatim, for the extension to act on. It renders the
+            // wording; a host that pre-writes prose forces the UI to string-match
+            // its own sentences to tell "locked" from "wrong site".
+            Err(reason) => Response::Error { message: reason },
         },
         Request::PasskeyCreate {
             origin,
@@ -438,16 +439,36 @@ fn query_desktop_app(url: &str) -> Option<Vec<LoginMatch>> {
 
 /// Ask the app for the credential of `id` to fill into `url`. The app enforces
 /// unlock + origin matching before returning anything.
-fn fill_credential(id: &str, url: &str) -> Option<(String, String)> {
-    let resp = bridge_request(serde_json::json!({ "type": "fill", "id": id, "url": url }))?;
+fn fill_credential(id: &str, url: &str) -> Result<(String, String), String> {
+    let Some(resp) = bridge_request(serde_json::json!({ "type": "fill", "id": id, "url": url }))
+    else {
+        return Err("not_running".to_string());
+    };
     if resp.get("type").and_then(|v| v.as_str()) != Some("credentials") {
-        return None;
+        // Pass the app's REASON through. It already distinguishes "locked" from
+        // "origin_mismatch" from "not_found"; flattening them into one sentence
+        // listing all three meant the message never told anyone anything, and
+        // the one that actually happens has a fix the extension can offer.
+        return Err(
+            resp.get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("failed")
+                .to_string(),
+        );
     }
-    Some((
-        resp.get("username")?.as_str()?.to_string(),
-        resp.get("password")?.as_str()?.to_string(),
-    ))
+    let username = resp
+        .get("username")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let password = resp
+        .get("password")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    Ok((username, password))
 }
+
 
 /// Read one framed message. Returns `Ok(None)` on clean EOF (browser closed
 /// the pipe), which is the host's signal to exit.

@@ -886,6 +886,13 @@ fn handle_request(
                 // same page. Do not steal focus from what the user is doing.
                 return Response::UnlockRequested;
             }
+            // The browser is about to be blurred, then focused again — that is
+            // the flow, not the user leaving. Hold off blur-locking long enough
+            // for them to authenticate here and click a credential there.
+            if let Ok(mut st) = state.lock() {
+                st.blur_grace_until =
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+            }
             if let Some(app) = app {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();

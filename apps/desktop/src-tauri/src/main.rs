@@ -149,7 +149,7 @@ fn main() {
                     if let Ok(mut st) = state.lock() {
                         // Don't lock when our own native dialog (e.g. the import
                         // file picker) stole focus — the user hasn't left the app.
-                        let lock_on_blur = st.settings.lock_on_blur && !st.suppress_blur_lock;
+                        let lock_on_blur = st.settings.lock_on_blur && !st.blur_lock_suppressed();
                         let mut locked = false;
                         if lock_on_blur {
                             if let Some(v) = st.vault.as_mut() {

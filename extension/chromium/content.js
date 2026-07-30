@@ -182,14 +182,42 @@
         if (userField && cred.username) setNativeValue(userField, cred.username);
         if (pwField && cred.password) setNativeValue(pwField, cred.password);
         closePanel();
-      } else {
-        openPanel(
-          anchor,
-          note((cred && cred.message) || "Couldn't retrieve the password."),
-        );
+        return;
       }
+      // The app tells us WHICH failure it was; the host now passes it through
+      // instead of listing all three in one sentence. "locked" is the only one
+      // with a fix from here, so it gets the button rather than a full stop.
+      const reason = (cred && cred.message) || "";
+      if (reason === "locked" || reason === "not_running") {
+        openPanel(anchor, unlockPrompt(anchor, isIdentifier));
+        return;
+      }
+      openPanel(anchor, note(fillFailureText(reason)));
     });
     return row;
+  }
+
+  /// Plain words for the app's failure code.
+  ///
+  /// Each one names what to do, because a password manager that says "failed"
+  /// at the moment you are trying to sign in has told you nothing you did not
+  /// already know.
+  function fillFailureText(reason) {
+    switch (reason) {
+      case "origin_mismatch":
+        // The single most important one to state precisely: it means the saved
+        // entry is for a DIFFERENT site, which is Arca refusing to leak a
+        // credential to a lookalike rather than a bug.
+        return "That login is saved for a different website, so Arca will not fill it here.";
+      case "not_found":
+        return "That entry is no longer in the vault. Try searching again.";
+      case "internal":
+        return "Arca hit an internal error. Check the app.";
+      default:
+        return reason
+          ? `Arca could not fill this: ${reason}`
+          : "Arca could not fill this.";
+    }
   }
 
   /// The locked-vault panel, as something you can act on.

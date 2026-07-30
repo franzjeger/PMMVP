@@ -178,8 +178,12 @@ export function SettingsDialog({
               options={AUTO_LOCK_OPTIONS}
               onChange={(v) => apply({ autoLockSecs: v })}
             />
+            {/* The hint is the point. Turning this on and then finding browser
+                autofill broken looks like a bug in autofill, and the error you
+                get says "locked" without saying which setting locked it. */}
             <ToggleRow
               label="Lock when window loses focus"
+              hint="Strictest option. Filling from the browser still works — Arca holds off locking for a minute after the browser asks it to unlock — but every fill after that minute needs Touch ID again."
               checked={settings.lockOnBlur}
               onChange={(v) => apply({ lockOnBlur: v })}
             />
