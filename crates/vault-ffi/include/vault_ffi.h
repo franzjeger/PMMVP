@@ -1,6 +1,6 @@
 /* vault-ffi — C ABI over vault-core for native platform integrations.
  *
- * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 11). All
+ * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 12). All
  * out-buffers are heap-allocated by the library and must be released with
  * vault_ffi_free(ptr, len), which also zeroes them.
  *
@@ -379,6 +379,28 @@ int32_t vault_ffi_upsert_login(VaultHandle *handle, const char *id,
                                uint8_t **out_vault_bytes,
                                size_t *out_vault_bytes_len, uint8_t **out_id,
                                size_t *out_id_len);
+
+/* ---- Single-kind upserts (ABI v12) ---------------------------------------
+ *
+ * Create (id NULL/"") or edit in place (id set; wrong/missing kind -> -5) a
+ * Wi-Fi entry or secure note, with the same returned-bytes persistence
+ * contract as vault_ffi_upsert_login. `security` is the join-QR token: "WPA",
+ * "WEP" or "nopass"; empty means WPA. `hidden` is 0/1. */
+int32_t vault_ffi_upsert_wifi(VaultHandle *handle, const char *id,
+                              const char *title, const char *ssid,
+                              const char *password, const char *security,
+                              int32_t hidden, const char *notes,
+                              int64_t now_unix_millis,
+                              uint8_t **out_vault_bytes,
+                              size_t *out_vault_bytes_len, uint8_t **out_id,
+                              size_t *out_id_len);
+
+int32_t vault_ffi_upsert_secure_note(VaultHandle *handle, const char *id,
+                                     const char *title, const char *body,
+                                     int64_t now_unix_millis,
+                                     uint8_t **out_vault_bytes,
+                                     size_t *out_vault_bytes_len,
+                                     uint8_t **out_id, size_t *out_id_len);
 
 /* Soft-delete an item: it moves to the Trash and stays restorable. */
 int32_t vault_ffi_delete_item(VaultHandle *handle, const char *id,

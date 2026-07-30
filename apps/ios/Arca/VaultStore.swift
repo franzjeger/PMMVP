@@ -374,6 +374,37 @@ final class VaultStore {
     }
 
     /// Move a login to the Trash (restorable on the desktop).
+    /// Create or edit a Wi-Fi entry. Returns a user-facing message on failure.
+    func saveWifi(
+        id: String?, title: String, ssid: String,
+        password: String, security: String, hidden: Bool
+    ) async -> String? {
+        guard let session else { return "The vault is locked." }
+        do {
+            try await session.upsertWifi(
+                id: id, title: title, ssid: ssid,
+                password: password, security: security, hidden: hidden)
+            await reload(session)
+            return nil
+        } catch {
+            log.error("save wifi failed: \(vaultLogMessage(for: error), privacy: .public)")
+            return Self.message(error, fallback: "Couldn't save that network.")
+        }
+    }
+
+    /// Create or edit a secure note. Returns a user-facing message on failure.
+    func saveNote(id: String?, title: String, body: String) async -> String? {
+        guard let session else { return "The vault is locked." }
+        do {
+            try await session.upsertNote(id: id, title: title, body: body)
+            await reload(session)
+            return nil
+        } catch {
+            log.error("save note failed: \(vaultLogMessage(for: error), privacy: .public)")
+            return Self.message(error, fallback: "Couldn't save that note.")
+        }
+    }
+
     func deleteItem(_ item: VaultItemMeta) async {
         guard let session else { return }
         do {

@@ -71,7 +71,7 @@ pub mod sync;
 ///   (the restriction on `vault_ffi_vault_free` is unchanged);
 /// * a handle's contents can now change underneath the caller, because a sync
 ///   merges a peer's items into the very vault the handle exposes.
-pub const ABI_VERSION: i32 = 11;
+pub const ABI_VERSION: i32 = 12;
 
 // Return codes.
 pub(crate) const OK: i32 = 0;
@@ -1415,6 +1415,186 @@ pub unsafe extern "C" fn vault_ffi_upsert_login(
     }
 }
 
+/// The shared write path for the single-kind upserts (Wi-Fi, note).
+///
+/// Same contract as `vault_ffi_upsert_login`: create on null id, edit in place
+/// on a valid one — refusing an id whose item is missing, deleted, or of
+/// another kind — and hand the caller the new vault bytes to persist. On a
+/// serialization failure the handle is rolled back to the last persisted item
+/// so it never holds a change the caller could not write.
+///
+/// `upsert_login` keeps its own body because its TOTP keep-on-null semantics
+/// need the previous item BEFORE the payload can be built; these two have no
+/// such dependency and share everything else.
+unsafe fn upsert_of_kind(
+    handle: *mut VaultHandle,
+    id: *const c_char,
+    kind: ItemKind,
+    data: VaultItem,
+    now_unix_millis: i64,
+    out_vault_bytes: *mut *mut u8,
+    out_vault_bytes_len: *mut usize,
+    out_id: *mut *mut u8,
+    out_id_len: *mut usize,
+) -> i32 {
+    if handle.is_null()
+        || out_vault_bytes.is_null()
+        || out_vault_bytes_len.is_null()
+        || out_id.is_null()
+        || out_id_len.is_null()
+    {
+        return ERR_NULL_ARG;
+    }
+    let existing_id = if id.is_null() {
+        None
+    } else {
+        match cstr(id) {
+            Some("") => None,
+            Some(s) => match uuid::Uuid::parse_str(s) {
+                Ok(u) => Some(u),
+                Err(_) => return ERR_NOT_FOUND,
+            },
+            None => return ERR_UTF8,
+        }
+    };
+
+    let mut vault = match lock_vault(&(*handle).vault) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    if !vault.is_unlocked() {
+        return ERR_LOCKED;
+    }
+
+    let previous = existing_id.and_then(|u| vault.get_item(u).ok());
+    if existing_id.is_some()
+        && !matches!(previous.as_ref().map(|i| i.data.kind()), Some(k) if k == kind)
+    {
+        return ERR_NOT_FOUND;
+    }
+
+    let result = guard_result(|| {
+        let item = match (existing_id, previous.as_ref()) {
+            (Some(_), Some(old)) => {
+                let mut it = old.clone();
+                it.data = data;
+                it.modified_at = now_unix_millis;
+                it
+            }
+            _ => vault_core::Item::new(data, now_unix_millis),
+        };
+        let new_id = item.id;
+        vault.upsert_item(item)?;
+        let bytes = reserialize_verified(&vault, None)?;
+        Ok((new_id, bytes))
+    });
+    match result {
+        Ok((new_id, bytes)) => {
+            emit(bytes, out_vault_bytes, out_vault_bytes_len);
+            emit(new_id.to_string().into_bytes(), out_id, out_id_len);
+            OK
+        }
+        Err(code) => {
+            if let Some(old) = previous {
+                let _ = vault.upsert_item(old);
+            }
+            code
+        }
+    }
+}
+
+/// Create or edit a Wi-Fi network entry (ABI v12).
+///
+/// `security` is the join-QR token: "WPA", "WEP" or "nopass"; empty means WPA.
+/// Same create/edit and rollback contract as `vault_ffi_upsert_login`.
+///
+/// # Safety
+/// `handle` valid; string arguments NUL-terminated or null where documented;
+/// out pointers writable.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn vault_ffi_upsert_wifi(
+    handle: *mut VaultHandle,
+    id: *const c_char,
+    title: *const c_char,
+    ssid: *const c_char,
+    password: *const c_char,
+    security: *const c_char,
+    hidden: i32,
+    notes: *const c_char,
+    now_unix_millis: i64,
+    out_vault_bytes: *mut *mut u8,
+    out_vault_bytes_len: *mut usize,
+    out_id: *mut *mut u8,
+    out_id_len: *mut usize,
+) -> i32 {
+    let (Some(title), Some(ssid), Some(password), Some(security), Some(notes)) = (
+        cstr(title),
+        cstr(ssid),
+        cstr(password),
+        cstr(security),
+        cstr(notes),
+    ) else {
+        return ERR_UTF8;
+    };
+    let data = VaultItem::Wifi {
+        title: title.to_string(),
+        ssid: ssid.to_string(),
+        password: password.to_string(),
+        security: security.to_string(),
+        hidden: hidden != 0,
+        notes: notes.to_string(),
+    };
+    upsert_of_kind(
+        handle,
+        id,
+        ItemKind::Wifi,
+        data,
+        now_unix_millis,
+        out_vault_bytes,
+        out_vault_bytes_len,
+        out_id,
+        out_id_len,
+    )
+}
+
+/// Create or edit a secure note (ABI v12). Same contract as the other upserts.
+///
+/// # Safety
+/// `handle` valid; `title`/`body` NUL-terminated; out pointers writable.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn vault_ffi_upsert_secure_note(
+    handle: *mut VaultHandle,
+    id: *const c_char,
+    title: *const c_char,
+    body: *const c_char,
+    now_unix_millis: i64,
+    out_vault_bytes: *mut *mut u8,
+    out_vault_bytes_len: *mut usize,
+    out_id: *mut *mut u8,
+    out_id_len: *mut usize,
+) -> i32 {
+    let (Some(title), Some(body)) = (cstr(title), cstr(body)) else {
+        return ERR_UTF8;
+    };
+    let data = VaultItem::SecureNote {
+        title: title.to_string(),
+        body: body.to_string(),
+    };
+    upsert_of_kind(
+        handle,
+        id,
+        ItemKind::SecureNote,
+        data,
+        now_unix_millis,
+        out_vault_bytes,
+        out_vault_bytes_len,
+        out_id,
+        out_id_len,
+    )
+}
+
 /// Soft-delete an item (it moves to the Trash and can be restored), returning
 /// the new vault bytes.
 ///
@@ -1759,8 +1939,8 @@ mod tests {
     // Pinned deliberately: clients gate features on this number, so a bump has
     // to be a conscious edit here, not a side effect.
     #[test]
-    fn abi_version_is_11() {
-        assert_eq!(vault_ffi_abi_version(), 11);
+    fn abi_version_is_12() {
+        assert_eq!(vault_ffi_abi_version(), 12);
     }
 
     // ---- every-kind surface (ABI v7) -------------------------------------
@@ -2234,6 +2414,85 @@ mod tests {
             )
         };
         assert_eq!(rc, ERR_OP_FAILED);
+        unsafe { vault_ffi_vault_free(handle) };
+    }
+
+    /// The v12 single-kind upserts: create, edit in place, and refuse a
+    /// cross-kind id. The guard is the part worth a test — an id from the list
+    /// can name ANY kind, and "edit the Wi-Fi" landing on a login would rewrite
+    /// a password entry as a network.
+    #[test]
+    fn wifi_and_note_upserts_create_edit_and_guard_kind() {
+        let bytes = password_only_vault();
+        let handle = open_with_password(&bytes, "pw");
+        let mk = |s: &str| CString::new(s).unwrap();
+
+        // Create a note.
+        let (mut vb, mut vb_len) = (ptr::null_mut(), 0usize);
+        let (mut idp, mut id_len) = (ptr::null_mut(), 0usize);
+        let rc = unsafe {
+            vault_ffi_upsert_secure_note(
+                handle, ptr::null(), mk("Portkode").as_ptr(), mk("4187").as_ptr(),
+                1_000, &mut vb, &mut vb_len, &mut idp, &mut id_len,
+            )
+        };
+        assert_eq!(rc, OK);
+        let note_id =
+            String::from_utf8(unsafe { slice::from_raw_parts(idp, id_len) }.to_vec()).unwrap();
+        unsafe {
+            vault_ffi_free(vb, vb_len);
+            vault_ffi_free(idp, id_len);
+        }
+
+        // Create a Wi-Fi entry, then edit it in place.
+        let (mut vb, mut vb_len) = (ptr::null_mut(), 0usize);
+        let (mut idp, mut id_len) = (ptr::null_mut(), 0usize);
+        let rc = unsafe {
+            vault_ffi_upsert_wifi(
+                handle, ptr::null(), mk("Hjemme").as_ptr(), mk("FranzNet").as_ptr(),
+                mk("hemmelig").as_ptr(), mk("WPA").as_ptr(), 0, mk("").as_ptr(),
+                1_000, &mut vb, &mut vb_len, &mut idp, &mut id_len,
+            )
+        };
+        assert_eq!(rc, OK);
+        let wifi_id =
+            String::from_utf8(unsafe { slice::from_raw_parts(idp, id_len) }.to_vec()).unwrap();
+        unsafe {
+            vault_ffi_free(vb, vb_len);
+            vault_ffi_free(idp, id_len);
+        }
+
+        let wifi_c = CString::new(wifi_id.clone()).unwrap();
+        let (mut vb, mut vb_len) = (ptr::null_mut(), 0usize);
+        let (mut idp, mut id_len) = (ptr::null_mut(), 0usize);
+        let rc = unsafe {
+            vault_ffi_upsert_wifi(
+                handle, wifi_c.as_ptr(), mk("Hytta").as_ptr(), mk("FranzNet").as_ptr(),
+                mk("nytt").as_ptr(), mk("WPA").as_ptr(), 1, mk("").as_ptr(),
+                2_000, &mut vb, &mut vb_len, &mut idp, &mut id_len,
+            )
+        };
+        assert_eq!(rc, OK);
+        let same =
+            String::from_utf8(unsafe { slice::from_raw_parts(idp, id_len) }.to_vec()).unwrap();
+        assert_eq!(same, wifi_id, "an edit must keep its id, not append a copy");
+        unsafe {
+            vault_ffi_free(vb, vb_len);
+            vault_ffi_free(idp, id_len);
+        }
+
+        // The guard: a note id handed to the wifi upsert is refused.
+        let note_c = CString::new(note_id).unwrap();
+        let (mut vb, mut vb_len) = (ptr::null_mut(), 0usize);
+        let (mut idp, mut id_len) = (ptr::null_mut(), 0usize);
+        let rc = unsafe {
+            vault_ffi_upsert_wifi(
+                handle, note_c.as_ptr(), mk("x").as_ptr(), mk("x").as_ptr(),
+                mk("x").as_ptr(), mk("WPA").as_ptr(), 0, mk("").as_ptr(),
+                3_000, &mut vb, &mut vb_len, &mut idp, &mut id_len,
+            )
+        };
+        assert_eq!(rc, ERR_NOT_FOUND, "a cross-kind edit must be refused");
         unsafe { vault_ffi_vault_free(handle) };
     }
 

@@ -14,7 +14,7 @@ struct VaultListView: View {
     @Environment(VaultStore.self) private var store
     @State private var selected: VaultItemMeta?
     @State private var editing: VaultItemMeta?
-    @State private var creating = false
+    @State private var creating: VaultCreateKind?
     @State private var generatingPassword = false
 
     var body: some View {
@@ -28,7 +28,7 @@ struct VaultListView: View {
                     } description: {
                         Text("Nothing in this vault yet.")
                     } actions: {
-                        Button("Add a login") { creating = true }
+                        Button("Add a login") { creating = .login }
                     }
                 } else if store.results.isEmpty, !store.query.isEmpty {
                     ContentUnavailableView.search(text: store.query)
@@ -102,7 +102,11 @@ struct VaultListView: View {
                     Button("Lock", systemImage: "lock") { store.lock() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Add login", systemImage: "plus") { creating = true }
+                    Menu("Add", systemImage: "plus") {
+                        Button("Login", systemImage: "key.fill") { creating = .login }
+                        Button("Wi-Fi", systemImage: "wifi") { creating = .wifi }
+                        Button("Note", systemImage: "note.text") { creating = .note }
+                    }
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     Menu("Options", systemImage: "ellipsis.circle") {
@@ -152,8 +156,23 @@ struct VaultListView: View {
                 }
             }
             .sheet(item: $selected) { ItemDetailView(item: $0) }
-            .sheet(item: $editing) { LoginEditView(existing: $0) }
-            .sheet(isPresented: $creating) { LoginEditView(existing: nil) }
+            // One sheet per destination; the item's kind picks the editor. A
+            // wrong pairing here is what the "Edit" swipe used to guard against
+            // by not existing for these kinds at all.
+            .sheet(item: $editing) { item in
+                switch item.kind {
+                case .wifi: WifiEditView(existing: item)
+                case .secureNote: NoteEditView(existing: item)
+                default: LoginEditView(existing: item)
+                }
+            }
+            .sheet(item: $creating) { kind in
+                switch kind {
+                case .login: LoginEditView(existing: nil)
+                case .wifi: WifiEditView(existing: nil)
+                case .note: NoteEditView(existing: nil)
+                }
+            }
             // No `onUse`: opened on its own there is no field to fill, so
             // Copy is the only thing that would make sense.
             .sheet(isPresented: $generatingPassword) { PasswordGeneratorView() }
@@ -282,4 +301,11 @@ private struct SectionIndex: ViewModifier {
             content
         }
     }
+}
+
+
+/// What the "+" menu can create. Identifiable so it can drive a sheet.
+enum VaultCreateKind: String, Identifiable {
+    case login, wifi, note
+    var id: String { rawValue }
 }

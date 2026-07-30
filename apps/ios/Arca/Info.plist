@@ -42,6 +42,12 @@
          failure is a silent nil rather than an error. -->
     <key>NSSupportsLiveActivities</key>
     <true/>
+    <!-- Frank's declaration (2026-07-30): Arca uses only exempt encryption —
+         standard algorithms (Argon2id, XChaCha20-Poly1305, P-256) for data
+         protection, the category the export rules exempt. With the key in the
+         plist, App Store Connect stops asking per build. -->
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
     <key>NSCameraUsageDescription</key>
     <string>The camera reads a site's QR code to add its verification code to your vault. Nothing is photographed or stored.</string>
     <key>NSFaceIDUsageDescription</key>

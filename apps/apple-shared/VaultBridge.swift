@@ -53,14 +53,16 @@ enum VaultShared {
     /// something the site will reject; v10 added the by-handle passkey surface
     /// (`vault_ffi_passkey_identities`, `vault_ffi_passkey_assert_for_id`), so
     /// a phone can sign in with a stored passkey without the private key ever
-    /// crossing into Swift; v11 changed upsert's TOTP semantics — null keeps
+    /// crossing into Swift; v12 added `vault_ffi_upsert_wifi` and
+    /// `vault_ffi_upsert_secure_note`, making every phone-relevant kind
+    /// writable; v11 changed upsert's TOTP semantics — null keeps
     /// the existing secret, "" clears it — because the detail surface never
     /// hands the secret out, so a client editing a login could not round-trip
     /// it and every phone edit destroyed the code.
     /// Bump this in the SAME commit that bumps `ABI_VERSION`: nothing compiles
     /// against it, so a stale value is only ever caught at runtime, by this
     /// guard, on a device.
-    static let requiredAbiVersion: Int32 = 11
+    static let requiredAbiVersion: Int32 = 12
 
     // MARK: Password generation
 
@@ -813,6 +815,21 @@ final class VaultSession: @unchecked Sendable {
     /// Returns the item's id, which is the caller's handle to it afterwards
     /// (the same id on an edit, a fresh one on a create).
     @discardableResult
+    /// `withCString` for an optional: nil crosses as a NULL pointer.
+    ///
+    /// This distinction is load-bearing since ABI v11 — for the TOTP field,
+    /// NULL means "keep the existing secret" and "" means "clear it". Folding
+    /// nil to "" here is how the keep-on-null fix shipped in Rust while every
+    /// phone edit went on clearing codes through this very file.
+    private static func withOptionalCString<R>(
+        _ string: String?, _ body: (UnsafePointer<CChar>?) throws -> R
+    ) rethrows -> R {
+        if let string {
+            return try string.withCString { try body($0) }
+        }
+        return try body(nil)
+    }
+
     func upsertLogin(
         id: String? = nil,
         title: String,
@@ -833,12 +850,15 @@ final class VaultSession: @unchecked Sendable {
 
             // withCString nests rather than composes; the pointers are only
             // valid inside their closures, so the call happens innermost.
-            let code: Int32 = (id ?? "").withCString { idPtr in
+            // nil id -> NULL (create); nil totp -> NULL (KEEP the existing
+            // secret, per v11). `?? ""` here would turn every phone edit into
+            // an explicit clear — which is exactly what it used to do.
+            let code: Int32 = Self.withOptionalCString(id) { idPtr in
                 title.withCString { titlePtr in
                     username.withCString { userPtr in
                         password.withCString { passPtr in
                             url.withCString { urlPtr in
-                                (totpSecret ?? "").withCString { totpPtr in
+                                Self.withOptionalCString(totpSecret) { totpPtr in
                                     notes.withCString { notesPtr in
                                         vault_ffi_upsert_login(
                                             self.handle, idPtr, titlePtr, userPtr,
@@ -860,6 +880,84 @@ final class VaultSession: @unchecked Sendable {
             }
             // Persist BEFORE reporting success: an id for an item that never
             // reached disk would be a lie the UI acts on.
+            try VaultShared.writeVault(Data(bytes: vault, count: vaultLength))
+            return String(decoding: Data(bytes: idOut, count: idLength), as: UTF8.self)
+        }
+    }
+
+    /// Create or edit a Wi-Fi entry. Same persistence contract as
+    /// `upsertLogin`: the file is written before the id is reported.
+    func upsertWifi(
+        id: String? = nil,
+        title: String,
+        ssid: String,
+        password: String,
+        security: String,
+        hidden: Bool,
+        notes: String = ""
+    ) async throws -> String {
+        try await Self.run {
+            var vault: UnsafeMutablePointer<UInt8>?
+            var vaultLength = 0
+            var idOut: UnsafeMutablePointer<UInt8>?
+            var idLength = 0
+            let now = Int64(Date().timeIntervalSince1970 * 1000)
+            let code: Int32 = Self.withOptionalCString(id) { idPtr in
+                title.withCString { titlePtr in
+                    ssid.withCString { ssidPtr in
+                        password.withCString { passPtr in
+                            security.withCString { secPtr in
+                                notes.withCString { notesPtr in
+                                    vault_ffi_upsert_wifi(
+                                        self.handle, idPtr, titlePtr, ssidPtr,
+                                        passPtr, secPtr, hidden ? 1 : 0, notesPtr,
+                                        now, &vault, &vaultLength, &idOut, &idLength)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            guard code == VaultFFICode.ok, let vault, let idOut else {
+                throw VaultError.ffi(code: code, operation: "upsert_wifi")
+            }
+            defer {
+                vault_ffi_free(vault, vaultLength)
+                vault_ffi_free(idOut, idLength)
+            }
+            try VaultShared.writeVault(Data(bytes: vault, count: vaultLength))
+            return String(decoding: Data(bytes: idOut, count: idLength), as: UTF8.self)
+        }
+    }
+
+    /// Create or edit a secure note. Same persistence contract as `upsertLogin`.
+    func upsertNote(
+        id: String? = nil,
+        title: String,
+        body: String
+    ) async throws -> String {
+        try await Self.run {
+            var vault: UnsafeMutablePointer<UInt8>?
+            var vaultLength = 0
+            var idOut: UnsafeMutablePointer<UInt8>?
+            var idLength = 0
+            let now = Int64(Date().timeIntervalSince1970 * 1000)
+            let code: Int32 = Self.withOptionalCString(id) { idPtr in
+                title.withCString { titlePtr in
+                    body.withCString { bodyPtr in
+                        vault_ffi_upsert_secure_note(
+                            self.handle, idPtr, titlePtr, bodyPtr, now,
+                            &vault, &vaultLength, &idOut, &idLength)
+                    }
+                }
+            }
+            guard code == VaultFFICode.ok, let vault, let idOut else {
+                throw VaultError.ffi(code: code, operation: "upsert_secure_note")
+            }
+            defer {
+                vault_ffi_free(vault, vaultLength)
+                vault_ffi_free(idOut, idLength)
+            }
             try VaultShared.writeVault(Data(bytes: vault, count: vaultLength))
             return String(decoding: Data(bytes: idOut, count: idLength), as: UTF8.self)
         }
