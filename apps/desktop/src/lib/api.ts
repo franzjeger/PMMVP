@@ -394,6 +394,16 @@ export const api = {
 
 // ---- events ---------------------------------------------------------------
 
+/**
+ * Fired when the browser extension asked Arca to unlock — the user clicked a
+ * locked field's badge, so a Touch ID prompt is the answer rather than an
+ * interruption. This is the one signal that re-enables the automatic prompt
+ * after an automatic lock has suppressed it.
+ */
+export function onUnlockRequested(cb: () => void): Promise<UnlistenFn> {
+  return listen("unlock-requested", () => cb());
+}
+
 /** Fired by the backend when the vault auto-locks (idle or window blur). */
 export function onVaultLocked(cb: (reason: string) => void): Promise<UnlistenFn> {
   return listen<string>("vault-locked", (e) => cb(e.payload));

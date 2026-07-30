@@ -118,6 +118,15 @@ enum Request {
         username: String,
         password: String,
     },
+    /// Bring Arca forward and ask for Touch ID, because the browser needs a
+    /// password right now.
+    ///
+    /// The one moment an unlock prompt is the answer rather than an
+    /// interruption: the user clicked a locked field's badge, so they have said
+    /// what they want. Nothing is unlocked by this request itself — it puts the
+    /// window in front and the user still authenticates.
+    #[serde(rename = "request_unlock")]
+    Unlock,
     /// A fresh random password for a sign-up form.
     ///
     /// Deliberately does NOT require an unlocked vault. Nothing here reads or
@@ -153,7 +162,13 @@ impl Request {
             | Request::PasskeyGet { .. }
             | Request::SaveLogin { .. }
             | Request::GeneratePassword { .. } => true,
-            Request::Hello { .. } | Request::Match { .. } | Request::SaveProbe { .. } => false,
+            // NOT activity: the vault is locked, so there is no idle timer to
+            // reset, and counting it would let a page keep a future session
+            // alive by asking to unlock.
+            Request::Unlock
+            | Request::Hello { .. }
+            | Request::Match { .. }
+            | Request::SaveProbe { .. } => false,
         }
     }
 }
@@ -192,6 +207,9 @@ enum Response {
     GeneratedPassword {
         password: String,
     },
+    /// Arca was brought forward and asked the user to unlock. Says nothing
+    /// about whether they did — the extension retries and finds out.
+    UnlockRequested,
     Error {
         message: String,
     },
@@ -856,6 +874,29 @@ fn handle_request(
                 let _ = app.emit("login-saved", host);
             }
             Response::Saved
+        }
+        Request::Unlock => {
+            let already_open = state
+                .lock()
+                .ok()
+                .and_then(|st| st.vault.as_ref().map(|v| v.is_unlocked()))
+                .unwrap_or(false);
+            if already_open {
+                // Racing a fill that already succeeded, or a second field on the
+                // same page. Do not steal focus from what the user is doing.
+                return Response::UnlockRequested;
+            }
+            if let Some(app) = app {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
+                // The frontend decides how to ask; this only says that someone
+                // out there is waiting on it.
+                let _ = app.emit("unlock-requested", ());
+            }
+            Response::UnlockRequested
         }
         Request::GeneratePassword { length, symbols } => {
             // Clamped rather than refused. The caller is a browser extension,

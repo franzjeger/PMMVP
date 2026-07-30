@@ -14,6 +14,7 @@ import {
   onPasskeySuppressed,
   onPasskeyVerifyRequest,
   onSyncMerged,
+  onUnlockRequested,
   onVaultLocked,
   type FillConsent,
   type PasskeyVerifyRequest,
@@ -128,6 +129,11 @@ export default function App() {
         setPasskeyVerify(null);
         void refreshStatus();
       }),
+      // Somebody out there is waiting on this vault. Clearing the flag lets the
+      // lock screen ask for Touch ID again — the request came from the user, at
+      // a password field, which is precisely the case the suppression is not
+      // meant to cover.
+      onUnlockRequested(() => setAutoLocked(false)),
       onClipboardCleared(() => setToast("Clipboard cleared")),
       onAutofilled((what) => setToast(`Autofilled ${what}`)),
       onPasskeySuppressed((site) =>

@@ -192,6 +192,91 @@
     return row;
   }
 
+  /// The locked-vault panel, as something you can act on.
+  ///
+  /// It used to read "Open and unlock Arca to autofill." — an instruction, at
+  /// the exact moment the user had already said what they wanted by clicking
+  /// the badge. Now the click brings Arca forward, it asks for Touch ID, and
+  /// the suggestions appear here by themselves.
+  function unlockPrompt(anchor, isIdentifier) {
+    const wrap = document.createElement("div");
+    const row = document.createElement("button");
+    row.className = "sybr-row";
+    row.innerHTML =
+      `<span class="sybr-line"><span class="sybr-title"></span>` +
+      `<span class="sybr-kind"></span></span><span class="sybr-user"></span>`;
+    row.querySelector(".sybr-title").textContent = "Unlock Arca to autofill";
+    row.querySelector(".sybr-user").textContent = "Arca will ask for Touch ID";
+    const kindEl = row.querySelector(".sybr-kind");
+    kindEl.textContent = "Locked";
+    kindEl.classList.add("sybr-kind-password");
+    row.addEventListener("click", (e) => {
+      // A real click, from a real person. A page can dispatch a synthetic one
+      // at this button, and while unlocking still needs the user's fingerprint,
+      // a page that can summon Touch ID sheets at will is a nuisance worth
+      // refusing outright.
+      if (!e.isTrusted) return;
+      void requestUnlock(anchor, isIdentifier);
+    });
+    wrap.appendChild(row);
+    return wrap;
+  }
+
+  /// Rate limit on asking Arca to come forward, in ms. Without it, a page that
+  /// re-focuses its password field in a loop becomes a window-stealing machine.
+  const UNLOCK_COOLDOWN_MS = 5000;
+  let lastUnlockRequest = 0;
+
+  async function requestUnlock(anchor, isIdentifier) {
+    const now = Date.now();
+    if (now - lastUnlockRequest < UNLOCK_COOLDOWN_MS) return;
+    lastUnlockRequest = now;
+
+    openPanel(anchor, note("Unlocking Arca…"));
+    let res;
+    try {
+      res = await api.runtime.sendMessage({ cmd: "requestUnlock" });
+    } catch (e) {
+      openPanel(anchor, note(`Could not reach Arca: ${String(e)}`));
+      return;
+    }
+    const out = res && res.ok ? res.response : null;
+    if (!out || out.type !== "unlock_requested") {
+      openPanel(
+        anchor,
+        note((out && out.message) || "Arca is not running."),
+      );
+      return;
+    }
+
+    // Poll rather than wait for a push: the unlock happens in another
+    // application, behind a biometric prompt the user may also ignore. Give up
+    // quietly after a while instead of leaving a spinner on their page.
+    const deadline = Date.now() + 60000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 700));
+      // Gone from the page, or the user moved on. Stop.
+      if (!anchor.isConnected) return;
+      let probe;
+      try {
+        probe = await api.runtime.sendMessage({
+          cmd: "listLogins",
+          url: location.href,
+        });
+      } catch {
+        return;
+      }
+      const resp = (probe && probe.ok && probe.response) || {};
+      if (resp.app_connected) {
+        cache = null;
+        lockedHintShown = false;
+        await showMatches(anchor, false, isIdentifier);
+        return;
+      }
+    }
+    openPanel(anchor, note("Arca is still locked."));
+  }
+
   /** Visible password inputs in the same form as `el`, in document order. */
   function passwordFieldsIn(el) {
     const scope = el.form || document;
@@ -357,7 +442,7 @@
           const nag = !auto || (!isIdentifier && !lockedHintShown);
           if (nag) {
             if (auto) lockedHintShown = true;
-            openPanel(anchor, note("Open and unlock Arca to autofill."));
+            openPanel(anchor, unlockPrompt(anchor, isIdentifier));
           }
         } else if (isNewPasswordField(anchor)) {
           // Nothing stored, and the field is asking for a new password: this is

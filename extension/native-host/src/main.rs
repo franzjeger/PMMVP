@@ -75,6 +75,9 @@ enum Request {
         username: String,
         password: String,
     },
+    /// Ask the desktop app to come forward and prompt for unlock.
+    #[serde(rename = "request_unlock")]
+    Unlock,
     /// A fresh random password for a sign-up form.
     GeneratePassword {
         #[serde(default)]
@@ -131,6 +134,8 @@ enum Response {
     GeneratedPassword {
         password: String,
     },
+    /// The app was asked to come forward and prompt.
+    UnlockRequested,
     Error {
         message: String,
     },
@@ -236,6 +241,15 @@ fn handle(request: Request) -> Response {
             } else {
                 Response::Error {
                     message: "Could not save login (app locked or not running).".to_string(),
+                }
+            }
+        }
+        Request::Unlock => {
+            if bridge_request(serde_json::json!({ "type": "request_unlock" })).is_some() {
+                Response::UnlockRequested
+            } else {
+                Response::Error {
+                    message: "Arca is not running.".to_string(),
                 }
             }
         }

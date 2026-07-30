@@ -124,6 +124,10 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }).then(sendResponse);
       return true;
 
+    case "requestUnlock":
+      sendNative({ type: "request_unlock" }).then(sendResponse);
+      return true;
+
     case "generatePassword":
       // No url and no id: generating reads nothing from the vault, so there is
       // nothing for the app to scope to an origin.
