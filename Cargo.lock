@@ -5617,6 +5617,7 @@ dependencies = [
 name = "vault-ffi"
 version = "0.3.0"
 dependencies = [
+ "data-encoding",
  "p256",
  "serde",
  "serde_json",

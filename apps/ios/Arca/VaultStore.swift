@@ -29,6 +29,9 @@ final class VaultStore {
     private(set) var phase: Phase = .locked
     /// Everything in the vault, of every kind — what the list shows.
     private(set) var items: [VaultItemMeta] = []
+    /// Stored passkeys' metadata, held only to republish to the credential
+    /// store. Never a private key — that stays behind the Rust handle.
+    private var passkeyIdentities: [VaultSession.VaultPasskeyIdentity] = []
     /// Logins only, and only for the AutoFill credential store.
     ///
     /// Two calls rather than deriving one from the other, on purpose: the
@@ -195,7 +198,8 @@ final class VaultStore {
             // After the phase flip on purpose: this is what puts Arca in the
             // QuickType bar, and it is metadata only, so nobody should be made
             // to wait behind it to see their own vault.
-            autoFillEnabled = await CredentialIdentities.replace(with: self.identities)
+            autoFillEnabled = await CredentialIdentities.replace(
+                with: self.identities, passkeys: passkeyIdentities)
             // Sync last: it is network-bound and nobody should wait behind it to
             // see their own vault.
             await startSync(session)
@@ -213,6 +217,7 @@ final class VaultStore {
     private func load(_ session: VaultSession) async throws {
         let items = try await session.items()
         let identities = try await session.identities()
+        passkeyIdentities = try await session.passkeyIdentities()
         // Kind first, then title: a vault with logins, keys and notes mixed by
         // name is a list you have to read rather than scan.
         self.items = items.sorted {
@@ -382,7 +387,8 @@ final class VaultStore {
     private func reload(_ session: VaultSession) async {
         do {
             try await load(session)
-            autoFillEnabled = await CredentialIdentities.replace(with: identities)
+            autoFillEnabled = await CredentialIdentities.replace(
+                with: identities, passkeys: passkeyIdentities)
         } catch {
             log.error("reload failed: \(vaultLogMessage(for: error), privacy: .public)")
             failure = Self.message(error, fallback: "Saved, but the list is out of date.")

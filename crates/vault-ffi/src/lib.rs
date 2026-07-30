@@ -71,7 +71,7 @@ pub mod sync;
 ///   (the restriction on `vault_ffi_vault_free` is unchanged);
 /// * a handle's contents can now change underneath the caller, because a sync
 ///   merges a peer's items into the very vault the handle exposes.
-pub const ABI_VERSION: i32 = 9;
+pub const ABI_VERSION: i32 = 10;
 
 // Return codes.
 pub(crate) const OK: i32 = 0;
@@ -887,6 +887,141 @@ pub unsafe extern "C" fn vault_ffi_generate_password_for_rules(
     }
 }
 
+/// Every passkey in the vault, as the metadata iOS' credential store needs:
+/// `[{ id, rp_id, user_name, user_handle, credential_id }]`, binary fields
+/// base64. NOT secret — this is what a relying party already knows about the
+/// credential. The private key stays behind the handle; see
+/// [`vault_ffi_passkey_assert_for_id`].
+///
+/// Separate from `vault_ffi_identities` for the same reason that one is
+/// logins-only: each feeds a differently-shaped platform store, and a merged
+/// list would make both callers filter out the other's entries.
+///
+/// # Safety
+/// `handle` valid; out pointers writable.
+#[no_mangle]
+pub unsafe extern "C" fn vault_ffi_passkey_identities(
+    handle: *mut VaultHandle,
+    out_json: *mut *mut u8,
+    out_json_len: *mut usize,
+) -> i32 {
+    if handle.is_null() || out_json.is_null() || out_json_len.is_null() {
+        return ERR_NULL_ARG;
+    }
+    let vault = match lock_vault(&(*handle).vault) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    match guard_result(|| {
+        let b64 = data_encoding::BASE64;
+        // Summaries first, full item only for the passkeys: `get_item` clones
+        // the payload (VaultItem is Drop/zeroize), and most vaults are almost
+        // entirely logins that would be cloned for nothing.
+        let mut rows: Vec<serde_json::Value> = Vec::new();
+        for summary in vault.list_items(false)? {
+            if summary.kind != vault_core::ItemKind::Passkey {
+                continue;
+            }
+            let item = vault.get_item(summary.id)?;
+            if let VaultItem::Passkey {
+                rp_id,
+                user_name,
+                user_handle,
+                credential_id,
+                ..
+            } = &item.data
+            {
+                rows.push(serde_json::json!({
+                    "id": item.id.to_string(),
+                    "rp_id": rp_id,
+                    "user_name": user_name,
+                    "user_handle": b64.encode(user_handle),
+                    "credential_id": b64.encode(credential_id),
+                }));
+            }
+        }
+        Ok(serde_json::to_string(&rows).expect("json"))
+    }) {
+        Ok(json) => {
+            emit(json.into_bytes(), out_json, out_json_len);
+            OK
+        }
+        Err(code) => code,
+    }
+}
+
+/// A WebAuthn assertion from a stored passkey, by item id.
+///
+/// This exists so a client that HOLDS the vault never sees the private key.
+/// The older [`vault_ffi_passkey_assert`] takes the key as an argument because
+/// the macOS extension receives it from the app process; on a phone the
+/// extension owns the handle, and exporting the key to Swift just to pass it
+/// back in would put the one secret that must not leak into the one runtime
+/// that cannot wipe it.
+///
+/// On OK: `{ credential_id, user_handle, authenticator_data, signature }`,
+/// base64. `ERR_NOT_FOUND` if the id is unknown or not a passkey.
+///
+/// # Safety
+/// `handle` valid; `id_utf8` NUL-terminated; the hash slice readable; out
+/// pointers writable.
+#[no_mangle]
+pub unsafe extern "C" fn vault_ffi_passkey_assert_for_id(
+    handle: *mut VaultHandle,
+    id_utf8: *const c_char,
+    client_data_hash: *const u8,
+    client_data_hash_len: usize,
+    user_verified: i32,
+    out_json: *mut *mut u8,
+    out_json_len: *mut usize,
+) -> i32 {
+    if handle.is_null()
+        || client_data_hash.is_null()
+        || out_json.is_null()
+        || out_json_len.is_null()
+    {
+        return ERR_NULL_ARG;
+    }
+    let Some(id) = cstr(id_utf8) else {
+        return ERR_UTF8;
+    };
+    let hash = slice::from_raw_parts(client_data_hash, client_data_hash_len);
+    let vault = match lock_vault(&(*handle).vault) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    match guard_result(|| {
+        let uuid = uuid::Uuid::parse_str(id).map_err(|_| Error::NotFound)?;
+        let item = vault.get_item(uuid).map_err(|_| Error::NotFound)?;
+        let VaultItem::Passkey {
+            rp_id,
+            user_handle,
+            credential_id,
+            private_key,
+            ..
+        } = &item.data
+        else {
+            return Err(Error::NotFound);
+        };
+        let (auth_data, signature) =
+            vault_core::passkey::assert(private_key, rp_id, hash, user_verified != 0)?;
+        let b64 = data_encoding::BASE64;
+        Ok(serde_json::to_string(&serde_json::json!({
+            "credential_id": b64.encode(credential_id),
+            "user_handle": b64.encode(user_handle),
+            "authenticator_data": b64.encode(&auth_data),
+            "signature": b64.encode(&signature),
+        }))
+        .expect("json"))
+    }) {
+        Ok(json) => {
+            emit(json.into_bytes(), out_json, out_json_len);
+            OK
+        }
+        Err(code) => code,
+    }
+}
+
 /// Run a fallible closure inside a panic guard, flattening the core error to a
 /// return code. `Ok(value)` on success, `Err(code)` on error or panic.
 fn guard_result<T>(f: impl FnOnce() -> vault_core::Result<T>) -> Result<T, i32> {
@@ -1373,6 +1508,167 @@ mod tests {
         }
     }
 
+    /// The phone's whole passkey story over the ABI: enumerate what the vault
+    /// holds, assert with nothing but an item id, and check the signature
+    /// against the credential's own key.
+    ///
+    /// Verifying the signature is the part that matters. A test that only
+    /// checks OK-codes would pass with an assert wired to the wrong item's
+    /// key, and that failure reaches the user as "GitHub rejected your
+    /// passkey" with no path back to here.
+    #[test]
+    fn passkey_identities_and_assert_by_id_round_trip() {
+        // A real credential, minted by the same core the desktop uses.
+        let rp = CString::new("github.com").unwrap();
+        let (mut cid, mut cid_len) = (ptr::null_mut(), 0usize);
+        let (mut pk, mut pk_len) = (ptr::null_mut(), 0usize);
+        let (mut att, mut att_len) = (ptr::null_mut(), 0usize);
+        assert_eq!(
+            unsafe {
+                vault_ffi_passkey_create(
+                    rp.as_ptr(),
+                    true,
+                    &mut cid,
+                    &mut cid_len,
+                    &mut pk,
+                    &mut pk_len,
+                    &mut att,
+                    &mut att_len,
+                )
+            },
+            OK
+        );
+        let credential_id = unsafe { slice::from_raw_parts(cid, cid_len).to_vec() };
+        let private_key = unsafe { slice::from_raw_parts(pk, pk_len).to_vec() };
+        unsafe {
+            vault_ffi_free(cid, cid_len);
+            vault_ffi_free(pk, pk_len);
+            vault_ffi_free(att, att_len);
+        }
+
+        // Into a vault, out through file bytes, back in via the ABI — the same
+        // road a synced credential travels to reach the phone.
+        use vault_core::{Item, KdfAlgorithm, KdfParams};
+        let params = KdfParams {
+            algorithm: KdfAlgorithm::Argon2id,
+            m_cost_kib: 256,
+            t_cost: 1,
+            p_cost: 1,
+            salt: vec![7u8; KdfParams::SALT_LEN],
+        };
+        let mut vault = Vault::create("pw", params).unwrap();
+        let item = Item::new(
+            VaultItem::Passkey {
+                title: "GitHub".into(),
+                rp_id: "github.com".into(),
+                user_name: "frank".into(),
+                user_handle: vec![9, 9, 9],
+                credential_id: credential_id.clone(),
+                private_key: private_key.clone(),
+                sign_count: 0,
+            },
+            0,
+        );
+        let item_id = item.id.to_string();
+        vault.upsert_item(item).unwrap();
+        let bytes = vault.to_bytes().unwrap();
+
+        let mut handle: *mut VaultHandle = ptr::null_mut();
+        let pw = CString::new("pw").unwrap();
+        assert_eq!(
+            unsafe {
+                vault_ffi_vault_open_password(bytes.as_ptr(), bytes.len(), pw.as_ptr(), &mut handle)
+            },
+            OK
+        );
+
+        // Enumeration carries what the credential store needs — and no more.
+        let (mut out, mut len) = (ptr::null_mut(), 0usize);
+        assert_eq!(
+            unsafe { vault_ffi_passkey_identities(handle, &mut out, &mut len) },
+            OK
+        );
+        let rows: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out, len) }).unwrap();
+        unsafe { vault_ffi_free(out, len) };
+        let rows = rows.as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["rp_id"], "github.com");
+        assert_eq!(rows[0]["id"], item_id.as_str());
+        let b64 = data_encoding::BASE64;
+        assert_eq!(
+            b64.decode(rows[0]["credential_id"].as_str().unwrap().as_bytes())
+                .unwrap(),
+            credential_id
+        );
+        assert!(
+            rows[0].get("private_key").is_none(),
+            "the private key must never cross"
+        );
+
+        // Assert by id: the key stays behind the handle.
+        let hash = [7u8; 32];
+        let id_c = CString::new(item_id).unwrap();
+        let (mut out, mut len) = (ptr::null_mut(), 0usize);
+        assert_eq!(
+            unsafe {
+                vault_ffi_passkey_assert_for_id(
+                    handle,
+                    id_c.as_ptr(),
+                    hash.as_ptr(),
+                    hash.len(),
+                    1,
+                    &mut out,
+                    &mut len,
+                )
+            },
+            OK
+        );
+        let resp: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out, len) }).unwrap();
+        unsafe { vault_ffi_free(out, len) };
+
+        assert_eq!(
+            b64.decode(resp["user_handle"].as_str().unwrap().as_bytes())
+                .unwrap(),
+            vec![9, 9, 9]
+        );
+        // WebAuthn signs authenticatorData || clientDataHash. Verified against
+        // the credential's own key, not merely "a signature came back".
+        let auth_data = b64
+            .decode(resp["authenticator_data"].as_str().unwrap().as_bytes())
+            .unwrap();
+        let signature = b64
+            .decode(resp["signature"].as_str().unwrap().as_bytes())
+            .unwrap();
+        let mut signed = auth_data;
+        signed.extend_from_slice(&hash);
+        use p256_check::verify;
+        assert!(
+            verify(&private_key, &signed, &signature),
+            "assertion did not verify against the credential's key"
+        );
+
+        // An unknown id is a clean not-found, not a panic.
+        let bogus = CString::new(uuid::Uuid::new_v4().to_string()).unwrap();
+        let (mut out, mut len) = (ptr::null_mut(), 0usize);
+        assert_eq!(
+            unsafe {
+                vault_ffi_passkey_assert_for_id(
+                    handle,
+                    bogus.as_ptr(),
+                    hash.as_ptr(),
+                    hash.len(),
+                    1,
+                    &mut out,
+                    &mut len,
+                )
+            },
+            ERR_NOT_FOUND
+        );
+        unsafe { vault_ffi_vault_free(handle) };
+    }
+
     #[test]
     fn null_and_bad_utf8_are_errors_not_crashes() {
         let mut a = ptr::null_mut();
@@ -1430,8 +1726,8 @@ mod tests {
     // Pinned deliberately: clients gate features on this number, so a bump has
     // to be a conscious edit here, not a side effect.
     #[test]
-    fn abi_version_is_9() {
-        assert_eq!(vault_ffi_abi_version(), 9);
+    fn abi_version_is_10() {
+        assert_eq!(vault_ffi_abi_version(), 10);
     }
 
     // ---- every-kind surface (ABI v7) -------------------------------------

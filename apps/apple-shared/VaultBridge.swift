@@ -50,11 +50,14 @@ enum VaultShared {
     /// a phone see more than logins; v8 added `vault_ffi_generate_password`;
     /// v9 added `vault_ffi_generate_password_for_rules`, which is what lets the
     /// AutoFill extension answer a system generate request without producing
-    /// something the site will reject.
+    /// something the site will reject; v10 added the by-handle passkey surface
+    /// (`vault_ffi_passkey_identities`, `vault_ffi_passkey_assert_for_id`), so
+    /// a phone can sign in with a stored passkey without the private key ever
+    /// crossing into Swift.
     /// Bump this in the SAME commit that bumps `ABI_VERSION`: nothing compiles
     /// against it, so a stale value is only ever caught at runtime, by this
     /// guard, on a device.
-    static let requiredAbiVersion: Int32 = 9
+    static let requiredAbiVersion: Int32 = 10
 
     // MARK: Password generation
 
@@ -618,6 +621,117 @@ final class VaultSession: @unchecked Sendable {
                 // swallowed rather than logged or wrapped.
                 throw VaultError.malformedIdentities
             }
+        }
+    }
+
+    /// One stored passkey's metadata — what the credential store and the
+    /// assertion response need, and nothing secret.
+    struct VaultPasskeyIdentity: Decodable, Identifiable, Sendable {
+        let id: String
+        let rpID: String
+        let userName: String
+        let userHandle: Data
+        let credentialID: Data
+
+        enum CodingKeys: String, CodingKey {
+            case id, rpID = "rp_id", userName = "user_name"
+            case userHandle = "user_handle", credentialID = "credential_id"
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(String.self, forKey: .id)
+            rpID = try c.decode(String.self, forKey: .rpID)
+            userName = try c.decode(String.self, forKey: .userName)
+            userHandle = try Self.base64(c, .userHandle)
+            credentialID = try Self.base64(c, .credentialID)
+        }
+
+        private static func base64(
+            _ c: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys
+        ) throws -> Data {
+            let raw = try c.decode(String.self, forKey: key)
+            guard let data = Data(base64Encoded: raw) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: key, in: c, debugDescription: "not base64")
+            }
+            return data
+        }
+    }
+
+    /// A WebAuthn assertion, ready for `ASPasskeyAssertionCredential`.
+    struct VaultPasskeyAssertion: Decodable, Sendable {
+        let credentialID: Data
+        let userHandle: Data
+        let authenticatorData: Data
+        let signature: Data
+
+        enum CodingKeys: String, CodingKey {
+            case credentialID = "credential_id", userHandle = "user_handle"
+            case authenticatorData = "authenticator_data", signature
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            func field(_ key: CodingKeys) throws -> Data {
+                let raw = try c.decode(String.self, forKey: key)
+                guard let data = Data(base64Encoded: raw) else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: key, in: c, debugDescription: "not base64")
+                }
+                return data
+            }
+            credentialID = try field(.credentialID)
+            userHandle = try field(.userHandle)
+            authenticatorData = try field(.authenticatorData)
+            signature = try field(.signature)
+        }
+    }
+
+    /// Every stored passkey's metadata, for the credential store.
+    func passkeyIdentities() async throws -> [VaultPasskeyIdentity] {
+        try await Self.run {
+            var buffer: UnsafeMutablePointer<UInt8>?
+            var length = 0
+            let code = vault_ffi_passkey_identities(self.handle, &buffer, &length)
+            guard code == VaultFFICode.ok, let buffer else {
+                throw VaultError.ffi(code: code, operation: "passkey_identities")
+            }
+            defer { vault_ffi_free(buffer, length) }
+            return try JSONDecoder().decode(
+                [VaultPasskeyIdentity].self,
+                from: Data(bytes: buffer, count: length))
+        }
+    }
+
+    /// Sign a relying party's challenge with a stored passkey.
+    ///
+    /// `userVerified` must reflect what ACTUALLY gated this call — Face ID or
+    /// the master password — because it is written into the authenticator
+    /// data's flags, and the relying party trusts it. Claiming verification
+    /// that did not happen is lying to the site about its own security.
+    func assertPasskey(
+        forID id: String, clientDataHash: Data, userVerified: Bool
+    ) async throws -> VaultPasskeyAssertion {
+        try await Self.run {
+            var buffer: UnsafeMutablePointer<UInt8>?
+            var length = 0
+            let code = id.withCString { idPtr in
+                clientDataHash.withUnsafeBytes { hash in
+                    vault_ffi_passkey_assert_for_id(
+                        self.handle, idPtr,
+                        hash.bindMemory(to: UInt8.self).baseAddress, hash.count,
+                        userVerified ? 1 : 0,
+                        &buffer, &length)
+                }
+            }
+            guard code == VaultFFICode.ok, let buffer else {
+                throw VaultError.ffi(code: code, operation: "passkey_assert_for_id")
+            }
+            defer { vault_ffi_free(buffer, length) }
+            return try JSONDecoder().decode(
+                VaultPasskeyAssertion.self,
+                from: Data(bytes: buffer, count: length))
         }
     }
 

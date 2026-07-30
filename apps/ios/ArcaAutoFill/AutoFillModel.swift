@@ -25,9 +25,11 @@ final class AutoFillModel {
     }
 
     /// The OS asked for one specific credential rather than a list.
-    struct DirectRequest {
-        let recordID: String
-        let user: String
+    enum DirectRequest {
+        case password(recordID: String, user: String)
+        /// A passkey assertion. The hash is of the clientDataJSON the OS built;
+        /// signing it is the whole ceremony.
+        case passkey(recordID: String, clientDataHash: Data, rpID: String)
     }
 
     private(set) var phase: Phase = .locked
@@ -47,6 +49,7 @@ final class AutoFillModel {
     private let domains: Set<String>
     private let direct: DirectRequest?
     private let onFill: @MainActor (ASPasswordCredential) -> Void
+    private let onFillPasskey: @MainActor (ASPasskeyAssertionCredential) -> Void
     private let onCancel: @MainActor () -> Void
 
     private var session: VaultSession?
@@ -55,11 +58,13 @@ final class AutoFillModel {
         domains: Set<String>,
         direct: DirectRequest?,
         onFill: @escaping @MainActor (ASPasswordCredential) -> Void,
+        onFillPasskey: @escaping @MainActor (ASPasskeyAssertionCredential) -> Void = { _ in },
         onCancel: @escaping @MainActor () -> Void
     ) {
         self.domains = domains
         self.direct = direct
         self.onFill = onFill
+        self.onFillPasskey = onFillPasskey
         self.onCancel = onCancel
     }
 
@@ -138,9 +143,16 @@ final class AutoFillModel {
 
             // Asked for one credential: hand it back rather than showing a list
             // of one and making the user tap it.
-            if let direct {
-                await fill(recordID: direct.recordID, user: direct.user)
+            switch direct {
+            case let .password(recordID, user):
+                await fill(recordID: recordID, user: user)
                 return
+            case let .passkey(recordID, clientDataHash, rpID):
+                await assertPasskey(
+                    recordID: recordID, clientDataHash: clientDataHash, rpID: rpID)
+                return
+            case nil:
+                break
             }
 
             identities = try await session.identities()
@@ -173,6 +185,33 @@ final class AutoFillModel {
             failure = Self.message(error, fallback: "Couldn't read that password.")
             // Back to the list if there is one, otherwise to the password field.
             phase = identities.isEmpty ? .locked : .picking
+        }
+    }
+
+    /// Sign the relying party's challenge with the stored passkey.
+    ///
+    /// `userVerified: true` is earned, not asserted: this line is only reached
+    /// after `open` succeeded, and both unlock paths — Face ID for the device
+    /// key, or the master password through Argon2id — are user verification in
+    /// WebAuthn's sense. The flag goes into the authenticator data, and the
+    /// relying party trusts it.
+    private func assertPasskey(recordID: String, clientDataHash: Data, rpID: String) async {
+        guard let session else { return }
+        do {
+            let assertion = try await session.assertPasskey(
+                forID: recordID, clientDataHash: clientDataHash, userVerified: true)
+            onFillPasskey(
+                ASPasskeyAssertionCredential(
+                    userHandle: assertion.userHandle,
+                    relyingParty: rpID,
+                    signature: assertion.signature,
+                    clientDataHash: clientDataHash,
+                    authenticatorData: assertion.authenticatorData,
+                    credentialID: assertion.credentialID))
+        } catch {
+            log.error("passkey assert failed: \(vaultLogMessage(for: error), privacy: .public)")
+            failure = Self.message(error, fallback: "Couldn't sign in with that passkey.")
+            phase = .locked
         }
     }
 

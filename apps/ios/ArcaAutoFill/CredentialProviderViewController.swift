@@ -85,16 +85,32 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
     // MARK: UI paths
 
     override func prepareInterfaceToProvideCredential(for credentialRequest: ASCredentialRequest) {
-        guard credentialRequest.type == .password,
-              let identity = credentialRequest.credentialIdentity as? ASPasswordCredentialIdentity,
-              let recordID = identity.recordIdentifier
-        else {
-            cancel(.credentialIdentityNotFound)
-            return
+        switch credentialRequest {
+        case let request as ASPasskeyCredentialRequest:
+            guard let identity = request.credentialIdentity as? ASPasskeyCredentialIdentity,
+                  let recordID = identity.recordIdentifier
+            else {
+                cancel(.credentialIdentityNotFound)
+                return
+            }
+            present(
+                domains: [],
+                direct: .passkey(
+                    recordID: recordID,
+                    clientDataHash: request.clientDataHash,
+                    rpID: identity.relyingPartyIdentifier))
+        default:
+            guard credentialRequest.type == .password,
+                  let identity = credentialRequest.credentialIdentity as? ASPasswordCredentialIdentity,
+                  let recordID = identity.recordIdentifier
+            else {
+                cancel(.credentialIdentityNotFound)
+                return
+            }
+            present(
+                domains: [],
+                direct: .password(recordID: recordID, user: identity.user))
         }
-        present(
-            domains: [],
-            direct: AutoFillModel.DirectRequest(recordID: recordID, user: identity.user))
     }
 
     override func prepareCredentialList(for serviceIdentifiers: [ASCredentialServiceIdentifier]) {
@@ -111,6 +127,9 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
             direct: direct,
             onFill: { [weak self] credential in
                 self?.extensionContext.completeRequest(withSelectedCredential: credential)
+            },
+            onFillPasskey: { [weak self] assertion in
+                self?.extensionContext.completeAssertionRequest(using: assertion)
             },
             onCancel: { [weak self] in self?.cancel(.userCanceled) })
 

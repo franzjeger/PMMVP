@@ -1,6 +1,6 @@
 /* vault-ffi — C ABI over vault-core for native platform integrations.
  *
- * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 9). All
+ * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 10). All
  * out-buffers are heap-allocated by the library and must be released with
  * vault_ffi_free(ptr, len), which also zeroes them.
  *
@@ -141,6 +141,32 @@ int32_t vault_ffi_generate_password_for_rules(const char *rules_utf8,
                                               size_t default_length,
                                               uint8_t **out_password,
                                               size_t *out_password_len);
+
+/* ---- Passkeys by handle (ABI v10) ----------------------------------------
+ *
+ * What lets a phone SIGN IN with a stored passkey. The v1 passkey surface
+ * takes the private key as an argument, because the macOS extension receives
+ * it from the app process; on iOS the extension owns the vault handle, and the
+ * key must never cross into Swift.
+ *
+ * vault_ffi_passkey_identities: every passkey's metadata as JSON —
+ *   [{ id, rp_id, user_name, user_handle, credential_id }], binary fields
+ *   base64. Not secret; feeds ASCredentialIdentityStore.
+ *
+ * vault_ffi_passkey_assert_for_id: a WebAuthn assertion by item id. On OK the
+ *   JSON is { credential_id, user_handle, authenticator_data, signature },
+ *   base64. -5 if the id is unknown or not a passkey. user_verified is 0/1.
+ * Free both with vault_ffi_free. */
+int32_t vault_ffi_passkey_identities(VaultHandle *handle, uint8_t **out_json,
+                                     size_t *out_json_len);
+
+int32_t vault_ffi_passkey_assert_for_id(VaultHandle *handle,
+                                        const char *id_utf8,
+                                        const uint8_t *client_data_hash,
+                                        size_t client_data_hash_len,
+                                        int32_t user_verified,
+                                        uint8_t **out_json,
+                                        size_t *out_json_len);
 
 /* ---- Device-unlock surface (ABI v4) -------------------------------------
  *

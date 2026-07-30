@@ -21,7 +21,10 @@ enum CredentialIdentities {
     /// quietly accepts nothing while it is off, so the answer is worth having:
     /// the app can say what to turn on instead of looking broken.
     @discardableResult
-    static func replace(with identities: [VaultIdentity]) async -> Bool {
+    static func replace(
+        with identities: [VaultIdentity],
+        passkeys: [VaultSession.VaultPasskeyIdentity] = []
+    ) async -> Bool {
         guard await ASCredentialIdentityStore.shared.state().isEnabled else {
             log.info("AutoFill not enabled for Arca; skipping identity publish")
             return false
@@ -29,7 +32,7 @@ enum CredentialIdentities {
 
         // An item with no URL has no domain to match on, so publishing it would
         // only ever clutter the QuickType bar.
-        let entries: [ASCredentialIdentity] = identities
+        var entries: [ASCredentialIdentity] = identities
             .filter { !$0.domain.isEmpty }
             .map {
                 ASPasswordCredentialIdentity(
@@ -38,6 +41,17 @@ enum CredentialIdentities {
                     user: $0.user,
                     recordIdentifier: $0.id)
             }
+        // Passkeys ride in the same store. This is the line that makes a
+        // stored passkey USABLE on the phone: iOS only routes an assertion to
+        // Arca for relying parties it has been told about.
+        entries += passkeys.map {
+            ASPasskeyCredentialIdentity(
+                relyingPartyIdentifier: $0.rpID,
+                userName: $0.userName,
+                credentialID: $0.credentialID,
+                userHandle: $0.userHandle,
+                recordIdentifier: $0.id)
+        }
 
         do {
             try await ASCredentialIdentityStore.shared.replaceCredentialIdentities(entries)

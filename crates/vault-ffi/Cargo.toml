@@ -23,6 +23,9 @@ vault-sync.workspace = true
 # holds the refresh token and PKCE verifier while sync needs them.
 serde = { workspace = true }
 serde_json.workspace = true
+# Passkey identities/assertions cross as JSON; the binary fields (credential
+# id, user handle, authenticator data, signature) ride in it as base64.
+data-encoding.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
 

@@ -36,12 +36,12 @@
             <dict>
                 <key>ProvidesPasswords</key>
                 <true/>
-                <!-- Passkeys: the FFI has the authenticator half
-                     (vault_ffi_passkey_create / _assert) but nothing can store a
-                     credential yet, so advertising this would put Arca in the
-                     passkey chooser only to fail. See docs/PASSKEYS.md. -->
+                <!-- On since ABI v10: vault_ffi_passkey_identities feeds the
+                     credential store and vault_ffi_passkey_assert_for_id signs
+                     by item id, so a synced passkey signs in on the phone with
+                     the private key never leaving Rust. -->
                 <key>ProvidesPasskeys</key>
-                <false/>
+                <true/>
                 <!-- "Use Strong Password" on any sign-up field, system-wide:
                      Safari, native apps, anywhere iOS offers AutoFill.
                      Requires iOS 26.2; older systems ignore these keys and lose
