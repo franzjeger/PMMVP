@@ -53,11 +53,14 @@ enum VaultShared {
     /// something the site will reject; v10 added the by-handle passkey surface
     /// (`vault_ffi_passkey_identities`, `vault_ffi_passkey_assert_for_id`), so
     /// a phone can sign in with a stored passkey without the private key ever
-    /// crossing into Swift.
+    /// crossing into Swift; v11 changed upsert's TOTP semantics — null keeps
+    /// the existing secret, "" clears it — because the detail surface never
+    /// hands the secret out, so a client editing a login could not round-trip
+    /// it and every phone edit destroyed the code.
     /// Bump this in the SAME commit that bumps `ABI_VERSION`: nothing compiles
     /// against it, so a stale value is only ever caught at runtime, by this
     /// guard, on a device.
-    static let requiredAbiVersion: Int32 = 10
+    static let requiredAbiVersion: Int32 = 11
 
     // MARK: Password generation
 

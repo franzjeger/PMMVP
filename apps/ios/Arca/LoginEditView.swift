@@ -25,6 +25,13 @@ struct LoginEditView: View {
     @State private var loading = false
     @State private var saving = false
     @State private var generating = false
+    @State private var scanning = false
+    /// What to do with the verification code on save. nil = leave untouched,
+    /// which the ABI's v11 semantics make the safe default — the secret never
+    /// crosses to Swift, so "put back what was there" is not an option.
+    @State private var totpChange: String?
+    /// Whether the login HAD a code when the sheet opened (metadata only).
+    @State private var hadTotp = false
     @State private var failure: String?
 
     private var isEdit: Bool { existing != nil }
@@ -84,6 +91,33 @@ struct LoginEditView: View {
                         .accessibilityLabel("Generate a password")
                     }
                 }
+                Section("Verification code") {
+                    switch (hadTotp, totpChange) {
+                    case (_, ""):
+                        // Explicit removal, pending save.
+                        Label("Code will be removed", systemImage: "clock.badge.xmark")
+                            .foregroundStyle(.secondary)
+                        Button("Undo") { totpChange = nil }
+                    case (_, .some):
+                        Label("New code scanned", systemImage: "clock.badge.checkmark")
+                            .foregroundStyle(.green)
+                        Button("Scan again", systemImage: "qrcode.viewfinder") { scanning = true }
+                    case (true, nil):
+                        Label("This login has a code", systemImage: "clock.badge.checkmark")
+                            .foregroundStyle(.secondary)
+                        Button("Replace by scanning", systemImage: "qrcode.viewfinder") {
+                            scanning = true
+                        }
+                        Button("Remove code", role: .destructive) { totpChange = "" }
+                    case (false, nil):
+                        // The reason this exists: the site shows its QR to the
+                        // phone, and the phone is where the camera is.
+                        Button("Scan QR code", systemImage: "qrcode.viewfinder") {
+                            scanning = true
+                        }
+                    }
+                }
+
                 if let failure {
                     Section {
                         Text(failure)
@@ -105,6 +139,14 @@ struct LoginEditView: View {
                 }
             }
             .task { await load() }
+            .sheet(isPresented: $scanning) {
+                QRScannerView { payload in
+                    // The raw otpauth:// URI, verbatim. The Rust side parses and
+                    // validates it at save — a second parser here would just be
+                    // one more place for the two to disagree.
+                    totpChange = payload
+                }
+            }
             .sheet(isPresented: $generating) {
                 PasswordGeneratorView { generated in
                     password = generated
@@ -136,6 +178,7 @@ struct LoginEditView: View {
         username = u
         url = link
         password = p
+        hadTotp = existing.hasTotp
     }
 
     private func save() async {
@@ -143,7 +186,7 @@ struct LoginEditView: View {
         defer { saving = false }
         if let message = await store.saveLogin(
             id: existing?.id, title: title, username: username,
-            password: password, url: url)
+            password: password, url: url, totpSecret: totpChange)
         {
             failure = message
             return

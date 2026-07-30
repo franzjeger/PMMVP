@@ -1,6 +1,6 @@
 /* vault-ffi — C ABI over vault-core for native platform integrations.
  *
- * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 10). All
+ * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 11). All
  * out-buffers are heap-allocated by the library and must be released with
  * vault_ffi_free(ptr, len), which also zeroes them.
  *
@@ -159,6 +159,15 @@ int32_t vault_ffi_generate_password_for_rules(const char *rules_utf8,
  * Free both with vault_ffi_free. */
 int32_t vault_ffi_passkey_identities(VaultHandle *handle, uint8_t **out_json,
                                      size_t *out_json_len);
+
+/* TOTP semantics of vault_ffi_upsert_login, CHANGED in ABI v11:
+ *   totp_secret == NULL  keeps the existing secret (the edit did not touch it)
+ *   totp_secret == ""    clears it
+ *   otpauth:// URIs      are normalized to their Base32 secret; a malformed
+ *                        URI is refused with -3 rather than stored broken.
+ * Before v11 NULL cleared the secret, so any client that did not round-trip
+ * it destroyed the code on every edit — and the detail surface deliberately
+ * never hands the secret out, so round-tripping was impossible. */
 
 int32_t vault_ffi_passkey_assert_for_id(VaultHandle *handle,
                                         const char *id_utf8,

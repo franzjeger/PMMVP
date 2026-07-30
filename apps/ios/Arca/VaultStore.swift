@@ -343,18 +343,23 @@ final class VaultStore {
     /// Returns nil on success, or a message to show in the editor. The error
     /// goes back to the caller instead of only into `failure` because the sheet
     /// stays open on failure, and a banner behind it would not be read.
+    /// `totpSecret`: nil leaves any existing verification code untouched (the
+    /// v11 semantics — the secret never crosses to Swift, so "send back what
+    /// you got" is impossible); "" removes it; an otpauth:// URI or Base32
+    /// value sets it.
     func saveLogin(
         id: String?,
         title: String,
         username: String,
         password: String,
-        url: String
+        url: String,
+        totpSecret: String? = nil
     ) async -> String? {
         guard let session else { return "The vault is locked." }
         do {
             try await session.upsertLogin(
                 id: id, title: title, username: username,
-                password: password, url: url)
+                password: password, url: url, totpSecret: totpSecret)
             // The identity list and the credential store both describe the vault
             // we just changed; leaving either stale means the keyboard offers
             // yesterday's logins.

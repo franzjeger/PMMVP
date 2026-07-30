@@ -42,6 +42,8 @@
          failure is a silent nil rather than an error. -->
     <key>NSSupportsLiveActivities</key>
     <true/>
+    <key>NSCameraUsageDescription</key>
+    <string>The camera reads a site's QR code to add its verification code to your vault. Nothing is photographed or stored.</string>
     <key>NSFaceIDUsageDescription</key>
     <string>Face ID unlocks your vault so you don't have to type the master password every time. The vault stays encrypted either way.</string>
     <key>UILaunchScreen</key>

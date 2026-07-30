@@ -71,7 +71,7 @@ pub mod sync;
 ///   (the restriction on `vault_ffi_vault_free` is unchanged);
 /// * a handle's contents can now change underneath the caller, because a sync
 ///   merges a peer's items into the very vault the handle exposes.
-pub const ABI_VERSION: i32 = 10;
+pub const ABI_VERSION: i32 = 11;
 
 // Return codes.
 pub(crate) const OK: i32 = 0;
@@ -1284,13 +1284,37 @@ pub unsafe extern "C" fn vault_ffi_upsert_login(
             None => return ERR_UTF8,
         }
     };
-    let totp = if totp_secret.is_null() {
-        None
+    // v11 gave the null/empty distinction meaning instead of discarding it:
+    //
+    //   null  -> KEEP the existing secret (edit did not touch the field)
+    //   ""    -> CLEAR it (the user removed the code)
+    //   value -> set it; otpauth:// URIs are normalized to their Base32 secret
+    //
+    // Before this, every edit from a client that did not round-trip the secret
+    // rewrote the login with totp_secret: None — so renaming a login on the
+    // phone silently destroyed its verification code. The detail surface
+    // deliberately never hands the secret out, which means "send back what you
+    // got" was never possible; keep-on-null is the only semantics that works.
+    enum TotpIntent {
+        Keep,
+        Clear,
+        Set(String),
+    }
+    let totp_intent = if totp_secret.is_null() {
+        TotpIntent::Keep
     } else {
         match cstr(totp_secret) {
-            // An empty string clears the secret rather than storing Some("").
-            Some("") => None,
-            Some(s) => Some(s.to_string()),
+            Some("") => TotpIntent::Clear,
+            Some(s) if s.trim().to_ascii_lowercase().starts_with("otpauth://") => {
+                // Reject a bad URI HERE, where the caller can show the QR scan
+                // failed — storing it raw would surface later as a code that
+                // derives garbage.
+                match vault_core::parse_otpauth_uri(s.trim()) {
+                    Ok(parsed) => TotpIntent::Set(parsed.secret),
+                    Err(_) => return ERR_OP_FAILED,
+                }
+            }
+            Some(s) => TotpIntent::Set(s.trim().to_string()),
             None => return ERR_UTF8,
         }
     };
@@ -1315,6 +1339,19 @@ pub unsafe extern "C" fn vault_ffi_upsert_login(
         return ERR_LOCKED;
     }
 
+    // Keep what we need to undo this if serialization fails, so a failed write
+    // cannot leave the handle holding a change the caller never persisted.
+    let previous = existing_id.and_then(|u| vault.get_item(u).ok());
+
+    let totp = match totp_intent {
+        TotpIntent::Set(s) => Some(s),
+        TotpIntent::Clear => None,
+        TotpIntent::Keep => previous.as_ref().and_then(|item| match &item.data {
+            VaultItem::Login { totp_secret, .. } => totp_secret.clone(),
+            _ => None,
+        }),
+    };
+
     let data = VaultItem::Login {
         title: title.to_string(),
         username: username.to_string(),
@@ -1323,10 +1360,6 @@ pub unsafe extern "C" fn vault_ffi_upsert_login(
         totp_secret: totp,
         notes: notes.to_string(),
     };
-
-    // Keep what we need to undo this if serialization fails, so a failed write
-    // cannot leave the handle holding a change the caller never persisted.
-    let previous = existing_id.and_then(|u| vault.get_item(u).ok());
     if let Some(u) = existing_id {
         if previous.is_none() {
             return ERR_NOT_FOUND;
@@ -1726,8 +1759,8 @@ mod tests {
     // Pinned deliberately: clients gate features on this number, so a bump has
     // to be a conscious edit here, not a side effect.
     #[test]
-    fn abi_version_is_10() {
-        assert_eq!(vault_ffi_abi_version(), 10);
+    fn abi_version_is_11() {
+        assert_eq!(vault_ffi_abi_version(), 11);
     }
 
     // ---- every-kind surface (ABI v7) -------------------------------------
@@ -2109,6 +2142,104 @@ mod tests {
 
     /// Editing must overwrite in place, keeping the id, rather than appending a
     /// second copy — otherwise every edit on the phone duplicates the entry.
+    #[test]
+    /// The four TOTP intents at the write surface, and the reason each exists.
+    ///
+    /// The killer was Keep: the detail surface never hands the secret out, so a
+    /// client editing a login cannot round-trip it — and before v11 that meant
+    /// renaming a login on the phone silently destroyed its verification code.
+    #[test]
+    fn editing_without_the_totp_field_keeps_the_code() {
+        let bytes = password_only_vault();
+        let handle = open_with_password(&bytes, "pw");
+        let mk = |s: &str| CString::new(s).unwrap();
+
+        let upsert = |id: Option<&str>, totp: Option<&str>| -> String {
+            let id_c = id.map(|s| CString::new(s).unwrap());
+            let totp_c = totp.map(|s| CString::new(s).unwrap());
+            let (mut vb, mut vb_len) = (ptr::null_mut(), 0usize);
+            let (mut idp, mut id_len) = (ptr::null_mut(), 0usize);
+            let rc = unsafe {
+                vault_ffi_upsert_login(
+                    handle,
+                    id_c.as_ref().map_or(ptr::null(), |c| c.as_ptr()),
+                    mk("GitHub").as_ptr(),
+                    mk("frank").as_ptr(),
+                    mk("pw").as_ptr(),
+                    mk("https://github.com").as_ptr(),
+                    totp_c.as_ref().map_or(ptr::null(), |c| c.as_ptr()),
+                    ptr::null(),
+                    1_000,
+                    &mut vb,
+                    &mut vb_len,
+                    &mut idp,
+                    &mut id_len,
+                )
+            };
+            assert_eq!(rc, OK);
+            let out =
+                String::from_utf8(unsafe { slice::from_raw_parts(idp, id_len) }.to_vec()).unwrap();
+            unsafe {
+                vault_ffi_free(vb, vb_len);
+                vault_ffi_free(idp, id_len);
+            }
+            out
+        };
+        let has_code = |id: &str| -> bool {
+            let id_c = CString::new(id).unwrap();
+            let (mut out, mut len) = (ptr::null_mut(), 0usize);
+            let rc = unsafe { vault_ffi_totp(handle, id_c.as_ptr(), &mut out, &mut len) };
+            if rc == OK {
+                unsafe { vault_ffi_free(out, len) };
+            }
+            rc == OK
+        };
+
+        // Set — via a full otpauth URI, exactly what a QR code yields. Stored
+        // normalized, so derivation works.
+        let id = upsert(
+            None,
+            Some("otpauth://totp/GitHub:frank?secret=JBSWY3DPEHPK3PXP&issuer=GitHub"),
+        );
+        assert!(has_code(&id), "the scanned URI must produce a working code");
+
+        // Keep — an edit that never touched the field. This is the data-loss
+        // case: it must NOT clear the code.
+        let same = upsert(Some(&id), None);
+        assert_eq!(same, id);
+        assert!(has_code(&id), "editing another field must not destroy the code");
+
+        // Clear — the empty string is the explicit removal.
+        upsert(Some(&id), Some(""));
+        assert!(!has_code(&id), "an explicit clear must actually clear");
+
+        // A garbage URI is refused at save, where the caller can re-scan —
+        // not stored to fail later as a code that derives nonsense.
+        let bad = CString::new("otpauth://totp/x?secret=NOT!BASE32").unwrap();
+        let (mut vb, mut vb_len) = (ptr::null_mut(), 0usize);
+        let (mut idp, mut id_len) = (ptr::null_mut(), 0usize);
+        let id_c = CString::new(id).unwrap();
+        let rc = unsafe {
+            vault_ffi_upsert_login(
+                handle,
+                id_c.as_ptr(),
+                mk("GitHub").as_ptr(),
+                mk("frank").as_ptr(),
+                mk("pw").as_ptr(),
+                mk("https://github.com").as_ptr(),
+                bad.as_ptr(),
+                ptr::null(),
+                1_000,
+                &mut vb,
+                &mut vb_len,
+                &mut idp,
+                &mut id_len,
+            )
+        };
+        assert_eq!(rc, ERR_OP_FAILED);
+        unsafe { vault_ffi_vault_free(handle) };
+    }
+
     #[test]
     fn upsert_with_an_id_edits_in_place() {
         let bytes = password_only_vault();
