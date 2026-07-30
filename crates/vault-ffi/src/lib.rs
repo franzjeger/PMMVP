@@ -2140,9 +2140,6 @@ mod tests {
         unsafe { vault_ffi_vault_free(handle) };
     }
 
-    /// Editing must overwrite in place, keeping the id, rather than appending a
-    /// second copy — otherwise every edit on the phone duplicates the entry.
-    #[test]
     /// The four TOTP intents at the write surface, and the reason each exists.
     ///
     /// The killer was Keep: the detail surface never hands the secret out, so a
@@ -2240,6 +2237,8 @@ mod tests {
         unsafe { vault_ffi_vault_free(handle) };
     }
 
+    /// Editing must overwrite in place, keeping the id, rather than appending a
+    /// second copy — otherwise every edit on the phone duplicates the entry.
     #[test]
     fn upsert_with_an_id_edits_in_place() {
         let bytes = password_only_vault();
