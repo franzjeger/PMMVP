@@ -52,6 +52,10 @@ export default function App() {
   const [security, setSecurity] = useState<SecurityIssue[]>([]);
   const [category, setCategory] = useState<CategoryId>("all");
   const [search, setSearch] = useState("");
+  /// True when the vault locked on its own (idle or blur) rather than because
+  /// the app was just opened. Decides whether the lock screen may ask for Touch
+  /// ID by itself.
+  const [autoLocked, setAutoLocked] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<ItemDetail | null>(null);
   const [editing, setEditing] = useState<{
@@ -111,6 +115,10 @@ export default function App() {
   useEffect(() => {
     const pending: Promise<UnlistenFn>[] = [
       onVaultLocked(() => {
+        // The reason has always been on the wire and nobody read it. An
+        // automatic lock must not be followed by a Touch ID sheet: you did not
+        // ask for anything, so nothing should ask you for a fingerprint.
+        setAutoLocked(true);
         setSelectedId(null);
         setSelectedIds(new Set());
         setBreaches(new Map());
@@ -348,7 +356,14 @@ export default function App() {
   if (!status.unlocked) {
     return (
       <Shell>
-        <LockScreen status={status} onUnlocked={refreshStatus} />
+        <LockScreen
+          status={status}
+          autoLocked={autoLocked}
+          onUnlocked={() => {
+            setAutoLocked(false);
+            void refreshStatus();
+          }}
+        />
       </Shell>
     );
   }

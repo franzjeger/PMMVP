@@ -4,9 +4,12 @@ import { LockIcon, TouchIdIcon } from "./icons";
 
 export function LockScreen({
   status,
+  autoLocked = false,
   onUnlocked,
 }: {
   status: VaultStatus;
+  /// The vault locked by itself. Suppresses the automatic Touch ID prompt.
+  autoLocked?: boolean;
   onUnlocked: () => void;
 }) {
   const creating = !status.exists;
@@ -73,11 +76,22 @@ export function LockScreen({
     }
   };
 
-  // Prompt for Touch ID automatically as soon as the lock screen appears (once),
-  // like the system lock screen. The password field stays available as a
-  // fallback if the user cancels or prefers to type. Never re-triggered by
-  // focusing/clicking the password field: typing your password must not spawn
-  // biometric prompts.
+  // Prompt for Touch ID only when the user came to Arca — never after Arca
+  // locked itself.
+  //
+  // It used to fire the moment the lock screen mounted, which sounded like the
+  // system lock screen and behaves nothing like it: the system only shows one
+  // when you are standing in front of it. Ours mounted when the idle timer
+  // expired, which is by definition while you were doing something else, so a
+  // Touch ID sheet jumped in front of whatever you were working on and asked
+  // you to authenticate to an app you had not opened. Repeatedly. It was the
+  // single most irritating thing Arca did.
+  //
+  // `autoLocked` is the whole distinction: no request from you, no demand from
+  // us. The Touch ID button below is the way in when you do want one.
+  //
+  // The password field stays available, and none of this re-triggers on
+  // clicking into it: typing your password must not spawn biometric prompts.
   const autoTried = useRef(false);
   const canBiometric =
     !creating &&
@@ -85,11 +99,23 @@ export function LockScreen({
     status.biometricAvailable &&
     !quickBroken;
   useEffect(() => {
-    if (autoTried.current || !canBiometric) return;
-    autoTried.current = true;
-    void quick(true);
+    // Locked by the idle timer or by losing focus: stay quiet. You did not ask
+    // for anything, so nothing asks you for a fingerprint — not while the
+    // window sits in front of you, and not when you come back to it either.
+    // The button below is right there when you do want in.
+    if (!canBiometric || autoLocked) return;
+    const attempt = () => {
+      if (autoTried.current || !document.hasFocus()) return;
+      autoTried.current = true;
+      void quick(true);
+    };
+    attempt();
+    // A window that opens unfocused still gets its prompt, once, when it is
+    // brought forward — that IS the user arriving.
+    window.addEventListener("focus", attempt);
+    return () => window.removeEventListener("focus", attempt);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canBiometric]);
+  }, [canBiometric, autoLocked]);
 
   return (
     <div className="flex flex-1 items-center justify-center bg-canvas">
@@ -146,14 +172,17 @@ export function LockScreen({
           </button>
         </form>
 
+        {/* A real button, not a grey footnote. With the automatic prompt gone
+            this is the everyday way in, and eleven-point secondary text is
+            where features go to be never found. */}
         {canBiometric && (
           <button
             type="button"
             disabled={busy}
             onClick={() => void quick(false)}
-            className="mt-3 flex w-full items-center justify-center gap-1.5 text-[11px] text-neutral-500 hover:text-neutral-300 disabled:opacity-60"
+            className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-fill/5 py-2.5 text-[14px] font-medium text-neutral-100 ring-1 ring-line/15 hover:bg-fill/10 disabled:opacity-60"
           >
-            <TouchIdIcon className="h-3.5 w-3.5" />
+            <TouchIdIcon className="h-4 w-4" />
             Use Touch ID
           </button>
         )}

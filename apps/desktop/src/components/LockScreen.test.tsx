@@ -40,6 +40,55 @@ beforeEach(() => {
 });
 
 describe("LockScreen", () => {
+  /// The complaint, as a test: Arca locked itself, so Arca does not get to ask
+  /// for a fingerprint. Not now, not when the window is brought back.
+  it("never prompts by itself after an automatic lock", async () => {
+    quickUnlock.mockResolvedValue(undefined);
+    render(
+      <LockScreen status={status()} autoLocked onUnlocked={vi.fn()} />,
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(quickUnlock).not.toHaveBeenCalled();
+
+    // Coming back to the window is not a request either — the user may have
+    // clicked over for something else entirely.
+    window.dispatchEvent(new Event("focus"));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(quickUnlock).not.toHaveBeenCalled();
+
+    // Pressing the button is. That is the only thing that should be.
+    await userEvent.click(screen.getByRole("button", { name: /use touch id/i }));
+    await waitFor(() => expect(quickUnlock).toHaveBeenCalledTimes(1));
+  });
+
+  /// The idle timer expires while you are working in another app. Arca must not
+  /// throw a Touch ID sheet in front of that.
+  it("stays silent when the window is not focused, and asks once it is", async () => {
+    quickUnlock.mockResolvedValue(undefined);
+    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+
+    render(<LockScreen status={status()} onUnlocked={vi.fn()} />);
+
+    // Nothing, and it has to STAY nothing — a prompt that merely arrives late
+    // is the same interruption.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(quickUnlock).not.toHaveBeenCalled();
+
+    // The user comes back to Arca. Now it is what they wanted.
+    focused.mockReturnValue(true);
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(quickUnlock).toHaveBeenCalledTimes(1));
+
+    // And still only once: returning to the window again must not re-prompt
+    // someone who cancelled and is typing their password instead.
+    window.dispatchEvent(new Event("focus"));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(quickUnlock).toHaveBeenCalledTimes(1);
+
+    focused.mockRestore();
+  });
+
   it("prompts for Touch ID once on mount", async () => {
     quickUnlock.mockResolvedValue(undefined);
     const onUnlocked = vi.fn();
