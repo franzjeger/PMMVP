@@ -646,15 +646,19 @@
     return !!a && !!b && (a === b || a.endsWith(`.${b}`) || b.endsWith(`.${a}`));
   };
 
-  /** Capture credentials from a submitted form — only a single-password form
-      (a sign-in, not a signup/change form with two+ password fields) that also
-      has a resolvable username. Requiring a username avoids collapsing distinct
-      accounts on identifier-first / password-only pages into one "(host, '')"
-      entry that would overwrite each other. */
-  function captureCandidate(form) {
+  /** Capture credentials from a scope — only a single filled password field
+      (a sign-in, not a signup/change form with two+) that also has a resolvable
+      username. Requiring a username avoids collapsing distinct accounts on
+      identifier-first / password-only pages into one "(host, '')" entry that
+      would overwrite each other.
+
+      The scope is a FORM when there is one and the DOCUMENT when there is not:
+      SPA logins are a button wired to fetch, often with no <form> element at
+      all, and those pages are exactly where the prompt used to never appear. */
+  function captureCandidate(scope) {
     const pws = Array.from(
-      form.querySelectorAll('input[type="password"]'),
-    ).filter((el) => el.value);
+      (scope ?? document).querySelectorAll('input[type="password"]'),
+    ).filter((el) => el.value && el.offsetParent !== null);
     if (pws.length !== 1) return null;
     const userEl = findUsernameField(pws[0]);
     if (!userEl || !userEl.value) return null;
@@ -674,12 +678,15 @@
     const text = document.createElement("span");
     text.className = "sybr-savebar-text";
     text.textContent =
-      action === "update"
-        ? `Update password for ${host} in Arca?`
-        : `Save login for ${host} to Arca?`;
+      action === "locked"
+        ? `Unlock Arca to save the login for ${host}?`
+        : action === "update"
+          ? `Update password for ${host} in Arca?`
+          : `Save login for ${host} to Arca?`;
     const yes = document.createElement("button");
     yes.className = "sybr-savebar-yes";
-    yes.textContent = action === "update" ? "Update" : "Save";
+    yes.textContent =
+      action === "locked" ? "Unlock & Save" : action === "update" ? "Update" : "Save";
     const no = document.createElement("button");
     no.className = "sybr-savebar-no";
     no.textContent = "Not now";
@@ -687,8 +694,30 @@
       api.runtime.sendMessage({ cmd: "clearPending" }).catch(() => {});
       closeSaveBar();
     };
-    yes.addEventListener("click", async () => {
+    yes.addEventListener("click", async (e) => {
+      // Same rule as the unlock button in the picker: only a human click may
+      // summon a Touch ID prompt.
+      if (action === "locked" && !e.isTrusted) return;
       try {
+        if (action === "locked") {
+          text.textContent = "Unlocking Arca…";
+          const opened = await unlockAndWait();
+          if (!opened) {
+            text.textContent = "Arca is still locked.";
+            return;
+          }
+          // The probe never got to ask while locked; ask now so a login that
+          // turns out to be stored already is a quiet no-op, not a duplicate.
+          const probe = await api.runtime
+            .sendMessage({ cmd: "saveProbe", ...candidate })
+            .catch(() => null);
+          const verdict =
+            probe && probe.ok && probe.response ? probe.response.action : null;
+          if (verdict !== "new" && verdict !== "update") {
+            done();
+            return;
+          }
+        }
         await api.runtime.sendMessage({ cmd: "saveLogin", ...candidate });
       } catch (_e) {
         /* ignore */
@@ -700,6 +729,27 @@
     document.body.appendChild(saveBar);
   }
 
+  /// Bring Arca forward for unlock and wait until it reports unlocked.
+  /// Shared shape with requestUnlock's polling; separate because there is no
+  /// anchor field here to re-render suggestions under.
+  async function unlockAndWait() {
+    const res = await api.runtime
+      .sendMessage({ cmd: "requestUnlock" })
+      .catch(() => null);
+    const out = res && res.ok ? res.response : null;
+    if (!out || out.type !== "unlock_requested") return false;
+    const deadline = Date.now() + 60000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 700));
+      const probe = await api.runtime
+        .sendMessage({ cmd: "listLogins", url: location.href })
+        .catch(() => null);
+      const resp = (probe && probe.ok && probe.response) || {};
+      if (resp.app_connected) return true;
+    }
+    return false;
+  }
+
   async function offerSave(candidate) {
     if (!candidate || !candidate.password) return;
     let probe;
@@ -709,27 +759,75 @@
       return;
     }
     const action = probe && probe.ok && probe.response ? probe.response.action : null;
-    if (action === "new" || action === "update") showSaveBar(candidate, action);
+    // "locked" gets the bar too. It used to be silently dropped, and with
+    // lock-on-blur or a short idle timeout the vault is USUALLY locked at the
+    // moment you sign in somewhere — which made save-on-submit look like it
+    // did not exist at all.
+    if (action === "new" || action === "update" || action === "locked") {
+      showSaveBar(candidate, action);
+    }
   }
 
-  // On submit: stash the candidate for after navigation. For SPA logins that
-  // DON'T navigate, offer only after a short delay AND only if the login form
-  // is gone — a success signal, so a failed/mistyped login can't prompt to
-  // overwrite a good stored password. Navigation-based logins tear down this
+  // Stash the candidate for after navigation; for SPA logins that DON'T
+  // navigate, offer only after a short delay AND only once the login form is
+  // gone — a success signal, so a failed/mistyped login can't prompt to
+  // overwrite a good stored password. Navigation-based logins tear down the
   // timer; the post-navigation reshow (below) handles those.
+  //
+  // Rate-limited: Enter in the password field followed by the page's own
+  // submit event is two triggers for one sign-in, and two save bars.
+  let lastStash = 0;
+  function stashAndMaybeOffer(candidate) {
+    if (!candidate) return;
+    const now = Date.now();
+    if (now - lastStash < 2000) return;
+    lastStash = now;
+    api.runtime
+      .sendMessage({ cmd: "capturePending", ...candidate })
+      .catch(() => {});
+    setTimeout(() => {
+      if (!visiblePasswordField()) void offerSave(candidate);
+    }, 1500);
+  }
+
+  // Trigger 1: a real form submission.
   document.addEventListener(
     "submit",
     (e) => {
       const form = e.target;
       if (!(form instanceof HTMLFormElement)) return;
-      const candidate = captureCandidate(form);
-      if (!candidate) return;
-      api.runtime
-        .sendMessage({ cmd: "capturePending", ...candidate })
-        .catch(() => {});
-      setTimeout(() => {
-        if (!visiblePasswordField()) void offerSave(candidate);
-      }, 1500);
+      stashAndMaybeOffer(captureCandidate(form));
+    },
+    true,
+  );
+
+  // Trigger 2: Enter in a password field. On fetch-based logins this is the
+  // submission — no submit event ever fires.
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key !== "Enter") return;
+      const el = e.target;
+      if (!(el instanceof HTMLInputElement) || el.type !== "password") return;
+      stashAndMaybeOffer(captureCandidate(el.form ?? document));
+    },
+    true,
+  );
+
+  // Trigger 3: a click on something submit-shaped while a filled password
+  // field is on the page. Deliberately BROAD on the button and strict on the
+  // page state: the candidate still requires exactly one filled password field
+  // and a username, the offer still waits for the form to disappear, and the
+  // app's save_probe still decides whether there is anything worth saving. A
+  // false trigger here costs a no-op probe, not a wrong prompt.
+  document.addEventListener(
+    "click",
+    (e) => {
+      const button = e.target instanceof Element
+        ? e.target.closest('button, input[type="submit"], [role="button"]')
+        : null;
+      if (!button) return;
+      stashAndMaybeOffer(captureCandidate(document));
     },
     true,
   );
