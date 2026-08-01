@@ -153,7 +153,12 @@ pub fn options_from_rules(rules: &str, default_length: usize) -> PasswordOptions
     // websites write this string by hand. Fall back to alphanumeric: accepted
     // everywhere, and still far more entropy at this length than any site needs.
     if permitted == Classes::default() {
-        permitted = Classes { lower: true, upper: true, digit: true, special: false };
+        permitted = Classes {
+            lower: true,
+            upper: true,
+            digit: true,
+            special: false,
+        };
     }
 
     let mut length = default_length;
@@ -188,7 +193,12 @@ struct Classes {
 
 impl Classes {
     fn all() -> Self {
-        Self { lower: true, upper: true, digit: true, special: true }
+        Self {
+            lower: true,
+            upper: true,
+            digit: true,
+            special: true,
+        }
     }
 
     fn merge(&mut self, other: Self) {
@@ -447,7 +457,14 @@ mod rules_tests {
     fn junk_falls_back_instead_of_failing() {
         // Arbitrary websites write this string. An unparseable one must leave a
         // usable strong default, not an empty character set.
-        for junk in ["", "   ", ";;;", "nonsense", "minlength: banana;", "allowed: fuchsia;"] {
+        for junk in [
+            "",
+            "   ",
+            ";;;",
+            "nonsense",
+            "minlength: banana;",
+            "allowed: fuchsia;",
+        ] {
             let o = options_from_rules(junk, 20);
             assert!(o.length > 0, "{junk:?} produced a zero length");
             assert!(

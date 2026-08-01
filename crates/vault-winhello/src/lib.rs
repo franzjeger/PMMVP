@@ -75,9 +75,7 @@ pub fn verify(hwnd: isize, reason: &str) -> Result<(), String> {
 
     match result {
         UserConsentVerificationResult::Verified => Ok(()),
-        UserConsentVerificationResult::Canceled => {
-            Err("Verification was cancelled.".to_string())
-        }
+        UserConsentVerificationResult::Canceled => Err("Verification was cancelled.".to_string()),
         UserConsentVerificationResult::RetriesExhausted => {
             Err("Too many attempts. Try again in a moment.".to_string())
         }

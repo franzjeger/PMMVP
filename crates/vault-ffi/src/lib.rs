@@ -874,7 +874,11 @@ pub unsafe extern "C" fn vault_ffi_generate_password_for_rules(
     let Some(rules) = cstr(rules_utf8) else {
         return ERR_UTF8;
     };
-    let length = if default_length == 0 { 20 } else { default_length };
+    let length = if default_length == 0 {
+        20
+    } else {
+        default_length
+    };
     match guard_result(|| {
         let opts = vault_core::password::options_from_rules(rules, length);
         vault_core::password::generate_password(&opts).map(|pw| pw.as_bytes().to_vec())
@@ -2385,7 +2389,10 @@ mod tests {
         // case: it must NOT clear the code.
         let same = upsert(Some(&id), None);
         assert_eq!(same, id);
-        assert!(has_code(&id), "editing another field must not destroy the code");
+        assert!(
+            has_code(&id),
+            "editing another field must not destroy the code"
+        );
 
         // Clear — the empty string is the explicit removal.
         upsert(Some(&id), Some(""));
@@ -2433,8 +2440,15 @@ mod tests {
         let (mut idp, mut id_len) = (ptr::null_mut(), 0usize);
         let rc = unsafe {
             vault_ffi_upsert_secure_note(
-                handle, ptr::null(), mk("Portkode").as_ptr(), mk("4187").as_ptr(),
-                1_000, &mut vb, &mut vb_len, &mut idp, &mut id_len,
+                handle,
+                ptr::null(),
+                mk("Portkode").as_ptr(),
+                mk("4187").as_ptr(),
+                1_000,
+                &mut vb,
+                &mut vb_len,
+                &mut idp,
+                &mut id_len,
             )
         };
         assert_eq!(rc, OK);
@@ -2450,9 +2464,19 @@ mod tests {
         let (mut idp, mut id_len) = (ptr::null_mut(), 0usize);
         let rc = unsafe {
             vault_ffi_upsert_wifi(
-                handle, ptr::null(), mk("Hjemme").as_ptr(), mk("FranzNet").as_ptr(),
-                mk("hemmelig").as_ptr(), mk("WPA").as_ptr(), 0, mk("").as_ptr(),
-                1_000, &mut vb, &mut vb_len, &mut idp, &mut id_len,
+                handle,
+                ptr::null(),
+                mk("Hjemme").as_ptr(),
+                mk("FranzNet").as_ptr(),
+                mk("hemmelig").as_ptr(),
+                mk("WPA").as_ptr(),
+                0,
+                mk("").as_ptr(),
+                1_000,
+                &mut vb,
+                &mut vb_len,
+                &mut idp,
+                &mut id_len,
             )
         };
         assert_eq!(rc, OK);
@@ -2468,9 +2492,19 @@ mod tests {
         let (mut idp, mut id_len) = (ptr::null_mut(), 0usize);
         let rc = unsafe {
             vault_ffi_upsert_wifi(
-                handle, wifi_c.as_ptr(), mk("Hytta").as_ptr(), mk("FranzNet").as_ptr(),
-                mk("nytt").as_ptr(), mk("WPA").as_ptr(), 1, mk("").as_ptr(),
-                2_000, &mut vb, &mut vb_len, &mut idp, &mut id_len,
+                handle,
+                wifi_c.as_ptr(),
+                mk("Hytta").as_ptr(),
+                mk("FranzNet").as_ptr(),
+                mk("nytt").as_ptr(),
+                mk("WPA").as_ptr(),
+                1,
+                mk("").as_ptr(),
+                2_000,
+                &mut vb,
+                &mut vb_len,
+                &mut idp,
+                &mut id_len,
             )
         };
         assert_eq!(rc, OK);
@@ -2488,9 +2522,19 @@ mod tests {
         let (mut idp, mut id_len) = (ptr::null_mut(), 0usize);
         let rc = unsafe {
             vault_ffi_upsert_wifi(
-                handle, note_c.as_ptr(), mk("x").as_ptr(), mk("x").as_ptr(),
-                mk("x").as_ptr(), mk("WPA").as_ptr(), 0, mk("").as_ptr(),
-                3_000, &mut vb, &mut vb_len, &mut idp, &mut id_len,
+                handle,
+                note_c.as_ptr(),
+                mk("x").as_ptr(),
+                mk("x").as_ptr(),
+                mk("x").as_ptr(),
+                mk("WPA").as_ptr(),
+                0,
+                mk("").as_ptr(),
+                3_000,
+                &mut vb,
+                &mut vb_len,
+                &mut idp,
+                &mut id_len,
             )
         };
         assert_eq!(rc, ERR_NOT_FOUND, "a cross-kind edit must be refused");
