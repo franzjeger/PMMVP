@@ -56,9 +56,17 @@ tempfile = "3"
 unsafe_code = "forbid"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
-robius-authentication = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 # ssh-agent named-pipe transport (\\.\pipe\openssh-ssh-agent). Safe wrapper, so
 # the crate-wide #![forbid(unsafe_code)] still holds.
 interprocess = "1.2"
+# Windows Hello parented to Arca's real HWND, no focus tricks. Its own crate
+# because the interop is unsafe and this crate forbids unsafe code.
+vault-winhello = { path = "../../../crates/vault-winhello" }
+
+# macOS ONLY. On Windows robius parents the Hello prompt to the desktop window
+# and forces focus with a synthesized Alt keypress; an interrupted sequence
+# leaves Alt logically held and the keyboard unusable until logout.
+[target.'cfg(target_os = "macos")'.dependencies]
+robius-authentication = "0.1"

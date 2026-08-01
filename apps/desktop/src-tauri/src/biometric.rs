@@ -22,6 +22,27 @@ pub fn available() -> bool {
     true
 }
 
+/// Windows: Hello, parented to the app's main window.
+///
+/// The parenting is the fix. The previous implementation (robius) parented the
+/// prompt to the DESKTOP window — which cannot legitimately take focus for it —
+/// and then forced focus with a synthesized Alt keypress; interrupted half-way,
+/// that left Alt logically held and the keyboard unusable until logout.
+/// A prompt parented to a real visible window takes focus by itself.
+///
+/// Still blocking, so the same rule as ever applies — and applies HARDER here:
+/// the caller must not be the main thread, because the dialog needs our message
+/// pump alive to paint and to hand focus back afterwards.
+#[cfg(target_os = "windows")]
+pub fn authenticate(app: Option<&tauri::AppHandle>, reason: &str) -> Result<(), String> {
+    use tauri::Manager;
+    let hwnd = app
+        .and_then(|a| a.get_webview_window("main"))
+        .and_then(|w| w.hwnd().ok())
+        .ok_or_else(|| "No window to attach the Windows Hello prompt to.".to_string())?;
+    vault_winhello::verify(hwnd.0 as isize, &format!("Arca is trying to {reason}."))
+}
+
 /// Whether biometric authentication is wired on this platform.
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn available() -> bool {
@@ -34,8 +55,8 @@ pub fn available() -> bool {
 /// `reason` is shown to the user as "Arca is trying to <reason>".
 /// This call **blocks** until the user responds, so callers must not hold the
 /// app-state lock while invoking it.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-pub fn authenticate(reason: &str) -> Result<(), String> {
+#[cfg(target_os = "macos")]
+pub fn authenticate(_app: Option<&tauri::AppHandle>, reason: &str) -> Result<(), String> {
     use robius_authentication::{
         AndroidText, BiometricStrength, Context, PolicyBuilder, Text, WindowsText,
     };
@@ -70,6 +91,6 @@ pub fn authenticate(reason: &str) -> Result<(), String> {
 /// On platforms without a biometric provider wired up yet, this is a no-op so
 /// the existing (non-biometric) quick unlock keeps working unchanged.
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub fn authenticate(_reason: &str) -> Result<(), String> {
+pub fn authenticate(_app: Option<&tauri::AppHandle>, _reason: &str) -> Result<(), String> {
     Ok(())
 }

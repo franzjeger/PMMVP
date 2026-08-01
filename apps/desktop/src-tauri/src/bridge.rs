@@ -1088,7 +1088,7 @@ fn approve_passkey_inner(
     // background (the browser).
     #[cfg(target_os = "macos")]
     if app.is_some() {
-        return match crate::biometric::authenticate(&reason) {
+        return match crate::biometric::authenticate(None, &reason) {
             Ok(()) => Some(true),
             Err(_) => None,
         };

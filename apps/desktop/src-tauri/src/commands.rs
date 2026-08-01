@@ -437,10 +437,31 @@ fn do_unlock(state: &Mutex<AppState>, master_password: &str) -> Result<(), CmdEr
     Ok(())
 }
 
+/// Run the blocking biometric prompt on a WORKER thread, with the app handle
+/// the Windows implementation needs for window parenting.
+///
+/// Sync commands run on the main thread, and the prompt blocks until the user
+/// answers — so calling it inline froze Arca's message pump for the whole
+/// dialog. On macOS that merely froze our window behind Touch ID's overlay; on
+/// Windows the Hello dialog needs the app's pump ALIVE to paint and take
+/// focus, so blocking it produced a PIN box that could not be typed into.
+/// Every biometric-gated command is async and awaits this instead.
+async fn authenticate_off_main(
+    app: tauri::AppHandle,
+    reason: &'static str,
+) -> Result<(), CmdError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::biometric::authenticate(Some(&app), reason)
+    })
+    .await
+    .map_err(|_| CmdError::new("internal", "the verification task failed"))?
+    .map_err(|m| CmdError::new("biometric_failed", &m))
+}
+
 /// Unlock using the OS keychain device key (no master password), gated behind a
 /// biometric (Touch ID) prompt where available.
 #[tauri::command]
-pub fn quick_unlock(app: tauri::AppHandle, state: St<'_>) -> Result<(), CmdError> {
+pub async fn quick_unlock(app: tauri::AppHandle, state: St<'_>) -> Result<(), CmdError> {
     // Prompt for Touch ID / Windows Hello *before* taking the state lock — the
     // prompt blocks on user interaction, and we must not freeze other commands
     // meanwhile. This app-layer biometric is the single gate on ALL platforms:
@@ -448,8 +469,7 @@ pub fn quick_unlock(app: tauri::AppHandle, state: St<'_>) -> Result<(), CmdError
     // biometric is enforced here rather than by a per-item keychain access
     // control (that macOS variant broke unlock under dev signing — see
     // vault-store::keychain). No-op on platforms without a biometric provider.
-    crate::biometric::authenticate("unlock your password vault")
-        .map_err(|m| CmdError::new("biometric_failed", &m))?;
+    authenticate_off_main(app.clone(), "unlock your password vault").await?;
 
     let mut st = guard(state.inner())?;
     if st.vault.is_none() && st.store.exists() {
@@ -539,9 +559,12 @@ pub fn enable_quick_unlock(state: St<'_>) -> Result<(), CmdError> {
 /// writes EVERY password to a plaintext file. Rust writes the file directly, so
 /// the plaintext never passes through the webview. Returns the row count.
 #[tauri::command]
-pub fn export_logins_csv(state: St<'_>, path: String) -> Result<usize, CmdError> {
-    crate::biometric::authenticate("export your passwords to a file")
-        .map_err(|m| CmdError::new("biometric_failed", &m))?;
+pub async fn export_logins_csv(
+    app: tauri::AppHandle,
+    state: St<'_>,
+    path: String,
+) -> Result<usize, CmdError> {
+    authenticate_off_main(app, "export your passwords to a file").await?;
     let mut st = guard(state.inner())?;
     st.touch();
     let vault = st.vault.as_ref().ok_or_else(CmdError::no_vault)?;
@@ -622,13 +645,12 @@ pub fn list_snapshots(state: St<'_>) -> Result<Vec<SnapshotSummary>, CmdError> {
 /// predate a master-password change, so we drop the in-memory vault and leave
 /// the app locked: the user unlocks with whatever password that snapshot used.
 #[tauri::command]
-pub fn restore_snapshot(
+pub async fn restore_snapshot(
     app: tauri::AppHandle,
     state: St<'_>,
     path: String,
 ) -> Result<(), CmdError> {
-    crate::biometric::authenticate("restore an earlier version of your vault")
-        .map_err(|m| CmdError::new("biometric_failed", &m))?;
+    authenticate_off_main(app.clone(), "restore an earlier version of your vault").await?;
     let mut st = guard(state.inner())?;
     st.store.restore_snapshot(std::path::Path::new(&path))?;
     // Reload from disk; `from_bytes` yields a LOCKED vault by design.
@@ -710,7 +732,11 @@ pub async fn sync_now(app: tauri::AppHandle) -> Result<bool, CmdError> {
 /// and lock the owner out. Quick-unlock stays valid: the device-wrapped copy of
 /// the vault key is untouched by rotation.
 #[tauri::command]
-pub fn change_master_password(state: St<'_>, new_password: String) -> Result<(), CmdError> {
+pub async fn change_master_password(
+    app: tauri::AppHandle,
+    state: St<'_>,
+    new_password: String,
+) -> Result<(), CmdError> {
     if new_password.chars().count() < 8 {
         return Err(CmdError::new(
             "weak_password",
@@ -718,8 +744,7 @@ pub fn change_master_password(state: St<'_>, new_password: String) -> Result<(),
         ));
     }
     // Re-auth BEFORE taking the state lock (the prompt blocks on the user).
-    crate::biometric::authenticate("change your master password")
-        .map_err(|m| CmdError::new("biometric_failed", &m))?;
+    authenticate_off_main(app, "change your master password").await?;
 
     let mut st = guard(state.inner())?;
     {
