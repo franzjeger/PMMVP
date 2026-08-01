@@ -72,6 +72,15 @@ Chromium-family browser under `~/.config/…` (Chrome/Chromium/Brave/Edge/Vivald
 plus Firefox (`~/.mozilla/native-messaging-hosts/`) using the
 `no.sybr.vault.firefox.json` template. Then the same one Chrome click as above.
 
+This script is for **dev checkouts**. The `.deb` and `.rpm` already ship the host
+at `/usr/bin/vault-native-host` and register it system-wide in
+`/etc/opt/chrome/native-messaging-hosts/`, `/etc/chromium/native-messaging-hosts/`
+(both of which Brave reads too) and `/usr/lib/mozilla/native-messaging-hosts/`,
+so a package install needs no extra step. Note that the script points the
+manifest at `target/release/vault-native-host` inside the checkout, so re-running
+it in a checkout overrides the packaged registration with one that breaks if the
+checkout moves.
+
 ### Windows
 
 ```powershell

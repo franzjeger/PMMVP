@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build && node ../../scripts/gen-linux-packaging.mjs"
   },
   "app": {
     "windows": [
@@ -35,7 +35,25 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/bin/vault-native-host": "../../../target/release/vault-native-host",
+          "/etc/opt/chrome/native-messaging-hosts/no.sybr.vault.json": "../../../target/linux-packaging/no.sybr.vault.chromium.json",
+          "/etc/chromium/native-messaging-hosts/no.sybr.vault.json": "../../../target/linux-packaging/no.sybr.vault.chromium.json",
+          "/usr/lib/mozilla/native-messaging-hosts/no.sybr.vault.json": "../../../target/linux-packaging/no.sybr.vault.firefox.json"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/bin/vault-native-host": "../../../target/release/vault-native-host",
+          "/etc/opt/chrome/native-messaging-hosts/no.sybr.vault.json": "../../../target/linux-packaging/no.sybr.vault.chromium.json",
+          "/etc/chromium/native-messaging-hosts/no.sybr.vault.json": "../../../target/linux-packaging/no.sybr.vault.chromium.json",
+          "/usr/lib/mozilla/native-messaging-hosts/no.sybr.vault.json": "../../../target/linux-packaging/no.sybr.vault.firefox.json"
+        }
+      }
+    }
   },
   "plugins": {
     "updater": {
