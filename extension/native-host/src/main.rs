@@ -449,12 +449,11 @@ fn fill_credential(id: &str, url: &str) -> Result<(String, String), String> {
         // "origin_mismatch" from "not_found"; flattening them into one sentence
         // listing all three meant the message never told anyone anything, and
         // the one that actually happens has a fix the extension can offer.
-        return Err(
-            resp.get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("failed")
-                .to_string(),
-        );
+        return Err(resp
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("failed")
+            .to_string());
     }
     let username = resp
         .get("username")
@@ -468,7 +467,6 @@ fn fill_credential(id: &str, url: &str) -> Result<(String, String), String> {
         .to_string();
     Ok((username, password))
 }
-
 
 /// Read one framed message. Returns `Ok(None)` on clean EOF (browser closed
 /// the pipe), which is the host's signal to exit.

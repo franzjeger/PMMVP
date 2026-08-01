@@ -1509,9 +1509,7 @@ mod tests {
         }
 
         let automatic = [
-            Request::Hello {
-                token: "t".into(),
-            },
+            Request::Hello { token: "t".into() },
             Request::Match {
                 url: "https://github.com".into(),
             },

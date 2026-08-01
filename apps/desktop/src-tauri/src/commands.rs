@@ -450,12 +450,10 @@ async fn authenticate_off_main(
     app: tauri::AppHandle,
     reason: &'static str,
 ) -> Result<(), CmdError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        crate::biometric::authenticate(Some(&app), reason)
-    })
-    .await
-    .map_err(|_| CmdError::new("internal", "the verification task failed"))?
-    .map_err(|m| CmdError::new("biometric_failed", &m))
+    tauri::async_runtime::spawn_blocking(move || crate::biometric::authenticate(Some(&app), reason))
+        .await
+        .map_err(|_| CmdError::new("internal", "the verification task failed"))?
+        .map_err(|m| CmdError::new("biometric_failed", &m))
 }
 
 /// Unlock using the OS keychain device key (no master password), gated behind a
