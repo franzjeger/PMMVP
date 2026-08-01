@@ -16,6 +16,13 @@ name: CI
 # on Linux — the platform the clipboard fix targets, which the in-memory tests
 # can't model.
 #
+# `linux-package` builds the .deb/.rpm and asserts they actually contain the
+# native-messaging host plus its browser manifests. Nothing else in CI runs
+# `tauri build`, which is exactly how the bundles once shipped the desktop app
+# alone: the app worked, but the extension had nothing to talk to and reported
+# "Can't reach Arca". A green `test` job cannot catch that, because the failure
+# is in what gets packaged rather than in what compiles.
+#
 # NOTE: CI cannot cover interactive cross-application paste on Wayland (there is
 # no Wayland compositor on the runners). That single check remains a manual,
 # one-time run on a real X11 *and* Wayland desktop before shipping to Linux
@@ -247,3 +254,115 @@ jobs:
             eval "$(printf "\n" | gnome-keyring-daemon --unlock --components=secrets)"
             cargo test -p vault-store -- --ignored quick_unlock_round_trip
           '
+
+  linux-package:
+    name: linux .deb/.rpm ship the native host
+    runs-on: ubuntu-latest
+    # A full release bundle is expensive, so it follows the same minute
+    # economics as the other heavy jobs: PR or manual dispatch, never a push.
+    if: github.event_name != 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libayatana-appindicator3-dev libxdo-dev libssl-dev \
+            libdbus-1-dev build-essential file \
+            libxcb1 libxcb-render0 libxcb-shape0 libxcb-xfixes0 \
+            rpm
+
+      - name: Install Rust (pinned by rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Build the Linux bundles
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npm run tauri build -- --bundles deb,rpm
+
+      # The point of the job. Every assertion below corresponds to something a
+      # user hits directly: a missing binary or manifest means autofill fails
+      # with an error that blames their setup rather than the package.
+      - name: Assert the bundles contain the host and its manifests
+        run: |
+          set -euo pipefail
+          DEB="$(find target/release/bundle/deb -name '*.deb' | head -1)"
+          RPM="$(find target/release/bundle/rpm -name '*.rpm' | head -1)"
+          echo "deb: $DEB"
+          echo "rpm: $RPM"
+
+          root=$(mktemp -d)
+          dpkg-deb -x "$DEB" "$root"
+
+          MANIFESTS="
+            etc/opt/chrome/native-messaging-hosts/no.sybr.vault.json
+            etc/chromium/native-messaging-hosts/no.sybr.vault.json
+            usr/lib/mozilla/native-messaging-hosts/no.sybr.vault.json
+          "
+          for f in usr/bin/vault-native-host $MANIFESTS; do
+            [ -e "$root/$f" ] || { echo "MISSING from .deb: /$f"; exit 1; }
+            echo "ok: /$f"
+          done
+          [ -x "$root/usr/bin/vault-native-host" ] \
+            || { echo "/usr/bin/vault-native-host is not executable"; exit 1; }
+
+          # Every manifest must point at the packaged path, not at a build dir.
+          # A manifest pointing into target/ is the failure mode that survives a
+          # dev checkout and breaks on a real install.
+          for f in $MANIFESTS; do
+            node -e '
+              const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+              if (m.path !== "/usr/bin/vault-native-host") {
+                console.error(`${process.argv[1]}: path is ${m.path}`);
+                process.exit(1);
+              }
+            ' "$root/$f"
+          done
+          echo "ok: all manifests point at /usr/bin/vault-native-host"
+
+          # Cross-check the pinned extension id against an independent
+          # derivation (this shell pipeline vs the JS in
+          # scripts/gen-linux-packaging.mjs). If the two ever disagree, the
+          # packaged manifest would silently reject the real extension.
+          KEY="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync("extension/chromium/manifest.json","utf8")).key||"")')"
+          [ -n "$KEY" ] || { echo 'no "key" in extension/chromium/manifest.json'; exit 1; }
+          HEX="$(printf '%s' "$KEY" | base64 -d | openssl dgst -sha256 | awk '{print $NF}')"
+          EXT_ID="$(printf '%s' "${HEX:0:32}" | tr '0-9a-f' 'a-p')"
+          grep -q "chrome-extension://$EXT_ID/" \
+            "$root/etc/opt/chrome/native-messaging-hosts/no.sybr.vault.json" \
+            || { echo "chromium manifest does not allow $EXT_ID"; exit 1; }
+          echo "ok: chromium manifest allows the pinned id $EXT_ID"
+
+          # Prove the packaged binary is a working native host, not just a file
+          # of the right name. No desktop app runs here, so the handshake
+          # reports app_connected:false — the response itself is the assertion.
+          reply="$(printf '\x10\x00\x00\x00{"type":"hello"}' \
+            | "$root/usr/bin/vault-native-host" | tail -c +5)"
+          echo "handshake: $reply"
+          case "$reply" in
+            *'"name":"no.sybr.vault"'*) echo "ok: packaged host answers the native-messaging handshake" ;;
+            *) echo "packaged host did not answer a valid hello"; exit 1 ;;
+          esac
+
+          # The .rpm is generated from the same `files` map and drifts silently
+          # if only one of the two is updated. List it once and check the
+          # listing is non-empty first, so a broken `rpm` reads as itself rather
+          # than as every file being absent.
+          RPM_FILES="$(rpm -qpl "$RPM")"
+          [ -n "$RPM_FILES" ] || { echo "could not list contents of $RPM"; exit 1; }
+          for f in usr/bin/vault-native-host $MANIFESTS; do
+            printf '%s\n' "$RPM_FILES" | grep -qx "/$f" \
+              || { echo "MISSING from .rpm: /$f"; exit 1; }
+          done
+          echo "ok: .rpm carries the same payload"
