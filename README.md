@@ -105,7 +105,11 @@ forgotten master password is unrecoverable.
 
 ## Prerequisites
 
-- **Rust** ≥ 1.80 (`rustup`). The core, store and native host build with `cargo` alone.
+- **Rust** via `rustup`. The exact version is pinned by
+  [`rust-toolchain.toml`](./rust-toolchain.toml) and installed for you on the
+  first `cargo` command, so CI and every machine build with the same compiler
+  and the same `rustfmt`. The core, store and native host build with `cargo`
+  alone.
 - **Node.js** ≥ 18 + npm, for the desktop frontend.
 - **Platform toolchains for Tauri 2:**
   - **macOS:** Xcode Command Line Tools (`xcode-select --install`).
@@ -116,7 +120,18 @@ forgotten master password is unrecoverable.
       libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
       libdbus-1-dev
     ```
-    (`libdbus-1-dev`/Secret Service is needed for keychain quick unlock.)
+  - **Linux (Arch/CachyOS):**
+    ```bash
+    sudo pacman -S --needed webkit2gtk-4.1 base-devel curl wget file \
+      xdotool openssl libayatana-appindicator librsvg dbus
+    ```
+    (D-Bus / Secret Service — `libdbus-1-dev` or `dbus` — is needed for keychain
+    quick unlock.)
+
+    On Wayland with an NVIDIA GPU the app has to be started with
+    `WEBKIT_DISABLE_DMABUF_RENDERER=1`, or WebKitGTK aborts immediately with
+    `Gdk-Message: Error 71 (Protocol error)`. See the Linux row under
+    [Platform status](#platform-status).
 
 ## Build and test
 
