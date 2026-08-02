@@ -1,5 +1,7 @@
 // Popup: show whether the native messaging host (and thus the desktop app) is
-// reachable, by performing the hello handshake through the background worker.
+// reachable, by performing the hello handshake through the background worker —
+// and let the user say, per site, whether Arca should answer passkey ceremonies
+// there at all.
 
 const api = globalThis.browser ?? globalThis.chrome;
 
@@ -25,3 +27,112 @@ api.runtime.sendMessage({ cmd: "hello" }).then((result) => {
       "Install the native messaging host manifest and the vault-native-host binary. See extension/README.md.";
   }
 });
+
+// ── Per-site passkey policy ─────────────────────────────────────────────────
+//
+// Mirrors `POLICY_KEY` in background.js. This decides only WHO ANSWERS a
+// ceremony, never whether a credential may be released: an assertion still
+// needs the vault unlocked and the desktop app's own approval, and the app's
+// "Handle passkeys" switch overrides everything here.
+
+const POLICY_KEY = "passkeyPolicy";
+
+const siteEl = document.getElementById("site");
+const hostEl = document.getElementById("host");
+const policyEl = document.getElementById("policy");
+const hintEl = document.getElementById("policyHint");
+const listEl = document.getElementById("siteList");
+
+const HINTS = {
+  ask: "Arca answers when you started the sign-in — including when the site sends you to a separate page to finish it.",
+  always:
+    "Arca answers every passkey ceremony here, even one the page fires on its own.",
+  never: "Ceremonies here go straight to the browser or your security key.",
+};
+
+/** The active tab's hostname, or null for pages Arca never touches. */
+async function currentHost() {
+  try {
+    const tabs = await api.tabs.query({ active: true, currentWindow: true });
+    const url = tabs && tabs[0] && tabs[0].url;
+    if (!url) return null;
+    const u = new URL(url);
+    return u.protocol === "http:" || u.protocol === "https:"
+      ? u.hostname.toLowerCase()
+      : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+async function readPolicies() {
+  try {
+    const got = await api.storage.local.get(POLICY_KEY);
+    return got[POLICY_KEY] || {};
+  } catch (_e) {
+    return {};
+  }
+}
+
+async function writePolicies(map) {
+  try {
+    await api.storage.local.set({ [POLICY_KEY]: map });
+  } catch (_e) {
+    /* the gate falls back to "ask", which is the safe default anyway */
+  }
+}
+
+/** The sites that deviate from the default, so a forgotten one is findable. */
+function renderList(policies, host) {
+  listEl.replaceChildren();
+  const entries = Object.entries(policies).sort(([a], [b]) => a.localeCompare(b));
+  for (const [site, policy] of entries) {
+    if (site === host) continue; // already shown by the selector above
+    const li = document.createElement("li");
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = site;
+    const state = document.createElement("span");
+    state.textContent = policy;
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.textContent = "×";
+    reset.title = `Reset ${site} to ask`;
+    reset.addEventListener("click", async () => {
+      const next = await readPolicies();
+      delete next[site];
+      await writePolicies(next);
+      renderList(next, host);
+    });
+    li.append(name, state, reset);
+    listEl.append(li);
+  }
+}
+
+(async () => {
+  const host = await currentHost();
+  const policies = await readPolicies();
+  if (host) {
+    hostEl.textContent = host;
+    policyEl.value = policies[host] || "ask";
+    hintEl.textContent = HINTS[policyEl.value];
+    policyEl.addEventListener("change", async () => {
+      const next = await readPolicies();
+      if (policyEl.value === "ask") delete next[host];
+      else next[host] = policyEl.value;
+      await writePolicies(next);
+      hintEl.textContent = HINTS[policyEl.value];
+      renderList(next, host);
+    });
+  } else {
+    // No site to scope to (a browser page, a file:// URL). Keep the list so an
+    // override set elsewhere is still reachable.
+    siteEl.querySelector("h2").textContent = "Passkey site overrides";
+    policyEl.hidden = true;
+    hintEl.textContent = Object.keys(policies).length
+      ? ""
+      : "No sites overridden.";
+  }
+  renderList(policies, host);
+  siteEl.hidden = false;
+})();
