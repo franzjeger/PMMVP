@@ -71,6 +71,21 @@ what CI builds and what a clone of this repository builds; everything except
 Drive sync works. `release-macos.sh` refuses to build without it, because a
 release that silently cannot sync is a bad thing to discover after shipping.
 
+**Adding the secret to a checkout that has already been built** needs one extra
+step. `build.rs` only asks cargo to watch the file when it already exists —
+`rerun-if-changed` on a missing path means "rerun always", which would rebuild
+this crate and everything above it on every cargo invocation. So the first build
+after creating `~/.arca/google-client-secret` reuses the sync-less artifacts
+unless you force it:
+
+```bash
+touch crates/vault-sync/build.rs
+```
+
+`cargo clean -p vault-sync` does **not** do it — it reports `Removed 0 files` and
+leaves the build-script output in place. The build now warns when no secret is
+found, so a sync-less build says so at the time rather than at sign-in.
+
 ## Not yet built (required before enabling user-facing sync)
 
 These are prospective — they only bite once the vault actually lives in a shared
