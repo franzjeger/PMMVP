@@ -54,7 +54,7 @@ Current version: **0.3.0** — see [`CHANGELOG.md`](./CHANGELOG.md)
 | --- | --- |
 | **macOS** | Daily driver. Signed + notarizable releases, see [`docs/RELEASING.md`](./docs/RELEASING.md). |
 | **Windows** | Working, including the ssh-agent named pipe. Built in CI. |
-| **Linux** | Builds and passes CI (incl. X11/Wayland clipboard smoke tests) but has **never been run by a human**. Treat as untested. |
+| **Linux** | First run by a human on 2026-08-01, on CachyOS (KDE Plasma on Wayland, NVIDIA): builds from source, unlocks, saves, snapshots. **Needs `WEBKIT_DISABLE_DMABUF_RENDERER=1`** — without it WebKitGTK aborts at startup with `Gdk-Message: Error 71 (Protocol error)`, which CI cannot catch because no runner has a real NVIDIA/Wayland compositor. The `.deb`/`.rpm` ship the native-messaging host and register it for Chromium-family browsers and Firefox, asserted by the `linux-package` job; the host-to-app handshake is verified, in-page autofill is not yet. Still no Linux release artifact: build from source. |
 | **iOS** | Running on a phone since 2026-07-28: unlock, Face ID, search, add/edit/delete logins, an AutoFill provider, and Google Drive sync both ways (C ABI v6). Sideloaded — no TestFlight — and a new phone still needs its first vault handed to it by AirDrop, because sync is built from an already-open vault. See [`docs/IOS.md`](./docs/IOS.md). |
 | **Android** | Not built. |
 | **System-wide macOS AutoFill** | Shelved. It works technically, but Touch ID on every fill and a fight with Apple's own password menu made it worse than the browser extension. Source kept in `apps/macos/`. |
@@ -180,6 +180,11 @@ autofill to return anything.
 - **`linux-smoke`**: the `#[ignore]`d real-OS tests, so the `arboard` clipboard
   path actually executes on **X11** (Xvfb) and best-effort on **Wayland**
   (headless `sway`), plus a best-effort keychain test against gnome-keyring.
+- **`linux-package`**: builds the `.deb` and `.rpm` and asserts they carry the
+  native-messaging host and its manifests, that each manifest points at the
+  installed path rather than a build directory, and that the packaged host
+  answers the handshake. Nothing else here runs `tauri build`, so without it a
+  bundle can ship the app alone and still be green.
 
 CI cannot do an interactive cross-application paste. That stays a manual
 acceptance check on real X11 *and* Wayland before shipping to Linux users.
