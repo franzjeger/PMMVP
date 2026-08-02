@@ -85,6 +85,15 @@ jobs:
         working-directory: apps/desktop
         run: npm run test
 
+      # The extension's passkey path, run against the real content-script files.
+      # Both bugs it covers — the gate refusing a ceremony that starts on a
+      # freshly navigated page, and handing the relying party an object that is
+      # not a real PublicKeyCredential — shipped once and were invisible from
+      # inside the extension: Arca reported success either way. No dependencies,
+      # so it needs nothing beyond the Node installed above.
+      - name: Extension passkey tests
+        run: node extension/test/passkey.test.mjs
+
       - name: rustfmt
         run: cargo fmt --all --check
 
