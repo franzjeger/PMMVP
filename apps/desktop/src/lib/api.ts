@@ -443,6 +443,17 @@ export function onPasskeySuppressed(
   );
 }
 
+/** Fired when a site tried to register a passkey Arca already holds for that
+ *  account, so the ceremony was refused without a prompt. Worth surfacing: the
+ *  page shows "you already have a passkey", which is wrong whenever the site
+ *  itself lost the credential — and the only way out is to delete Arca's copy
+ *  first, which nothing else tells the user. */
+export function onPasskeyRegistrationBlocked(
+  cb: (site: string) => void,
+): Promise<UnlistenFn> {
+  return listen<string>("passkey-registration-blocked", (e) => cb(e.payload));
+}
+
 /** Fired when a login is saved/updated from the browser (save-on-submit), so
  *  the UI can refresh its item list. */
 export function onLoginSaved(cb: (host: string) => void): Promise<UnlistenFn> {

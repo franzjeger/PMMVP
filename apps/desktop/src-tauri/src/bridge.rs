@@ -496,6 +496,7 @@ fn handle_request(
                 };
             }
             // Must be unlocked before we prompt the user.
+            let mut blocked_same_account = false;
             {
                 let st = match state.lock() {
                     Ok(s) => s,
@@ -526,6 +527,16 @@ fn handle_request(
                 //      Byte-equal handle so a genuinely different account can
                 //      still register once. (An RP that legitimately wants to
                 //      re-register must first remove the old passkey in Arca.)
+                //
+                // Case 2 is a house rule, not the spec, and it has a nasty
+                // failure mode: if the RP does NOT actually hold the credential
+                // — a registration it rejected, or one deleted server-side —
+                // then re-registering is the only way back, and this silently
+                // refuses it. The page renders our InvalidStateError as "you
+                // already have a passkey", which is a lie from the RP's point of
+                // view, and nothing anywhere says the way out is to delete the
+                // passkey in Arca first. So case 2 is reported to the user;
+                // case 1 is the RP's own polite signal and needs no narration.
                 if let Ok(summaries) = vault.list_items(false) {
                     for sum in summaries {
                         let Ok(item) = vault.get_item(sum.id) else {
@@ -541,16 +552,28 @@ fn handle_request(
                             if *r != rp_id {
                                 continue;
                             }
-                            let in_exclude = exclude_credentials.iter().any(|e| e == cid);
-                            let same_account = *uh == user_handle;
-                            if in_exclude || same_account {
+                            if exclude_credentials.iter().any(|e| e == cid) {
                                 return Response::Error {
                                     message: "excluded".into(),
                                 };
                             }
+                            if *uh == user_handle {
+                                blocked_same_account = true;
+                                break;
+                            }
                         }
                     }
                 }
+            }
+            if blocked_same_account {
+                // Emitted outside the state lock: this reaches the webview, and
+                // the webview answers by calling commands that take that lock.
+                if let Some(app) = app {
+                    let _ = app.emit("passkey-registration-blocked", rp_id.clone());
+                }
+                return Response::Error {
+                    message: "excluded".into(),
+                };
             }
             // Registration ALWAYS requires an explicit user approval; a silent
             // create must never register a credential. `true` = this is a NEW
@@ -584,9 +607,16 @@ fn handle_request(
                 };
                 // Dedup: if a passkey for the same relying party AND the same
                 // user handle already exists, REPLACE it (reuse its id) instead
-                // of piling up a duplicate every time the site re-registers.
-                // Only when the user handle is non-empty — an empty handle can't
-                // distinguish accounts, so we must not collapse them.
+                // of piling up a duplicate. Only when the user handle is
+                // non-empty — an empty handle can't distinguish accounts, so we
+                // must not collapse them.
+                //
+                // This is a RACE GUARD, not the ordinary path: the check above
+                // already refused that exact condition before prompting, so the
+                // only way to arrive here holding a match is for one to have
+                // been written while the approval dialog was open. Do not read
+                // it as "re-registration replaces the old key" — re-registration
+                // never gets this far.
                 let existing_id = if user_handle.is_empty() {
                     None
                 } else {
@@ -2105,6 +2135,63 @@ mod tests {
             Response::Error {
                 message: "excluded".into()
             }
+        );
+    }
+
+    /// The other refusal branch: the site sent NO exclude list, but we already
+    /// hold a passkey for this rp_id and account. Same answer, same silence
+    /// towards the page — but this is the one the user gets told about, because
+    /// re-registering is the only way back when the RP lost its copy.
+    #[test]
+    fn passkey_create_for_a_known_account_is_refused_without_an_exclude_list() {
+        let dir = TempDir::new().unwrap();
+        let state = unlocked_state(&dir);
+        let mut authed = true;
+
+        let create = |exclude: Vec<Vec<u8>>| Request::PasskeyCreate {
+            origin: "https://login.microsoft.com".into(),
+            rp_id: "login.microsoft.com".into(),
+            user_name: "frank.lia@sybr.no".into(),
+            user_handle: vec![9, 8, 7],
+            exclude_credentials: exclude,
+        };
+
+        let resp = handle_request(create(vec![]), &state, "t", &mut authed, None, &mut allow());
+        assert!(
+            matches!(resp, Response::PasskeyCredential { .. }),
+            "first registration should succeed, got {resp:?}"
+        );
+
+        // Same account, empty exclude list: refused, and without a prompt.
+        let mut never = |_: &ConsentContext| -> bool {
+            panic!("consent must not be requested for a known-account create")
+        };
+        let resp = handle_request(create(vec![]), &state, "t", &mut authed, None, &mut never);
+        assert_eq!(
+            resp,
+            Response::Error {
+                message: "excluded".into()
+            }
+        );
+
+        // A different account on the same site still gets to register once.
+        let resp = handle_request(
+            Request::PasskeyCreate {
+                origin: "https://login.microsoft.com".into(),
+                rp_id: "login.microsoft.com".into(),
+                user_name: "someone.else@sybr.no".into(),
+                user_handle: vec![4, 5, 6],
+                exclude_credentials: vec![],
+            },
+            &state,
+            "t",
+            &mut authed,
+            None,
+            &mut allow(),
+        );
+        assert!(
+            matches!(resp, Response::PasskeyCredential { .. }),
+            "a distinct user handle must not be blocked, got {resp:?}"
         );
     }
 }

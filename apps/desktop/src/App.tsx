@@ -12,6 +12,7 @@ import {
   onLoginSaved,
   onPasskeyChanged,
   onPasskeySuppressed,
+  onPasskeyRegistrationBlocked,
   onPasskeyVerifyRequest,
   onSyncMerged,
   onUnlockRequested,
@@ -138,6 +139,11 @@ export default function App() {
       onAutofilled((what) => setToast(`Autofilled ${what}`)),
       onPasskeySuppressed((site) =>
         setToast(`Stopped asking about passkeys for ${site}. Quit Arca to reset.`),
+      ),
+      onPasskeyRegistrationBlocked((site) =>
+        setToast(
+          `${site} tried to add a passkey you already have here. Delete Arca's copy first to replace it.`,
+        ),
       ),
       onFillConsentRequest((req) => setConsent(req)),
       onPasskeyVerifyRequest((req) => setPasskeyVerify(req)),
