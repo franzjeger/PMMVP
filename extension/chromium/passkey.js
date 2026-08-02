@@ -18,32 +18,44 @@
   const realCreate = creds.create.bind(creds);
   const realGet = creds.get.bind(creds);
 
-  // Whether the user actually initiated THIS ceremony.
+  // Every path that hands a ceremony back to the browser goes through here.
   //
-  // `navigator.userActivation.isActive` alone was not enough, and the way it
-  // fails is worth spelling out: it does not mean "the user started this call",
-  // it means "the user did something in the last few seconds". Click anywhere
-  // on a login page — a link, a field, a cookie banner — and the site's own
-  // auto-fired get() sails straight through and pops Touch ID. That is the
-  // reported nag, and it survived the first fix because of exactly this.
-  //
-  // So watch for real input ourselves on a much tighter window, and CONSUME it:
-  // a genuine "sign in with a passkey" click produces one ceremony, not a
-  // stream. The window is generous enough for a site that fetches a challenge
-  // from its server between the click and the call.
-  const GESTURE_WINDOW_MS = 3000;
-  let lastGesture = 0;
-  for (const type of ["pointerdown", "keydown", "touchstart"]) {
-    // Capture phase: seen before the page's own handlers, which may call
-    // credentials.get() synchronously.
-    window.addEventListener(type, () => (lastGesture = Date.now()), true);
+  // Without it the fallbacks are indistinguishable: a missing gesture, a locked
+  // vault, no passkey for the site, and a per-site "never" all look exactly the
+  // same from the outside — the browser's own dialog. `console.debug` keeps it
+  // out of the way (DevTools → Verbose) while making the reason one filter away.
+  function fallback(kind, reason, options, real) {
+    console.debug(`[Arca] passkey ${kind} → browser (${reason})`);
+    return real(options);
   }
-  function userInitiated() {
-    const ua = navigator.userActivation;
-    if (ua && !ua.isActive) return false;
-    if (Date.now() - lastGesture > GESTURE_WINDOW_MS) return false;
-    lastGesture = 0;
-    return true;
+
+  /** The other outcome: Arca produced the credential itself. */
+  function answered(kind, detail) {
+    console.debug(`[Arca] passkey ${kind} → answered by Arca`, detail);
+  }
+
+  // May Arca answer THIS ceremony?
+  //
+  // The gesture is deliberately not tracked in this world any more. A ceremony
+  // frequently runs in a document the user never clicked in: Microsoft Entra
+  // navigates from login.microsoftonline.com to
+  // login.microsoft.com/common/bridge/fido and fires get() on load, so an
+  // in-page timestamp is necessarily zero and every M365 sign-in fell through
+  // to the browser — on Linux, into the QR / security-key dialog, because there
+  // is no platform authenticator to catch it quietly.
+  //
+  // The isolated relay now records gestures in a per-tab ledger in the
+  // background worker, where they outlive the navigation, and answers this gate
+  // from the ledger plus the site's own policy. The gesture is still consumed:
+  // one gesture, one ceremony, which is what stops a page re-firing get() in a
+  // loop from becoming a stream of prompts.
+  // Short, because nothing human is on the other end — but long enough to
+  // absorb a cold service-worker start, since timing out here means wrongly
+  // handing a ceremony Arca could have answered back to the browser.
+  const GATE_TIMEOUT_MS = 3000;
+  async function mayClaim() {
+    const r = await ask("gate", {}, GATE_TIMEOUT_MS);
+    return { allow: !!r.ok, reason: r.reason || "gate_timeout" };
   }
 
   // Request/response correlation with the isolated content script.
@@ -59,7 +71,7 @@
       resolve(d);
     }
   });
-  function ask(kind, payload) {
+  function ask(kind, payload, timeoutMs = 60000) {
     return new Promise((resolve) => {
       const id = `${seq++}`;
       pending.set(id, resolve);
@@ -67,13 +79,16 @@
         { __sybrPasskey: "request", kind, id, payload },
         window.location.origin,
       );
-      // Safety timeout: fall back if the app never answers.
+      // Safety timeout: fall back if the app never answers. The ceremony calls
+      // get a long one because a real answer waits on the user typing a master
+      // password; the gate gets a short one because nothing human is involved
+      // and a stalled gate would freeze the site's sign-in button instead.
       setTimeout(() => {
         if (pending.has(id)) {
           pending.delete(id);
           resolve({ ok: false });
         }
-      }, 60000);
+      }, timeoutMs);
     });
   }
 
@@ -97,7 +112,53 @@
     ).buffer;
   }
 
-  function shapedCredential(rawId, response, extras) {
+  // Build the object the relying party's own JavaScript receives.
+  //
+  // A bare object literal is NOT enough, and the way it fails is invisible from
+  // here: the ceremony completes, Arca reports success, and the *site* throws
+  // while handling the result. Microsoft Entra is the case that exposed it —
+  // the same credential signs in fine when the phone answers over the QR
+  // transport, because then the browser hands the site a real
+  // PublicKeyCredential.
+  //
+  // So two things beyond the plain fields:
+  //   • `toJSON()`, which WebAuthn L3 defines and modern RP code calls to
+  //     serialise the credential. Missing, it is a TypeError inside the site.
+  //   • the real prototypes, so `instanceof PublicKeyCredential` holds. Every
+  //     member of those prototypes is a brand-checked accessor that would throw
+  //     on a foreign object, which is exactly why each one is shadowed by an own
+  //     property below — reads hit ours, never theirs.
+  function shapedCredential(kind, rawId, response, extras) {
+    const asJSON =
+      kind === "create"
+        ? () => ({
+            id: b64url(rawId),
+            rawId: b64url(rawId),
+            type: "public-key",
+            authenticatorAttachment: "platform",
+            clientExtensionResults: {},
+            response: {
+              clientDataJSON: b64url(response.clientDataJSON),
+              attestationObject: b64url(response.attestationObject),
+              transports: ["internal"],
+            },
+          })
+        : () => ({
+            id: b64url(rawId),
+            rawId: b64url(rawId),
+            type: "public-key",
+            authenticatorAttachment: "platform",
+            clientExtensionResults: {},
+            response: {
+              clientDataJSON: b64url(response.clientDataJSON),
+              authenticatorData: b64url(response.authenticatorData),
+              signature: b64url(response.signature),
+              userHandle: response.userHandle
+                ? b64url(response.userHandle)
+                : null,
+            },
+          });
+
     const cred = {
       id: b64url(rawId),
       rawId,
@@ -105,8 +166,25 @@
       authenticatorAttachment: "platform",
       response,
       getClientExtensionResults: () => ({}),
+      toJSON: asJSON,
     };
     Object.assign(cred, extras || {});
+
+    const ResponseCtor =
+      kind === "create"
+        ? globalThis.AuthenticatorAttestationResponse
+        : globalThis.AuthenticatorAssertionResponse;
+    try {
+      if (typeof ResponseCtor === "function") {
+        Object.setPrototypeOf(response, ResponseCtor.prototype);
+      }
+      if (typeof globalThis.PublicKeyCredential === "function") {
+        Object.setPrototypeOf(cred, globalThis.PublicKeyCredential.prototype);
+      }
+    } catch (_e) {
+      // A plain object still works for sites that only read the fields; losing
+      // `instanceof` is better than losing the credential.
+    }
     return cred;
   }
 
@@ -120,18 +198,21 @@
     // passkey on each login — endless prompts and duplicate keys. Only handle
     // the explicit, user-initiated (modal) registration.
     if (mediation === "conditional" || mediation === "silent") {
-      return realCreate(options);
+      return fallback("create", `mediation:${mediation}`, options, realCreate);
     }
     // Only a user-initiated registration (a real "add a passkey" click) reaches
     // Arca; a page-load / background auto-fired create() defers to the browser
     // so it can never surprise-register a passkey.
-    if (!userInitiated()) {
-      return realCreate(options);
+    const gate = await mayClaim();
+    if (!gate.allow) {
+      return fallback("create", gate.reason, options, realCreate);
     }
     try {
       // We only implement ES256. If the RP requires something else, defer.
       const algs = (pk.pubKeyCredParams || []).map((p) => p.alg);
-      if (algs.length && !algs.includes(-7)) return realCreate(options);
+      if (algs.length && !algs.includes(-7)) {
+        return fallback("create", "alg_not_es256", options, realCreate);
+      }
 
       const cdj = clientDataJSON("webauthn.create", pk.challenge);
       const resp = await ask("create", {
@@ -152,7 +233,12 @@
             "InvalidStateError",
           );
         }
-        return realCreate(options);
+        return fallback(
+          "create",
+          `app:${resp.error || "no_response"}`,
+          options,
+          realCreate,
+        );
       }
 
       const response = {
@@ -163,12 +249,22 @@
         getPublicKey: () => null,
         getAuthenticatorData: () => null,
       };
-      return shapedCredential(fromArr(resp.credentialId), response);
+      const rawId = fromArr(resp.credentialId);
+      answered("create", {
+        rpId: (pk.rp && pk.rp.id) || window.location.hostname,
+        credentialId: b64url(rawId),
+      });
+      return shapedCredential("create", rawId, response);
     } catch (e) {
       // InvalidStateError is a deliberate, spec-mandated answer (credential
       // already registered) — it must reach the page, not trigger a fallback.
       if (e && e.name === "InvalidStateError") throw e;
-      return realCreate(options);
+      return fallback(
+        "create",
+        `exception:${(e && e.name) || "unknown"}`,
+        options,
+        realCreate,
+      );
     }
   };
 
@@ -183,16 +279,18 @@
     // re-arms autofill. Defer these to the browser's native handler; Arca only
     // answers the modal flow the user actively triggers (default/required).
     if (mediation === "conditional" || mediation === "silent") {
-      return realGet(options);
+      return fallback("get", `mediation:${mediation}`, options, realGet);
     }
     // Even a default-mediation get() must NOT prompt unless the user actually
-    // initiated it. GitHub's login page auto-fires a default get() on page load
-    // (not conditional), which reaching Arca pops a Touch ID prompt while the
-    // user is just visiting — the reported nag. Require a live user gesture
-    // (transient activation): a real "sign in with a passkey" click has it; a
-    // page-load / background auto-fire does not, and defers to the browser.
-    if (!userInitiated()) {
-      return realGet(options);
+    // asked for a sign-in. GitHub's login page auto-fires a default get() on
+    // page load (not conditional), which reaching Arca pops a prompt while the
+    // user is just visiting — the reported nag. So require an unspent gesture
+    // somewhere in this tab: a real "sign in with a passkey" click has one,
+    // whether it happened here or on the page that navigated here; a page-load
+    // auto-fire in a tab the user has not touched does not.
+    const gate = await mayClaim();
+    if (!gate.allow) {
+      return fallback("get", gate.reason, options, realGet);
     }
     try {
       const cdj = clientDataJSON("webauthn.get", pk.challenge);
@@ -203,7 +301,14 @@
         clientDataHash: toArr(clientDataHash),
         allowCredentials: (pk.allowCredentials || []).map((c) => toArr(c.id)),
       });
-      if (!resp.ok) return realGet(options);
+      if (!resp.ok) {
+        return fallback(
+          "get",
+          `app:${resp.error || "no_response"}`,
+          options,
+          realGet,
+        );
+      }
 
       const uh = resp.userHandle && resp.userHandle.length ? fromArr(resp.userHandle) : null;
       const response = {
@@ -212,9 +317,25 @@
         signature: fromArr(resp.signature),
         userHandle: uh,
       };
-      return shapedCredential(fromArr(resp.credentialId), response);
-    } catch (_e) {
-      return realGet(options);
+      const rawId = fromArr(resp.credentialId);
+      // The success path logs too, so "Arca answered and the site rejected it"
+      // is visible rather than inferred from the absence of a fallback line.
+      // Everything here is data the relying party is about to be handed anyway.
+      answered("get", {
+        rpId: pk.rpId || window.location.hostname,
+        credentialId: b64url(rawId),
+        allowCredentials: (pk.allowCredentials || []).map((c) => b64url(c.id)),
+        userHandle: uh ? b64url(uh) : null,
+        userVerified: !!(new Uint8Array(response.authenticatorData)[32] & 0x04),
+      });
+      return shapedCredential("get", rawId, response);
+    } catch (e) {
+      return fallback(
+        "get",
+        `exception:${(e && e.name) || "unknown"}`,
+        options,
+        realGet,
+      );
     }
   };
 })();
