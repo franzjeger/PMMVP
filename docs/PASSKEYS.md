@@ -1,27 +1,51 @@
 # Passkeys (WebAuthn) — architecture & roadmap
 
-**Status:** the cryptographic authenticator core is implemented and unit-tested
-in `crates/vault-core/src/passkey.rs`. The OS integration that makes SYBR
-Passwords appear in the system's "Choose where to save your passkey" dialog is
-**not built**. A non-compiling Swift sketch of it lived in
-`apps/macos-credential-provider/` until real extension targets landed in
-`apps/macos/` and `apps/ios/`; it was deleted rather than kept as a second,
-misleading `CredentialProviderViewController`, and `git log` still has it. The
-remaining work is gated on an Apple Developer account (entitlements +
-notarization) and cannot be completed or tested without one.
+**Status:** there are **two** ways an authenticator can reach a passkey
+ceremony, and Arca ships one of them.
 
-## Why an extension can't do this
+| Path | State |
+| --- | --- |
+| **Browser extension** (`extension/chromium/passkey.js`) | **Working**, on every Chromium browser and on Linux, where no platform authenticator exists at all. This is what signs you in today. |
+| **OS credential provider** (`apps/macos/`, `apps/ios/`) | **Not built for passkeys.** `ProvidesPasskeys` is deliberately `false`, so Arca does not appear in the system chooser only to fail. Gated on an Apple Developer account. |
 
-Password autofill just types text into a field, so a browser content script can
-do it. Passkeys go through the browser's built-in **WebAuthn** engine
-(`navigator.credentials.create/get`), and on macOS the "where to save / which
-passkey" chooser is drawn by the **operating system**, not by the page or the
-browser. A regular browser extension cannot insert itself into that chooser.
+The cryptographic core underneath both is `crates/vault-core/src/passkey.rs`,
+implemented and unit-tested.
 
-To appear there (the way iCloud Keychain, 1Password, and Dashlane do) an app
-must ship a native **AutoFill Credential Provider** app extension that the OS
-loads and the user enables in **System Settings → Passwords → Password
-Options**. This is a different mechanism from our loopback autofill bridge.
+## How the extension path works
+
+Passwords autofill by typing text into a field, which any content script can do.
+Passkeys go through the browser's **WebAuthn** engine
+(`navigator.credentials.create/get`), so Arca wraps that API in the page's own
+JS world — a `world: "MAIN"` content script at `document_start` — and answers the
+ceremony itself via the isolated relay → background worker → native host →
+loopback bridge. Anything it cannot service (vault locked, no passkey for this
+relying party, a non-ES256 request) falls through to the browser's real handler,
+so security keys and phones keep working. Every fallback logs its reason at
+`console.debug`, because from the outside they are indistinguishable.
+
+Two things about this path are easy to get wrong, and both shipped broken once:
+
+- **Deciding whether the user asked for it.** A ceremony often does not run in
+  the document the user clicked in — Microsoft Entra navigates to
+  `login.microsoft.com/common/bridge/fido`, which fires `get()` on load. A
+  gesture tracked inside the page dies with the page, so the gesture is kept in
+  a per-tab ledger in the background worker, and consumed once. A per-site
+  `ask`/`always`/`never` override lives in the popup.
+- **What is handed back.** The relying party must receive something that behaves
+  like a real `PublicKeyCredential` — `toJSON()` and working `instanceof` — not
+  an object literal with the right fields. Get it wrong and the ceremony
+  *succeeds*, Arca reports success, and the site fails on its own error.
+
+`extension/test/passkey.test.mjs` covers both against the real files.
+
+## What the OS credential provider would add
+
+To appear in the system's "Choose where to save your passkey" chooser on macOS
+and iOS (the way iCloud Keychain, 1Password and Dashlane do), an app must ship a
+native **AutoFill Credential Provider** app extension that the OS loads and the
+user enables in **System Settings → Passwords → Password Options**. That is a
+different mechanism from both the loopback autofill bridge and the WebAuthn shim
+above, and it is the only way to serve passkeys *outside* the browser.
 
 ## The pieces
 

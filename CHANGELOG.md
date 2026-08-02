@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+### Passkeys
+
+- **Signing in to Microsoft 365 works.** Two separate bugs stacked on top of
+  each other, and both were invisible from inside Arca, which reported success
+  either way.
+
+  The first was the gesture check. Entra does not run the ceremony on the page
+  you click: it navigates to `login.microsoft.com/common/bridge/fido`, and *that*
+  page fires `get()` on load. The gesture was tracked inside the page, so it died
+  with the page and every M365 sign-in fell through to the browser — on Linux
+  into the QR / security-key dialog, because there is no platform authenticator
+  to catch it quietly. The gesture now lives in a per-tab ledger that outlives
+  the navigation, and is still spent once per ceremony.
+
+  The second was the credential itself. Arca handed the site an object literal
+  with the right fields but no `toJSON()` and the wrong prototype, so
+  `instanceof PublicKeyCredential` was false. The ceremony completed, Arca said
+  it had signed you in, and the site's own code threw while handling the answer.
+  It is now a conforming credential.
+- **Per-site control over passkeys**, in the extension popup: ask (the default),
+  always, or never. `never` is the way to keep Arca out of a site whose page
+  fires passkey probes you do not want. This only decides who answers a
+  ceremony — the vault must still be unlocked and the app must still approve.
+- **A refused registration says so.** When a site tried to register a passkey
+  Arca already held for that account, Arca refused silently and the page said
+  "you already have a passkey" — which is wrong whenever the *site* is the one
+  that lost it, and left no hint that the way out is to delete Arca's copy
+  first. Arca now tells you.
+- Every ceremony Arca declines to answer logs why, at `console.debug`. A missing
+  gesture, a locked vault, no passkey for the site and a per-site "never" were
+  previously all the same silence.
+- **Firefox gets passkeys at all.** The Firefox manifest shipped without the
+  passkey content scripts, so the feature had never worked there. Adding them
+  needs `world: "MAIN"`, which raises the minimum Firefox to 128.
+
 ## 0.3.0 — 2026-07-28
 
 The first published release. Earlier versions existed only as builds on the
