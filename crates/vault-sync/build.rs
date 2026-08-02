@@ -29,7 +29,11 @@ fn main() {
     // Only when it exists. `rerun-if-changed` on a missing path means "always
     // rerun", which would rebuild this crate and everything above it on every
     // cargo invocation. The cost of the omission is that creating the file for
-    // the first time needs a `cargo clean -p vault-sync` to be picked up.
+    // the first time is not noticed: cargo recorded no dependency on a path
+    // that did not exist, so the next build happily reuses a binary with sync
+    // compiled out. `touch crates/vault-sync/build.rs` is what forces the
+    // re-run. (`cargo clean -p vault-sync` does not: it reports "Removed 0
+    // files" and leaves the build-script output in place.)
     if let Some(path) = path.as_ref().filter(|path| path.exists()) {
         println!("cargo:rerun-if-changed={}", path.display());
     }
@@ -40,6 +44,15 @@ fn main() {
         // requires: a newline here would be read as the start of a new
         // directive.
         println!("cargo:rustc-env=ARCA_GOOGLE_CLIENT_SECRET={secret}");
+    } else {
+        // Say so. A build without the secret is supported, but it is otherwise
+        // indistinguishable from one with it until sign-in refuses at runtime —
+        // which is a long way from the build that caused it.
+        println!(
+            "cargo:warning=no Google client secret found, so Drive sync is compiled out of \
+             this build (see docs/SYNC.md). After adding ~/.arca/google-client-secret, run \
+             `touch crates/vault-sync/build.rs` or the next build will reuse this one."
+        );
     }
 }
 
