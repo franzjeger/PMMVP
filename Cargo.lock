@@ -5586,6 +5586,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vault-credstore"
+version = "0.3.0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "vault-desktop"
 version = "0.3.0"
 dependencies = [
@@ -5609,6 +5616,7 @@ dependencies = [
  "uuid",
  "vault-appgroup",
  "vault-core",
+ "vault-credstore",
  "vault-store",
  "vault-sync",
  "vault-winhello",

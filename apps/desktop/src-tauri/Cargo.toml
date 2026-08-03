@@ -29,6 +29,9 @@ vault-appgroup.workspace = true
 uuid.workspace = true
 # Public Suffix List for passkey RP-ID validation (reject eTLD-scoped rp_ids).
 psl.workspace = true
+# Publishing logins + passkeys to the OS AutoFill store (macOS; a no-op
+# elsewhere, where the browser extension is the path and needs no registration).
+vault-credstore = { path = "../../../crates/vault-credstore" }
 # Origin parsing for WebAuthn related-origin lists: a hand-rolled prefix check
 # reads "https://good.test@evil.test" as good.test.
 url.workspace = true

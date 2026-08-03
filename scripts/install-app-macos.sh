@@ -8,6 +8,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+die() { printf '\nERROR: %s\n' "$1" >&2; exit 1; }
 APP_SRC="$REPO/target/release/bundle/macos/Arca.app"
 APP_DST="/Applications/Arca.app"
 # Entitlements (App Group + shared keychain group) so the vault + device key are
@@ -56,8 +57,40 @@ IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
 if [ -n "$IDENTITY" ] && [ -n "$PROFILE_SRC" ] && [ -f "$PROFILE_SRC" ]; then
   echo "==> Embedding provisioning profile: $PROFILE_SRC"
   cp "$PROFILE_SRC" "$APP_SRC/Contents/embedded.provisionprofile"
+
+  # The AutoFill extension goes INSIDE the real app.
+  #
+  # It used to live only in ArcaHost, a development harness — so system AutoFill
+  # required running a second app whose entire purpose was to exist, and whose
+  # "Sync" button was the only thing that ever published anything. An extension
+  # embedded here is registered for as long as Arca is installed, and the app
+  # publishes on unlock by itself.
+  # ARCHS pinned to the CONTAINER's architecture. Release defaults to universal,
+  # while the pre-build step stages an arm64-only vault_ffi and `tauri build`
+  # produces an arm64-only Arca — so a universal extension would fail to link
+  # for a slice nothing else here has.
+  echo "==> Building the AutoFill extension"
+  ( cd "$REPO/apps/macos" && xcodegen generate >/dev/null &&
+    xcodebuild -project Arca.xcodeproj -scheme ArcaHost -configuration Release \
+      -derivedDataPath "$REPO/target/macos-appex" ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+      build >/dev/null ) \
+    || die "the AutoFill extension failed to build"
+  APPEX="$REPO/target/macos-appex/Build/Products/Release/ArcaHost.app/Contents/PlugIns/ArcaAutoFill.appex"
+  [ -d "$APPEX" ] || die "no ArcaAutoFill.appex at $APPEX"
+  mkdir -p "$APP_SRC/Contents/PlugIns"
+  rm -rf "$APP_SRC/Contents/PlugIns/ArcaAutoFill.appex"
+  ditto "$APPEX" "$APP_SRC/Contents/PlugIns/ArcaAutoFill.appex"
+
+  # The extension is signed FIRST and with its OWN entitlements: codesign seals
+  # nested code, so signing the app first and the appex after would invalidate
+  # the outer signature. --deep is not enough here — it would reuse the app's
+  # entitlements for the extension, which needs its own.
+  echo "==> Signing the extension, then the app"
+  codesign --force \
+    --entitlements "$REPO/apps/macos/ArcaAutoFill/ArcaAutoFill.entitlements" \
+    -s "$IDENTITY" "$APP_SRC/Contents/PlugIns/ArcaAutoFill.appex"
   echo "==> Signing with: $IDENTITY (entitled: shared App Group + keychain)"
-  codesign --force --deep --entitlements "$ENTITLEMENTS" -s "$IDENTITY" "$APP_SRC"
+  codesign --force --entitlements "$ENTITLEMENTS" -s "$IDENTITY" "$APP_SRC"
 else
   # Fallback: no dev cert/profile — sign WITHOUT the restricted entitlements so
   # the app still launches; only cross-app autofill sharing is unavailable.

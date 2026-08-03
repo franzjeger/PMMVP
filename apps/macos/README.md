@@ -15,7 +15,7 @@ it is platform-agnostic and [`apps/ios`](../ios/) links the same file.
 
 | Target | Type | Purpose |
 |--------|------|---------|
-| `ArcaHost` | app | Dev/debug **container** for the extension, plus a screen that publishes the vault's logins to `ASCredentialIdentityStore`. The shipping container will be the Tauri `Arca.app` (the `.appex` gets injected there before release); this host is a harness. |
+| `ArcaHost` | app | Dev/debug **container** for the extension. NOT installed any more: since 03.08 `scripts/install-app-macos.sh` builds `ArcaAutoFill.appex` from this project and embeds it into the Tauri `Arca.app`, which is the real container. Publishing happens automatically on unlock (`publish_identities` → `vault-credstore`), so the "Sync to AutoFill" button is a harness convenience, not the mechanism. Keep this target for running the Swift tests and for debugging the extension in isolation.
 | `ArcaAutoFill` | app-extension | The `ASCredentialProviderViewController` the OS loads. `ProvidesPasswords = true`. |
 | `ArcaBridgeTests` | unit-test | The repo's only Swift tests, over the shared bridge. Attached to the `ArcaHost` scheme, so `xcodebuild test -scheme ArcaHost` runs them; CI does. |
 

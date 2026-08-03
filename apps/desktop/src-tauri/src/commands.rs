@@ -378,6 +378,83 @@ fn do_create_vault(state: &Mutex<AppState>, master_password: &str) -> Result<(),
     Ok(())
 }
 
+/// Publish the vault's logins and passkeys to the OS AutoFill store.
+///
+/// macOS only offers Arca for sites it has been told Arca holds something for.
+/// Until this existed, the only thing that ever told it was a button in a
+/// separate dev harness — so system AutoFill was as current as the last time
+/// somebody remembered to press it, and the app people actually run published
+/// nothing at all. iOS has always done this on unlock; this is the Mac catching
+/// up.
+///
+/// METADATA ONLY, which is what makes it safe to leave published while the
+/// vault is shut: a host, a username, a record id, and for passkeys the
+/// credential id and user handle the relying party already knows. The extension
+/// fetches the secret itself, one per fill, behind its own biometric.
+///
+/// On its own thread: the store call blocks, and nobody should wait behind it
+/// to see their own vault.
+fn publish_identities(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let identities = {
+            let state = app.state::<Mutex<AppState>>();
+            let Ok(st) = state.lock() else { return };
+            let Some(vault) = st.vault.as_ref().filter(|v| v.is_unlocked()) else {
+                return;
+            };
+            let Ok(summaries) = vault.list_items(false) else {
+                return;
+            };
+            let mut out = Vec::new();
+            for s in summaries {
+                let Ok(item) = vault.get_item(s.id) else { continue };
+                match &item.data {
+                    vault_core::VaultItem::Login { url, username, .. } => {
+                        let host = crate::bridge::host_of(url);
+                        if host.is_empty() {
+                            continue;
+                        }
+                        out.push(vault_credstore::Identity::Password {
+                            domain: host,
+                            user: username.clone(),
+                            record: item.id.to_string(),
+                        });
+                    }
+                    vault_core::VaultItem::Passkey {
+                        rp_id,
+                        user_name,
+                        credential_id,
+                        user_handle,
+                        ..
+                    } => out.push(vault_credstore::Identity::Passkey {
+                        rp_id: rp_id.clone(),
+                        user: user_name.clone(),
+                        credential_id: credential_id.clone(),
+                        user_handle: user_handle.clone(),
+                        record: item.id.to_string(),
+                    }),
+                    _ => {}
+                }
+            }
+            out
+        };
+        let outcome = vault_credstore::replace(&identities);
+        // Told, not swallowed: "AutoFill is off for Arca" is a switch the user
+        // can flip, and the store accepts a publish in that state and discards
+        // it — so silence here would look exactly like success.
+        let _ = app.emit(
+            "autofill-published",
+            serde_json::json!({
+                "count": identities.len(),
+                "ok": outcome == vault_credstore::Published::Ok,
+                "message": outcome.to_string(),
+            }),
+        );
+    });
+}
+
 /// Kick a background sync right away (used after unlock so peer changes land
 /// immediately instead of waiting for the next 30s tick — while locked, the
 /// background loop skips cycles by design).
@@ -395,6 +472,7 @@ pub fn unlock(
     master_password: String,
 ) -> Result<(), CmdError> {
     do_unlock(state.inner(), &master_password)?;
+    publish_identities(&app);
     kick_sync(&app);
     Ok(())
 }
@@ -490,6 +568,7 @@ pub async fn quick_unlock(app: tauri::AppHandle, state: St<'_>) -> Result<(), Cm
     }
     st.touch();
     drop(st);
+    publish_identities(&app);
     kick_sync(&app);
     Ok(())
 }
