@@ -38,11 +38,12 @@
             <dict>
                 <key>ProvidesPasswords</key>
                 <true/>
-                <!-- Passkeys: capability wired next; kept off until the passkey
-                     provider methods are implemented so Arca doesn't appear in
-                     the passkey chooser and fail. -->
+                <!-- On: ASPasskeyCredentialRequest and friends are macos(14.0),
+                     so this was never an Apple limit — only an unimplemented
+                     feature. The host publishes passkey identities and this
+                     extension answers assertions. -->
                 <key>ProvidesPasskeys</key>
-                <false/>
+                <true/>
             </dict>
         </dict>
         <key>NSExtensionPointIdentifier</key>

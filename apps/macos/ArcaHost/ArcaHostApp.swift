@@ -77,14 +77,27 @@ struct ContentView: View {
         do {
             let session = try await VaultSession.openWithDeviceKey(
                 reason: "publish your Arca logins to AutoFill")
-            let identities = try await session.identities().map {
+            var entries: [ASCredentialIdentity] = try await session.identities().map {
                 ASPasswordCredentialIdentity(
                     serviceIdentifier: ASCredentialServiceIdentifier(identifier: $0.domain, type: .domain),
                     user: $0.user,
                     recordIdentifier: $0.id)
             }
-            try await ASCredentialIdentityStore.shared.replaceCredentialIdentities(identities)
-            status = "Synced \(identities.count) logins to AutoFill. Try one in Safari."
+            let logins = entries.count
+            // Passkeys ride the same store. This registration is what makes the
+            // OS route an assertion to Arca at all — without it the extension's
+            // passkey code is never called.
+            let passkeys = try await session.passkeyIdentities()
+            entries += passkeys.map {
+                ASPasskeyCredentialIdentity(
+                    relyingPartyIdentifier: $0.rpID,
+                    userName: $0.userName,
+                    credentialID: $0.credentialID,
+                    userHandle: $0.userHandle,
+                    recordIdentifier: $0.id)
+            }
+            try await ASCredentialIdentityStore.shared.replaceCredentialIdentities(entries)
+            status = "Synced \(logins) logins and \(passkeys.count) passkeys to AutoFill."
         } catch {
             // The bridge's own text says which of the several setup steps is
             // missing; a raw error dump did not.

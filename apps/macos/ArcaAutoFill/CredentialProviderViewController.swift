@@ -43,6 +43,25 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
     // MARK: UI path (Touch ID happens here)
 
     override func prepareInterfaceToProvideCredential(for credentialRequest: ASCredentialRequest) {
+        // Passkeys have been available to third-party providers on macOS since
+        // Sonoma (ASPasskeyCredentialRequest is macos(14.0)); Arca simply had
+        // not implemented them, and the capability was left off so it would not
+        // appear in the chooser and fail.
+        if let request = credentialRequest as? ASPasskeyCredentialRequest {
+            guard let identity = request.credentialIdentity as? ASPasskeyCredentialIdentity,
+                  let recordID = identity.recordIdentifier
+            else {
+                cancel(.credentialIdentityNotFound)
+                return
+            }
+            Task {
+                await assertPasskey(
+                    recordID: recordID,
+                    clientDataHash: request.clientDataHash,
+                    rpID: identity.relyingPartyIdentifier)
+            }
+            return
+        }
         guard credentialRequest.type == .password,
               let identity = credentialRequest.credentialIdentity as? ASPasswordCredentialIdentity,
               let recordID = identity.recordIdentifier
@@ -74,6 +93,36 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
                 withSelectedCredential: ASPasswordCredential(user: user, password: password))
         } catch {
             log.error("fill failed: \(vaultLogMessage(for: error), privacy: .public)")
+            cancel(.userCanceled)
+        }
+    }
+
+    /// Sign the relying party's challenge with a stored passkey.
+    ///
+    /// `userVerified: true` is earned: opening the vault took Touch ID (or the
+    /// master password), and both are user verification in WebAuthn's sense.
+    /// The flag lands in the authenticator data the relying party trusts, so
+    /// claiming it without the prompt would be lying to the site.
+    @MainActor
+    private func assertPasskey(recordID: String, clientDataHash: Data, rpID: String) async {
+        guard !isWorking else { return }
+        isWorking = true
+        defer { isWorking = false }
+
+        do {
+            let session = try await VaultSession.openWithDeviceKey(reason: unlockReason)
+            let assertion = try await session.assertPasskey(
+                forID: recordID, clientDataHash: clientDataHash, userVerified: true)
+            await extensionContext.completeAssertionRequest(
+                using: ASPasskeyAssertionCredential(
+                    userHandle: assertion.userHandle,
+                    relyingParty: rpID,
+                    signature: assertion.signature,
+                    clientDataHash: clientDataHash,
+                    authenticatorData: assertion.authenticatorData,
+                    credentialID: assertion.credentialID))
+        } catch {
+            log.error("passkey assert failed: \(vaultLogMessage(for: error), privacy: .public)")
             cancel(.userCanceled)
         }
     }
