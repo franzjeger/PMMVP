@@ -128,6 +128,38 @@
       .map((x) => x.it);
   }
 
+  /// Ask the WebAuthn shim (main world) to answer the page's live conditional
+  /// request with this passkey. Resolves false when there is nothing live.
+  ///
+  /// A window message is the only channel the isolated and main worlds share.
+  /// The shim requires a real user gesture before acting, so a page posting
+  /// this at us cannot conjure a Touch ID prompt.
+  function usePasskey(credentialId) {
+    return new Promise((resolve) => {
+      const id = `use-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const onReply = (e) => {
+        if (e.source !== window) return;
+        const d = e.data;
+        if (!d || d.__sybrPasskey !== "use-result" || d.id !== id) return;
+        window.removeEventListener("message", onReply);
+        clearTimeout(timer);
+        resolve(!!d.ok);
+      };
+      window.addEventListener("message", onReply);
+      // The ceremony includes an approval prompt and a biometric, so the
+      // deadline is generous; it exists so a shim that never answers cannot
+      // leave "Signing in…" on screen for ever.
+      const timer = setTimeout(() => {
+        window.removeEventListener("message", onReply);
+        resolve(false);
+      }, 90000);
+      window.postMessage(
+        { __sybrPasskey: "use", id, credentialId: credentialId || null },
+        location.origin,
+      );
+    });
+  }
+
   /// Fetch the credential for `item` and put it in the page.
   ///
   /// Its own function because two paths need it now: picking a row, and
@@ -182,15 +214,24 @@
     kindEl.textContent = isPasskey ? "Passkey" : "Password";
     kindEl.classList.add(isPasskey ? "sybr-kind-passkey" : "sybr-kind-password");
     row.addEventListener("click", async () => {
-      // A passkey isn't typed into a field — it signs in through the site's own
-      // passkey ceremony, which Arca approves via the WebAuthn shim. So a passkey
-      // row is informational, not a fill action.
+      // A passkey is not typed into a field — it signs the site's own WebAuthn
+      // challenge. When the page has armed conditional autofill (most sign-in
+      // pages do), our shim is holding that challenge and can answer it with
+      // this credential, which is what makes the row an action rather than a
+      // notice. Showing a passkey you cannot use is worse than not showing it.
       if (isPasskey) {
+        openPanel(anchor, note("Signing in with your passkey…"));
+        const used = await usePasskey(item.credential_id);
+        if (used) {
+          closePanel();
+          return;
+        }
         openPanel(
           anchor,
           note(
-            `Passkey for ${item.title || item.username || "this site"} — choose ` +
-              `“Sign in with a passkey” on the page and Arca will approve it.`,
+            `Arca has a passkey for ${item.title || item.username || "this site"}, ` +
+              `but this page has not offered a passkey sign-in yet. Choose ` +
+              `“Sign in with a passkey” on the page and Arca will answer it.`,
           ),
         );
         return;

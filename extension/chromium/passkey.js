@@ -268,6 +268,137 @@
     }
   };
 
+  // ---- conditional autofill: shared with the browser, not surrendered -----
+  //
+  // The gate above fixes the PAGE-driven flow: click "sign in with a passkey",
+  // the site navigates to its bridge document, that document fires get(), and
+  // the per-tab gesture ledger lets Arca answer it.
+  //
+  // This is the other half — the PICKER-driven flow. A conditional get() is the
+  // page saying "offer passkeys in the autofill UI". Handing it straight to the
+  // browser was right for not prompting on page load, and wrong in one respect:
+  // it left nothing for Arca's own picker to answer, so a passkey row could
+  // only ever print a sentence telling the user to go find a button.
+  //
+  // The request is raced instead. The browser still receives it, so iCloud
+  // Keychain and security keys behave exactly as before; in parallel Arca holds
+  // the challenge, and picking one of our rows answers it and aborts the
+  // browser's copy. Whoever the user actually chose wins.
+  let liveConditional = null;
+
+  function conditionalGet(options, pk, mediation) {
+    // Our controller is chained to the page's in both directions: the page
+    // aborting must still reach the browser, and ours firing must not cancel
+    // anything else the page owns.
+    const controller = new AbortController();
+    const pageSignal = options.signal;
+    if (pageSignal) {
+      if (pageSignal.aborted) {
+        return fallback("get", `mediation:${mediation}`, options, realGet);
+      }
+      pageSignal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
+
+    let settle;
+    const fromArca = new Promise((resolve) => (settle = resolve));
+    const request = { pk, settle, done: false };
+    liveConditional = request;
+    const clear = () => {
+      if (liveConditional === request) liveConditional = null;
+    };
+
+    const browser = fallback(
+      "get",
+      `mediation:${mediation}`,
+      { ...options, signal: controller.signal },
+      realGet,
+    ).then(
+      (credential) => {
+        clear();
+        return credential;
+      },
+      (error) => {
+        clear();
+        throw error;
+      },
+    );
+
+    return Promise.race([browser, fromArca]).finally(clear);
+  }
+
+  /// Answer the live conditional request with the passkey the user picked.
+  ///
+  /// False when there is nothing to answer, so the picker can say so rather
+  /// than appear broken.
+  async function useConditional(credentialId) {
+    const request = liveConditional;
+    if (!request || request.done) return false;
+    // The same gate a modal ceremony passes. A page posting messages at us
+    // cannot conjure a prompt; only a real gesture in this tab can.
+    const gate = await mayClaim();
+    if (!gate.allow) {
+      console.debug(`[Arca] passkey use → refused (${gate.reason})`);
+      return false;
+    }
+
+    const pk = request.pk;
+    const rpId = pk.rpId || window.location.hostname;
+    try {
+      const cdj = clientDataJSON("webauthn.get", pk.challenge);
+      const clientDataHash = await crypto.subtle.digest("SHA-256", cdj);
+      const resp = await ask("get", {
+        origin: window.location.origin,
+        rpId,
+        clientDataHash: toArr(clientDataHash),
+        // The row the user picked, not "whatever matches this site" — with two
+        // passkeys for one site the choice has to mean something.
+        allowCredentials:
+          credentialId && credentialId.length
+            ? [credentialId]
+            : (pk.allowCredentials || []).map((c) => toArr(c.id)),
+      });
+      if (!resp.ok) {
+        console.debug(`[Arca] passkey use → app said no (${resp.error || "no_response"})`);
+        return false;
+      }
+
+      const uh = resp.userHandle && resp.userHandle.length ? fromArr(resp.userHandle) : null;
+      const response = {
+        clientDataJSON: cdj,
+        authenticatorData: fromArr(resp.authenticatorData),
+        signature: fromArr(resp.signature),
+        userHandle: uh,
+      };
+      const rawId = fromArr(resp.credentialId);
+      answered("get", {
+        rpId,
+        credentialId: b64url(rawId),
+        via: "picker",
+        userHandle: uh ? b64url(uh) : null,
+        userVerified: !!(new Uint8Array(response.authenticatorData)[32] & 0x04),
+      });
+      request.done = true;
+      request.settle(shapedCredential("get", rawId, response));
+      return true;
+    } catch (e) {
+      console.debug(`[Arca] passkey use → exception:${(e && e.name) || "unknown"}`);
+      return false;
+    }
+  }
+
+  // The picker lives in the isolated world and cannot call in here directly;
+  // window messages are the one channel both worlds share.
+  window.addEventListener("message", async (e) => {
+    if (e.source !== window) return;
+    const d = e.data;
+    if (!d || d.__sybrPasskey !== "use") return;
+    const ok = await useConditional(d.credentialId);
+    window.postMessage(
+      { __sybrPasskey: "use-result", id: d.id, ok },
+      window.location.origin,
+    );
+  });
+
   navigator.credentials.get = async function (options) {
     const pk = options && options.publicKey;
     if (!pk) return realGet(options);
@@ -279,7 +410,7 @@
     // re-arms autofill. Defer these to the browser's native handler; Arca only
     // answers the modal flow the user actively triggers (default/required).
     if (mediation === "conditional" || mediation === "silent") {
-      return fallback("get", `mediation:${mediation}`, options, realGet);
+      return conditionalGet(options, pk, mediation);
     }
     // Even a default-mediation get() must NOT prompt unless the user actually
     // asked for a sign-in. GitHub's login page auto-fires a default get() on

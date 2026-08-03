@@ -218,6 +218,14 @@ enum Response {
 #[derive(Debug, Serialize, PartialEq)]
 struct LoginMatch {
     id: String,
+    /// The passkey's credential id, so the picker's choice reaches the
+    /// ceremony as an `allowCredentials` entry. Empty for passwords.
+    ///
+    /// Not a secret — it is what the browser sends the relying party anyway.
+    /// Without it, picking one of two passkeys for the same site would sign
+    /// with whichever the app found first, and the choice would be theatre.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    credential_id: Vec<u8>,
     title: String,
     username: String,
     /// Credential type for the picker UI: "password" for a stored login,
@@ -391,6 +399,7 @@ fn handle_request(
                                     title: title.clone(),
                                     username: username.clone(),
                                     kind: "password".into(),
+                                    credential_id: Vec::new(),
                                 });
                             }
                             // Passkeys for this site: surfaced so the picker can
@@ -404,6 +413,7 @@ fn handle_request(
                                 rp_id,
                                 user_name,
                                 title,
+                                credential_id,
                                 ..
                             } => {
                                 let entry = LoginMatch {
@@ -411,6 +421,7 @@ fn handle_request(
                                     title: title.clone(),
                                     username: user_name.clone(),
                                     kind: "passkey".into(),
+                                    credential_id: credential_id.clone(),
                                 };
                                 if rp_id_matches_origin(rp_id, &url) {
                                     items.push(entry);
