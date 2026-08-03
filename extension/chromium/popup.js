@@ -45,8 +45,12 @@ const listEl = document.getElementById("siteList");
 
 const HINTS = {
   ask: "Arca answers when you started the sign-in — including when the site sends you to a separate page to finish it.",
+  // Deliberately narrower than it used to read. "Always" no longer covers
+  // registration: sites that re-offer "add a passkey" on a timer turned this
+  // setting into a stream of unprompted Touch ID prompts, so creating a
+  // credential now always needs a click in the page, whatever this says.
   always:
-    "Arca answers every passkey ceremony here, even one the page fires on its own.",
+    "Arca answers every sign-in here, even one the page fires on its own. Registering a new passkey still needs a click from you.",
   never: "Ceremonies here go straight to the browser or your security key.",
 };
 

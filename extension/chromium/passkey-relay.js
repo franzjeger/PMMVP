@@ -13,6 +13,29 @@
   if (window.__sybrPasskeyRelay) return;
   window.__sybrPasskeyRelay = true;
 
+  /// Is this content script still attached to a live extension?
+  ///
+  /// `runtime.id` goes undefined the moment the extension is reloaded or
+  /// updated, while this script keeps running in the page. It is the only
+  /// signal available from in here, and it is a reliable one.
+  function contextAlive() {
+    try {
+      return !!(api && api.runtime && api.runtime.id);
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  /// The extension version this script belongs to, for the shim's staleness
+  /// check. Unreadable once orphaned, which is itself the answer.
+  function currentVersion() {
+    try {
+      return api.runtime.getManifest().version;
+    } catch (_e) {
+      return null;
+    }
+  }
+
   /** Fire-and-forget message; a sleeping worker must not throw into the page. */
   function tell(message) {
     try {
@@ -64,6 +87,24 @@
     // May Arca answer this ceremony at all? Settled before anything reaches the
     // native host, so a declined gate never even wakes the desktop app.
     if (d.kind === "gate") {
+      // Orphan check FIRST. Reloading the extension leaves this script running
+      // in the page with a dead `chrome.runtime`, still wrapping WebAuthn with
+      // whatever rules shipped that day. Telling the shim to retire is what
+      // finally stops a tab that has been open since before a fix.
+      if (!contextAlive()) {
+        window.postMessage(
+          {
+            __sybrPasskey: "response",
+            id: d.id,
+            ok: false,
+            reason: "extension_reloaded",
+            stale: true,
+          },
+          location.origin,
+        );
+        return;
+      }
+
       const fresh =
         localGesture > 0 && Date.now() - localGesture <= GESTURE_WINDOW_MS;
       if (fresh) localGesture = 0; // one gesture, one ceremony
@@ -73,6 +114,11 @@
           cmd: "passkeyGate",
           host: location.hostname,
           localGesture: fresh,
+          // A registration is always something the user is looking at, so a
+          // create is judged on THIS document's gesture alone. Sign-in is not:
+          // Entra fires get() in a document nobody clicked in, which is what
+          // the tab-wide ledger exists for.
+          isCreate: !!(d.payload && d.payload.isCreate),
           // Once the user has touched THIS document the in-document rule
           // governs alone, so a gesture carried from the page that navigated
           // here is not allowed to widen the old 3s window to the ledger's.
@@ -87,6 +133,11 @@
           id: d.id,
           ok: !!(res && res.allow),
           reason: (res && res.reason) || "gate_unavailable",
+          // Carried on every gate answer so the shim can notice an update even
+          // when the context is still alive: a new version answering means the
+          // code in this page is a generation behind.
+          version: (res && res.version) || currentVersion(),
+          stale: !res && !contextAlive(),
         },
         location.origin,
       );

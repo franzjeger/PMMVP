@@ -168,22 +168,45 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // which the page cannot spoof — the same rule the ceremony's origin
       // already follows.
       policyFor(msg.host).then(async (policy) => {
-        if (policy !== "ask") {
+        const version = api.runtime.getManifest().version;
+        const reply = (allow, reason) =>
+          sendResponse({ ok: true, allow, reason, version });
+
+        if (policy === "never") {
+          await clearGesture(tabId);
+          reply(false, "site_never");
+          return;
+        }
+
+        // REGISTRATION IS DIFFERENT, and this is the rule the GitHub prompt
+        // loop kept walking through.
+        //
+        // A create() must have a gesture in the very document that fired it.
+        // Neither the tab-wide ledger nor a site set to "always" may stand in
+        // for one: the ledger exists so a sign-in can follow a click across
+        // Entra's navigation, and "always" is a user saying "let Arca sign me
+        // in here" — neither is consent to mint a new credential. GitHub
+        // re-offers "add a passkey" on a timer, and with either of those
+        // standing in, every offer became a Touch ID prompt on a machine whose
+        // owner had done nothing.
+        if (msg.isCreate) {
+          await clearGesture(tabId);
+          reply(!!msg.localGesture, msg.localGesture ? "gesture" : "create_needs_local_gesture");
+          return;
+        }
+
+        if (policy === "always") {
           // An explicit per-site answer settles it; the gesture is spent either
           // way so it cannot leak into the next ceremony.
           await clearGesture(tabId);
-          sendResponse({
-            ok: true,
-            allow: policy === "always",
-            reason: policy === "always" ? "site_always" : "site_never",
-          });
+          reply(true, "site_always");
           return;
         }
         if (msg.localGesture) {
           // The relay saw the gesture in this very document. Trust it directly
           // rather than racing our own "gesture" message to this worker.
           await clearGesture(tabId);
-          sendResponse({ ok: true, allow: true, reason: "gesture" });
+          reply(true, "gesture");
           return;
         }
         if (msg.sawLocal) {
@@ -193,15 +216,11 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // moved on, so the ledger must not be allowed to overrule that —
           // otherwise the in-document window silently widens to the carry TTL.
           await clearGesture(tabId);
-          sendResponse({ ok: true, allow: false, reason: "gesture_stale" });
+          reply(false, "gesture_stale");
           return;
         }
         const carried = await takeGesture(tabId);
-        sendResponse({
-          ok: true,
-          allow: carried,
-          reason: carried ? "gesture_carried" : "no_gesture",
-        });
+        reply(carried, carried ? "gesture_carried" : "no_gesture");
       });
       return true;
   }

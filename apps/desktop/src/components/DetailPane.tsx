@@ -458,7 +458,15 @@ function SshDetail({ id, onCopy }: { id: string; onCopy: (m: string) => void }) 
   return (
     <>
       <Row label="Fingerprint">
-        <span className="truncate font-mono text-[13px]">
+        {/* `break-all`, not `truncate`. Two reasons, and the first one is why
+            this ran off the edge of the card: `truncate` sets `overflow`,
+            which does nothing on a non-replaced INLINE box, and this span is
+            the only one in this file whose parent is not a flex container —
+            everywhere else the span is a flex item and gets blockified, so the
+            same class works. The second reason is that a fingerprint exists to
+            be compared character by character, and half of one with an
+            ellipsis cannot do that job. */}
+        <span className="block break-all font-mono text-[13px]">
           {pub?.fingerprint ?? "…"}
         </span>
       </Row>
