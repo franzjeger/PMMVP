@@ -128,6 +128,46 @@
       .map((x) => x.it);
   }
 
+  /// Fetch the credential for `item` and put it in the page.
+  ///
+  /// Its own function because two paths need it now: picking a row, and
+  /// finishing the job after an unlock the user asked for. The second one used
+  /// to stop at re-rendering the list, which meant unlocking to autofill did
+  /// everything except autofill.
+  async function fillFrom(item, anchor, isIdentifier, pwField) {
+    let fill;
+    try {
+      // The desktop app only releases it for a matching origin while unlocked;
+      // the password is never in `item`.
+      fill = await api.runtime.sendMessage({
+        cmd: "fill",
+        id: item.id,
+        url: location.href,
+      });
+    } catch (e) {
+      openPanel(anchor, note(`Could not fill: ${String(e)}`));
+      return false;
+    }
+    const cred = fill && fill.ok ? fill.response : null;
+    if (cred && cred.type === "credentials") {
+      const userField = isIdentifier ? anchor : findUsernameField(anchor);
+      if (userField && cred.username) setNativeValue(userField, cred.username);
+      if (pwField && cred.password) setNativeValue(pwField, cred.password);
+      closePanel();
+      return true;
+    }
+    // The app tells us WHICH failure it was; the host passes it through instead
+    // of listing all three in one sentence. "locked" is the only one with a fix
+    // from here, so it gets the button rather than a full stop.
+    const reason = (cred && cred.message) || "";
+    if (reason === "locked" || reason === "not_running") {
+      openPanel(anchor, unlockPrompt(anchor, isIdentifier));
+      return false;
+    }
+    openPanel(anchor, note(fillFailureText(reason)));
+    return false;
+  }
+
   /** Build one selectable row for `item`. */
   function buildRow(item, anchor, isIdentifier) {
     const row = document.createElement("button");
@@ -163,36 +203,7 @@
         closePanel();
         return;
       }
-      // Request the actual credential. The desktop app only releases it for a
-      // matching origin while unlocked; the password is never in `item`.
-      let fill;
-      try {
-        fill = await api.runtime.sendMessage({
-          cmd: "fill",
-          id: item.id,
-          url: location.href,
-        });
-      } catch (e) {
-        openPanel(anchor, note(`Could not fill: ${String(e)}`));
-        return;
-      }
-      const cred = fill && fill.ok ? fill.response : null;
-      if (cred && cred.type === "credentials") {
-        const userField = isIdentifier ? anchor : findUsernameField(anchor);
-        if (userField && cred.username) setNativeValue(userField, cred.username);
-        if (pwField && cred.password) setNativeValue(pwField, cred.password);
-        closePanel();
-        return;
-      }
-      // The app tells us WHICH failure it was; the host now passes it through
-      // instead of listing all three in one sentence. "locked" is the only one
-      // with a fix from here, so it gets the button rather than a full stop.
-      const reason = (cred && cred.message) || "";
-      if (reason === "locked" || reason === "not_running") {
-        openPanel(anchor, unlockPrompt(anchor, isIdentifier));
-        return;
-      }
-      openPanel(anchor, note(fillFailureText(reason)));
+      await fillFrom(item, anchor, isIdentifier, pwField);
     });
     return row;
   }
@@ -298,6 +309,16 @@
       if (resp.app_connected) {
         cache = null;
         lockedHintShown = false;
+        const items = Array.isArray(resp.items) ? resp.items : [];
+        // Exactly one login for this site: finish the job. You clicked "unlock
+        // to autofill" on this field — being handed a list of one to click
+        // again is asking the same question twice.
+        const only = items.filter((i) => i.kind !== "passkey");
+        if (only.length === 1) {
+          cache = { url: location.href, items };
+          const pwField = isIdentifier ? visiblePasswordField() : anchor;
+          if (await fillFrom(only[0], anchor, isIdentifier, pwField)) return;
+        }
         await showMatches(anchor, false, isIdentifier);
         return;
       }

@@ -17,6 +17,7 @@ import {
   onSyncMerged,
   onUnlockRequested,
   onVaultLocked,
+  onVaultUnlocked,
   type FillConsent,
   type PasskeyVerifyRequest,
   type ItemDetail,
@@ -135,6 +136,12 @@ export default function App() {
       // a password field, which is precisely the case the suppression is not
       // meant to cover.
       onUnlockRequested(() => setAutoLocked(false)),
+      // Unlocked from outside the window (macOS/Windows): pick up the new state
+      // instead of showing a lock screen for a vault that is open.
+      onVaultUnlocked(() => {
+        setAutoLocked(false);
+        void refreshStatus();
+      }),
       onClipboardCleared(() => setToast("Clipboard cleared")),
       onAutofilled((what) => setToast(`Autofilled ${what}`)),
       onPasskeySuppressed((site) =>

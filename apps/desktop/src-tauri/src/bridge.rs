@@ -923,14 +923,69 @@ fn handle_request(
                 st.blur_grace_until =
                     Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
             }
+
+            // Unlock RIGHT HERE, without bringing the window forward.
+            //
+            // Routing this through our lock screen meant the window jumped in
+            // front of the page you were signing in to, and left you looking at
+            // Arca instead of the field you started from. Apple's own Passwords
+            // proves the prompt needs no app in the foreground.
+            //
+            // macOS: Touch ID is a free-floating system dialog.
+            // Windows: Hello must be PARENTED to a window of ours, but parenting
+            // is not focus — the dialog takes focus itself, the app stays put.
+            // The prompt runs before the state lock, because it blocks on a
+            // human.
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            {
+                // Windows only: a hidden window is not a usable parent, so make
+                // sure it exists on screen — without raising it.
+                #[cfg(target_os = "windows")]
+                if let Some(app) = app {
+                    if let Some(w) = app.get_webview_window("main") {
+                        if !w.is_visible().unwrap_or(false) {
+                            let _ = w.show();
+                        }
+                    }
+                }
+
+                if crate::biometric::authenticate(app, "unlock your password vault").is_err() {
+                    // Cancelled or failed. Nothing is unlocked, and the extension
+                    // finds that out when it re-probes.
+                    return Response::UnlockRequested;
+                }
+                let Ok(mut st) = state.lock() else {
+                    return Response::Error {
+                        message: "internal".into(),
+                    };
+                };
+                if st.vault.is_none() && st.store.exists() {
+                    st.vault = st.store.load().ok();
+                }
+                let AppState { store, vault, .. } = &mut *st;
+                if let Some(vault) = vault.as_mut() {
+                    let _ = store.quick_unlock(vault);
+                }
+                st.touch();
+                drop(st);
+                // The window may be on screen showing its lock screen; without
+                // this it would sit there claiming to be locked while the vault
+                // is open.
+                if let Some(app) = app {
+                    let _ = app.emit("vault-unlocked", ());
+                }
+            }
+
+            // Everywhere else (Linux): there is no biometric to call, so the
+            // master password has to be typed — and that needs a window. This is
+            // a platform limit, not a shortcut.
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             if let Some(app) = app {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
                     let _ = window.unminimize();
                     let _ = window.set_focus();
                 }
-                // The frontend decides how to ask; this only says that someone
-                // out there is waiting on it.
                 let _ = app.emit("unlock-requested", ());
             }
             Response::UnlockRequested

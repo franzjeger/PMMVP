@@ -404,6 +404,16 @@ export function onUnlockRequested(cb: () => void): Promise<UnlistenFn> {
   return listen("unlock-requested", () => cb());
 }
 
+/**
+ * Fired when the vault was unlocked WITHOUT the window being involved — the
+ * browser extension asked, the OS prompt answered, and the app never came
+ * forward. The window may be sitting on its lock screen at that moment, so it
+ * has to be told rather than left claiming to be locked.
+ */
+export function onVaultUnlocked(cb: () => void): Promise<UnlistenFn> {
+  return listen("vault-unlocked", () => cb());
+}
+
 /** Fired by the backend when the vault auto-locks (idle or window blur). */
 export function onVaultLocked(cb: (reason: string) => void): Promise<UnlistenFn> {
   return listen<string>("vault-locked", (e) => cb(e.payload));
