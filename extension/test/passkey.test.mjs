@@ -184,8 +184,21 @@ function makeDocument({ host, tabId }) {
   const navigatorStub = {
     credentials: {
       create: async () => ({ __real: "create" }),
-      get: async () => {
+      get: async (opts) => {
         realGetCalls++;
+        // A CONDITIONAL request stays pending while the browser offers autofill
+        // — it does not resolve until the user picks something, or never. The
+        // stub used to return at once, which is a browser that does not exist
+        // and which quietly ended the ceremony before anyone could choose.
+        if (opts && (opts.mediation === "conditional" || opts.mediation === "silent")) {
+          return new Promise((_resolve, reject) => {
+            if (opts.signal) {
+              opts.signal.addEventListener("abort", () => reject(new Error("aborted")), {
+                once: true,
+              });
+            }
+          });
+        }
         return { __real: "get" };
       },
     },
@@ -207,6 +220,12 @@ function makeDocument({ host, tabId }) {
     DOMException,
     Object,
     Uint8Array,
+    // Conditional autofill is RACED against the browser, and the loser is
+    // aborted — so the shim needs the same abort primitives every browser has.
+    // Absent here, the harness modelled a browser that does not exist.
+    AbortController,
+    AbortSignal,
+    Promise,
     ...webauthn,
   });
   mainCtx.globalThis = mainCtx;
@@ -227,6 +246,20 @@ function makeDocument({ host, tabId }) {
       mainCtx.navigator.credentials.get({
         mediation,
         publicKey: { challenge: new Uint8Array([1, 2, 3]).buffer, rpId: host },
+      }),
+    // The picker (isolated world) asking the shim to answer a live conditional
+    // request with the row the user clicked.
+    pickPasskey: (credentialId) =>
+      new Promise((resolve) => {
+        const id = "t1";
+        isolated.push({
+          type: "message",
+          fn: (e) => {
+            const d = e && e.data;
+            if (d && d.__sybrPasskey === "use-result" && d.id === id) resolve(!!d.ok);
+          },
+        });
+        post({ __sybrPasskey: "use", id, credentialId: credentialId || null });
       }),
   };
 }
@@ -299,8 +332,48 @@ console.log("\nConditional mediation still defers before any round trip");
   const d = makeDocument({ host: "example.org", tabId: 12 });
   d.gesture();
   await tick();
-  await d.get("conditional");
+  // NOT awaited: a conditional request stays pending while autofill is offered,
+  // which is the point. What matters here is that the browser was handed it
+  // before any round trip to the app.
+  void d.get("conditional");
+  await tick();
   check("conditional UI", d.fellBackTo(), "mediation:conditional");
+}
+
+console.log("\nPicking a passkey in Arca's own list answers the live request");
+{
+  const d = makeDocument({ host: "example.org", tabId: 21 });
+  NATIVE_ANSWER = {
+    type: "passkey_assertion",
+    credential_id: [1, 2, 3, 4],
+    authenticator_data: Array.from({ length: 37 }, (_, i) => (i === 32 ? 0x05 : i)),
+    signature: [9, 9, 9],
+    user_handle: [7, 7],
+  };
+  d.gesture();
+  await tick();
+  // The page arms conditional autofill; the browser is offered it as before.
+  const ceremony = d.get("conditional");
+  await tick();
+  d.gesture();
+  await tick();
+  const used = await d.pickPasskey([1, 2, 3, 4]);
+  check("the picker's choice was accepted", used, true);
+  const credential = await ceremony;
+  // The PAGE's promise resolves with our credential — the whole point. Before
+  // this, a passkey row could only print a sentence.
+  check("the page received a credential", credential.type, "public-key");
+  check("browser leg was still offered it", d.realGetCalls() > 0, true);
+}
+
+console.log("\nA page cannot summon a ceremony by posting the message itself");
+{
+  const d = makeDocument({ host: "example.org", tabId: 22 });
+  // Conditional armed, but the user has touched nothing in this tab.
+  d.get("conditional");
+  await tick();
+  const used = await d.pickPasskey([1, 2, 3, 4]);
+  check("refused without a gesture", used, false);
 }
 
 console.log("\nThe credential handed to the relying party");
