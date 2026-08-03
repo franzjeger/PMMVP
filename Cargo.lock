@@ -5605,6 +5605,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "tempfile",
+ "url",
  "uuid",
  "vault-appgroup",
  "vault-core",

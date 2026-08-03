@@ -263,6 +263,23 @@ fn domain_matches(stored_url: &str, requested_url: &str) -> bool {
 /// `github.io`): the Public Suffix List guard stops a page scoping a passkey so
 /// broadly that mutually-distrusting tenants (e.g. every `*.github.io`) could
 /// share it — exactly what a browser's WebAuthn client enforces.
+/// `rp_id_matches_origin`, plus the origins the relying party itself published
+/// (WebAuthn L3 Related Origin Requests).
+///
+/// NEVER call this while holding the app-state lock: the first use per rpId
+/// makes an HTTPS request. The direct rule is tried first, so the common case
+/// costs nothing.
+fn rp_id_allows_origin(rp_id: &str, origin: &str) -> bool {
+    if rp_id_matches_origin(rp_id, origin) {
+        return true;
+    }
+    let host = host_of(origin);
+    if host.is_empty() {
+        return false;
+    }
+    crate::related_origins::is_related(rp_id, &host)
+}
+
 fn rp_id_matches_origin(rp_id: &str, origin: &str) -> bool {
     let host = host_of(origin);
     let rp = rp_id.trim().to_lowercase();
@@ -356,6 +373,9 @@ fn handle_request(
                 };
             };
             let mut items = Vec::new();
+            // Passkeys whose rp_id does not match this page directly. Resolved
+            // after the lock is released.
+            let mut deferred: Vec<(String, LoginMatch)> = Vec::new();
             if let Ok(summaries) = vault.list_items(false) {
                 for s in summaries {
                     if let Ok(item) = vault.get_item(s.id) {
@@ -375,27 +395,44 @@ fn handle_request(
                             }
                             // Passkeys for this site: surfaced so the picker can
                             // show the user a passkey exists. Matched by the same
-                            // rp_id<->origin rule the ceremony uses, so e.g. a
-                            // login.microsoft.com passkey does NOT show on a
-                            // login.microsoftonline.com page (distinct domains).
+                            // rule the ceremony uses. Those that do not match
+                            // DIRECTLY are set aside — deciding them needs the
+                            // relying party's related-origins file, and fetching
+                            // it under this lock would stall every other command
+                            // behind a network request.
                             VaultItem::Passkey {
                                 rp_id,
                                 user_name,
                                 title,
                                 ..
-                            } if rp_id_matches_origin(rp_id, &url) => {
-                                items.push(LoginMatch {
+                            } => {
+                                let entry = LoginMatch {
                                     id: item.id.to_string(),
                                     title: title.clone(),
                                     username: user_name.clone(),
                                     kind: "passkey".into(),
-                                });
+                                };
+                                if rp_id_matches_origin(rp_id, &url) {
+                                    items.push(entry);
+                                } else {
+                                    deferred.push((rp_id.clone(), entry));
+                                }
                             }
                             // Non-matching logins/passkeys and other item kinds
                             // (SSH keys, secure notes) are not autofillable here.
                             _ => {}
                         }
                     }
+                }
+            }
+            drop(st);
+
+            // Now the network part, off the lock. Only for passkeys that did not
+            // match outright, and only one request per relying party per twelve
+            // hours — a vault with no such passkeys does no I/O at all.
+            for (rp_id, entry) in deferred {
+                if rp_id_allows_origin(&rp_id, &url) {
+                    items.push(entry);
                 }
             }
             Response::Logins { items }
@@ -490,7 +527,10 @@ fn handle_request(
                 };
             }
             // Anti-phishing: the RP id must belong to the page's origin.
-            if !rp_id_matches_origin(&rp_id, &origin) {
+            // Related Origin Requests apply to the ceremony too — a passkey
+            // registered for login.microsoft.com must be usable on the page
+            // Microsoft actually redirects you to. No lock is held here.
+            if !rp_id_allows_origin(&rp_id, &origin) {
                 return Response::Error {
                     message: "origin_mismatch".into(),
                 };
@@ -675,7 +715,10 @@ fn handle_request(
                     message: "passkeys_disabled".into(),
                 };
             }
-            if !rp_id_matches_origin(&rp_id, &origin) {
+            // Related Origin Requests apply to the ceremony too — a passkey
+            // registered for login.microsoft.com must be usable on the page
+            // Microsoft actually redirects you to. No lock is held here.
+            if !rp_id_allows_origin(&rp_id, &origin) {
                 return Response::Error {
                     message: "origin_mismatch".into(),
                 };

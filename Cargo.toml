@@ -73,6 +73,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 thiserror = "2"
 # Public Suffix List, compiled in — so a page can't scope a passkey to an eTLD
 # (e.g. "github.io", "co.uk") that crosses mutually-distrusting tenants.
+url = "2"
 psl = "2"
 
 # --- network ---

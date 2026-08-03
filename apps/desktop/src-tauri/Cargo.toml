@@ -29,6 +29,9 @@ vault-appgroup.workspace = true
 uuid.workspace = true
 # Public Suffix List for passkey RP-ID validation (reject eTLD-scoped rp_ids).
 psl.workspace = true
+# Origin parsing for WebAuthn related-origin lists: a hand-rolled prefix check
+# reads "https://good.test@evil.test" as good.test.
+url.workspace = true
 # Cross-platform clipboard, used so secret copies + auto-clear happen in Rust
 # rather than exposing plaintext to the webview's clipboard API.
 arboard = "3"
