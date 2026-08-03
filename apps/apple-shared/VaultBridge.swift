@@ -39,6 +39,27 @@ enum VaultShared {
     static let keychainService = "no.sybr.vault"
     static let keychainAccount = "default-vault"
 
+    /// The account name of the device key THIS process reads.
+    ///
+    /// On macOS it is deliberately not `keychainAccount`. The Tauri app keeps
+    /// its own device key as a plain item in the login keychain under
+    /// service+account `no.sybr.vault`/`default-vault`; one build gave the
+    /// extension's data-protection copy the same pair, and the app's own
+    /// lookup started resolving to an access-controlled item it was never
+    /// built to read — Touch ID fired four times over a single unlock and the
+    /// unlock still fell back to the master password.
+    ///
+    /// iOS has only the data-protection keychain and no second writer, so
+    /// there is nothing to collide with and the name stays as it was — a
+    /// change there would strand every phone's existing enrolment.
+    static var deviceKeyAccount: String {
+        #if os(macOS)
+        "default-vault-autofill"
+        #else
+        keychainAccount
+        #endif
+    }
+
     /// The `ABI_VERSION` in crates/vault-ffi/src/lib.rs that this file was
     /// written against, enforced at open time. A static library from a different
     /// ABI would otherwise be called through the wrong signatures and fail
@@ -1061,7 +1082,7 @@ final class VaultSession: @unchecked Sendable {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: VaultShared.keychainService,
-            kSecAttrAccount as String: VaultShared.keychainAccount,
+            kSecAttrAccount as String: VaultShared.deviceKeyAccount,
             kSecAttrAccessGroup as String: VaultShared.keychainAccessGroup,
         ]
         #if os(macOS)

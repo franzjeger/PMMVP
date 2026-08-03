@@ -700,6 +700,11 @@ pub fn enable_quick_unlock(state: St<'_>) -> Result<(), CmdError> {
         store.enable_quick_unlock(vault)?;
     }
     persist(&mut st)?;
+    // Share the brand-new key with the AutoFill extension NOW. It is otherwise
+    // shared on unlock, and the user who just switched Touch ID on is already
+    // unlocked — so AutoFill would keep failing until the next lock/unlock
+    // cycle, which reads as "turning it on did nothing".
+    let _ = mirror_for_autofill(&st);
     st.touch();
     Ok(())
 }
@@ -914,6 +919,11 @@ pub fn disable_quick_unlock(state: St<'_>) -> Result<(), CmdError> {
         let vault = vault.as_mut().ok_or_else(CmdError::no_vault)?;
         store.disable_quick_unlock(vault)?;
     }
+    // Turning quick unlock off must also take away the extension's copy.
+    // Leaving it behind would let AutoFill go on opening the vault with a key
+    // the user just revoked.
+    #[cfg(target_os = "macos")]
+    let _ = vault_sharedkey::clear();
     persist(&mut st)?;
     st.touch();
     Ok(())

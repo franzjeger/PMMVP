@@ -32,20 +32,47 @@
 // attributes decide WHICH item is touched; a drift in any one of them is an
 // extension that authenticates and then finds nothing.
 static NSString *const kService = @"no.sybr.vault";
-static NSString *const kAccount = @"default-vault";
 static NSString *const kAccessGroup = @"LY6LJ395B8.no.sybr.vault.shared";
 
-static NSMutableDictionary *baseQuery(void) {
+// The extension's copy MUST NOT share service+account with the app's own
+// login-keychain device key.
+//
+// It did for one build, and the app broke: its `keychain::get` has no
+// LAContext and does not expect an access-controlled item, so the lookup
+// resolved to THIS item, fired Touch ID (four times over one unlock), failed
+// to read, and fell back to the master password every time. The app looked
+// broken while AutoFill worked.
+//
+// crates/vault-store/src/keychain.rs documents that exact failure from an
+// earlier attempt. A distinct account name is what keeps the two lookups from
+// ever meeting.
+static NSString *const kAccount = @"default-vault-autofill";
+
+// What that one build wrote. Purged wherever it may still exist.
+static NSString *const kLegacyAccount = @"default-vault";
+
+static NSMutableDictionary *queryFor(NSString *account) {
   return [@{
     (__bridge id)kSecClass : (__bridge id)kSecClassGenericPassword,
     (__bridge id)kSecAttrService : kService,
-    (__bridge id)kSecAttrAccount : kAccount,
+    (__bridge id)kSecAttrAccount : account,
     (__bridge id)kSecAttrAccessGroup : kAccessGroup,
     // Without this the query goes to the login keychain, which has no access
     // groups — it would find the app's own copy and quietly touch the wrong
     // item.
     (__bridge id)kSecUseDataProtectionKeychain : @YES,
   } mutableCopy];
+}
+
+static NSMutableDictionary *baseQuery(void) { return queryFor(kAccount); }
+
+/// Remove the colliding item written by the build that shared an account name
+/// with the app's own key. Safe to call always; missing is success.
+int arca_sharedkey_purge_legacy(void) {
+  @autoreleasepool {
+    OSStatus status = SecItemDelete((__bridge CFDictionaryRef)queryFor(kLegacyAccount));
+    return status == errSecItemNotFound ? 0 : (int)status;
+  }
 }
 
 /// Write `key` (RAW bytes — the extension passes them straight to

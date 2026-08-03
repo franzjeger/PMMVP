@@ -64,6 +64,30 @@ pub fn store(key: &[u8]) -> Mirrored {
     }
 }
 
+/// Delete the item written by the one build that gave the extension's key the
+/// same service+account as the app's own login-keychain key.
+///
+/// That collision made the app's `keychain::get` resolve to an
+/// access-controlled item it was not built to read: Touch ID fired repeatedly
+/// and the unlock fell back to the master password every time. Called at
+/// startup so a machine that ran that build heals itself.
+#[cfg(target_os = "macos")]
+pub fn purge_legacy() -> Mirrored {
+    extern "C" {
+        fn arca_sharedkey_purge_legacy() -> i32;
+    }
+    // SAFETY: no arguments, no borrowed state; returns an OSStatus.
+    match unsafe { arca_sharedkey_purge_legacy() } {
+        0 => Mirrored::Ok,
+        status => Mirrored::Failed(status),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn purge_legacy() -> Mirrored {
+    Mirrored::NotApplicable
+}
+
 /// Remove the shared copy. Missing is success.
 #[cfg(target_os = "macos")]
 pub fn clear() -> Mirrored {

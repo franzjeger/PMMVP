@@ -102,6 +102,14 @@ fn main() {
             // backup); elsewhere the app-data dir.
             let vault_path = resolve_vault_path(app, &data_dir);
 
+            // One build shipped the AutoFill device key under the SAME
+            // service+account as the app's own login-keychain key, and the
+            // app's unlock started resolving to it: four Touch ID prompts and
+            // a master-password fallback every time. Machines that ran that
+            // build heal themselves here.
+            #[cfg(target_os = "macos")]
+            let _ = vault_sharedkey::purge_legacy();
+
             let store = VaultStore::new(vault_path, KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
             // The sandboxed AutoFill extension can only read the App Group
             // container, so every save is mirrored there. Set on the store
