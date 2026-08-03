@@ -5617,6 +5617,7 @@ dependencies = [
  "vault-appgroup",
  "vault-core",
  "vault-credstore",
+ "vault-sharedkey",
  "vault-store",
  "vault-sync",
  "vault-winhello",
@@ -5652,6 +5653,13 @@ version = "0.3.0"
 dependencies = [
  "region",
  "zeroize",
+]
+
+[[package]]
+name = "vault-sharedkey"
+version = "0.3.0"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

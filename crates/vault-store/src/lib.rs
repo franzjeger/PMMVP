@@ -190,6 +190,19 @@ impl VaultStore {
         Ok(())
     }
 
+    /// The device key quick unlock uses, if it is enabled.
+    ///
+    /// Exposed for exactly one caller: the macOS AutoFill extension runs
+    /// sandboxed and cannot read this keychain, so the app mirrors the same key
+    /// into the shared access group the extension *can* read (see
+    /// `vault-sharedkey`). Handing out the key is not a widening of exposure —
+    /// it is already in this process on every quick unlock — but it is not a
+    /// general-purpose accessor either. Callers must not persist it anywhere
+    /// the OS keychain is not already protecting.
+    pub fn device_key(&self) -> Result<Option<SymmetricKey>> {
+        keychain::get(&self.keychain_service, &self.keychain_account)
+    }
+
     /// Disable quick-unlock: delete the keychain device key and clear the
     /// header. The caller must [`save`](Self::save) afterward.
     pub fn disable_quick_unlock(&self, vault: &mut Vault) -> Result<()> {

@@ -201,6 +201,10 @@ fn persist(st: &mut AppState) -> Result<(), CmdError> {
     store.save_synced(vault)?;
     // Local state changed: let the cloud-sync loop know there is work.
     crate::sync::mark_dirty();
+    // The macOS AutoFill extension reads its own copy in the App Group
+    // container. Refresh it here, at the one place every edit passes through,
+    // so a password changed in the app is the password Safari fills.
+    let _ = mirror_vault_file(st);
     Ok(())
 }
 
@@ -398,12 +402,16 @@ fn publish_identities(app: &tauri::AppHandle) {
     use tauri::Manager;
     let app = app.clone();
     std::thread::spawn(move || {
-        let identities = {
+        let (identities, mirror) = {
             let state = app.state::<Mutex<AppState>>();
             let Ok(st) = state.lock() else { return };
             let Some(vault) = st.vault.as_ref().filter(|v| v.is_unlocked()) else {
                 return;
             };
+            // Publishing without this is the failure that looks most like
+            // success: the identities appear in Safari, and every one of them
+            // fails to fill.
+            let mirror = mirror_for_autofill(&st);
             let Ok(summaries) = vault.list_items(false) else {
                 return;
             };
@@ -438,9 +446,33 @@ fn publish_identities(app: &tauri::AppHandle) {
                     _ => {}
                 }
             }
-            out
+            (out, mirror)
         };
         let outcome = vault_credstore::replace(&identities);
+
+        // Written down, not only emitted. The last time this answer existed
+        // only as an event, nothing listened and the question "did it publish?"
+        // had no way to be answered at all.
+        if let Ok(st) = app.state::<Mutex<AppState>>().lock() {
+            if let Some(dir) = st.store.path().parent() {
+                use std::io::Write;
+                let stamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(dir.join("autofill-publish.log"))
+                {
+                    let _ = writeln!(
+                        f,
+                        "{stamp}\tcount={}\t{outcome}\t{mirror}",
+                        identities.len()
+                    );
+                }
+            }
+        }
         // Told, not swallowed: "AutoFill is off for Arca" is a switch the user
         // can flip, and the store accepts a publish in that state and discards
         // it — so silence here would look exactly like success.
@@ -453,6 +485,59 @@ fn publish_identities(app: &tauri::AppHandle) {
             }),
         );
     });
+}
+
+/// Give the sandboxed AutoFill extension the two things it needs to serve what
+/// [`publish_identities`] advertises: the vault bytes, and the key that opens
+/// them.
+///
+/// The extension is sandboxed, so it can reach exactly one vault file (the App
+/// Group container) and exactly one keychain (data-protection, shared access
+/// group). The app uses neither: it keeps the canonical vault in app data and
+/// its own device key in the login keychain. `ArcaHost` used to bridge that gap
+/// on unlock, and when that harness was deleted the bridge went with it —
+/// leaving an extension that appeared in Safari, took a fingerprint, and then
+/// failed with `noDeviceKey`, against a container copy that had stopped being
+/// updated two weeks earlier.
+///
+/// Both halves are best-effort by design. A credential provider that cannot
+/// start is an inconvenience; an app that will not unlock is a lockout.
+#[cfg(target_os = "macos")]
+fn mirror_vault_file(st: &AppState) -> &'static str {
+    let Some(container) = vault_appgroup::container_path(crate::APP_GROUP) else {
+        return "no App Group container (signed without the profile?)";
+    };
+    // Every save, not only unlock: a password changed at 10:00 that AutoFill
+    // still fills with the 09:00 value is worse than no AutoFill at all.
+    match std::fs::copy(st.store.path(), container.join("default.vault")) {
+        Ok(_) => "vault mirrored",
+        Err(_) => "vault copy FAILED",
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn mirror_vault_file(_st: &AppState) -> &'static str {
+    "not macOS"
+}
+
+#[cfg(target_os = "macos")]
+fn mirror_for_autofill(st: &AppState) -> String {
+    let vault_note = mirror_vault_file(st);
+
+    // The extension opens with the device key and nothing else — it has no way
+    // to ask for the master password. So AutoFill on macOS requires quick
+    // unlock, and saying so beats an extension that silently never works.
+    let key_note = match st.store.device_key() {
+        Ok(Some(key)) => vault_sharedkey::store(key.as_bytes()).to_string(),
+        Ok(None) => "quick unlock is off, so AutoFill has no key to open with".to_string(),
+        Err(_) => "could not read the device key".to_string(),
+    };
+    format!("{vault_note}; {key_note}")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn mirror_for_autofill(_st: &AppState) -> String {
+    "not macOS".to_string()
 }
 
 /// Kick a background sync right away (used after unlock so peer changes land

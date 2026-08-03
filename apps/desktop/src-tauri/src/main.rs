@@ -27,7 +27,7 @@ const KEYCHAIN_ACCOUNT: &str = "default-vault";
 
 /// The App Group shared with the macOS AutoFill extension.
 #[cfg(target_os = "macos")]
-const APP_GROUP: &str = "group.no.sybr.vault";
+pub(crate) const APP_GROUP: &str = "group.no.sybr.vault";
 
 /// Last-modified time, or `None` when the file is missing/unreadable.
 #[cfg(target_os = "macos")]

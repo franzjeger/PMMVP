@@ -8,6 +8,7 @@ members = [
     "crates/vault-appgroup",
     "crates/vault-winhello",
     "crates/vault-credstore",
+    "crates/vault-sharedkey",
     "crates/vault-sync",
     "apps/desktop/src-tauri",
     "extension/native-host",

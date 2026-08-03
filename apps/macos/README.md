@@ -91,9 +91,32 @@ open Arca.xcodeproj
 
 **The capability must be on BOTH targets.** The single thing that made Arca
 appear under "AutoFill from": the `authentication-services.autofill-credential-provider`
-capability has to be on the **containing app** (`ArcaHost`) as well as the
-extension. With it on the extension alone the extension registers with `pkd` but
-the OS never offers it as a provider — no error anywhere.
+capability has to be on the **containing app** as well as the extension. With it
+on the extension alone the extension registers with `pkd` but the OS never
+offers it as a provider — no error anywhere. Worse, `ASCredentialIdentityStore`
+still accepts a publish in that state and discards it, so the app can report
+publishing hundreds of logins while the list stays empty.
+
+This has now cost two separate evenings, because "the containing app" changed
+underneath the note. The extension used to be hosted by `ArcaHost`, whose App ID
+carried the capability; when the extension moved into `Arca.app` the capability
+did not come with it, and the symptom was identical the second time. So:
+
+- The capability lives on the App ID of **whatever bundle currently contains
+  `ArcaAutoFill.appex`** — today `no.sybr.vault`.
+- Enabling it in the portal is not enough. The provisioning profile is a
+  snapshot: one issued before the change does not carry the entitlement, and
+  AMFI kills the app at launch if it is signed with the entitlement but an
+  older profile. Re-issue the profile after enabling the capability.
+- `scripts/install-app-macos.sh` now reads the SEALED entitlements back off
+  both signed bundles and refuses to install if either lacks the capability.
+  Trust that check over any plist in the tree.
+
+Confirm with:
+
+```sh
+codesign -d --entitlements - --xml /Applications/Arca.app | plutil -p - | grep autofill
+```
 
 Other things the OS silently requires:
 

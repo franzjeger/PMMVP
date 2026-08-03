@@ -414,6 +414,21 @@ export function onVaultUnlocked(cb: () => void): Promise<UnlistenFn> {
   return listen("vault-unlocked", () => cb());
 }
 
+/**
+ * Fired after the app publishes its logins and passkeys to the OS AutoFill
+ * store. Worth surfacing because the store ACCEPTS a publish while AutoFill is
+ * switched off for Arca and silently discards it — so without this, "nothing
+ * shows up in Safari" and "everything published fine" look identical.
+ */
+export function onAutoFillPublished(
+  cb: (info: { count: number; ok: boolean; message: string }) => void,
+): Promise<UnlistenFn> {
+  return listen<{ count: number; ok: boolean; message: string }>(
+    "autofill-published",
+    (e) => cb(e.payload),
+  );
+}
+
 /** Fired by the backend when the vault auto-locks (idle or window blur). */
 export function onVaultLocked(cb: (reason: string) => void): Promise<UnlistenFn> {
   return listen<string>("vault-locked", (e) => cb(e.payload));
