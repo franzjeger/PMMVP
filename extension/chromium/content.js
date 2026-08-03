@@ -583,30 +583,77 @@
     if (field.dataset.sybrAttached) return;
     field.dataset.sybrAttached = "1";
 
+    // The badge lives in a SHADOW ROOT, and that is the whole point.
+    //
+    // As a plain element it inherited the page's own button styling: our rule
+    // is a single class selector, so any site with a `button { padding: ... }`
+    // beats it. On Microsoft's sign-in that turned a 22px key into a 105px
+    // white slab parked beside the field. A shadow root is the only way to say
+    // "these styles, and nothing the page has to say about it".
+    const host = document.createElement("div");
+    host.className = "sybr-badge-host";
+    // The HOST can be reached by page CSS too, so its own geometry is set
+    // inline and marked important rather than left to a stylesheet.
+    for (const [prop, value] of [
+      ["position", "fixed"],
+      ["z-index", "2147483646"],
+      ["width", "22px"],
+      ["height", "22px"],
+      ["margin", "0"],
+      ["padding", "0"],
+      ["border", "0"],
+      ["background", "transparent"],
+      ["pointer-events", "auto"],
+    ]) {
+      host.style.setProperty(prop, value, "important");
+    }
+    // Closed: the page has no business reaching in and restyling it.
+    const shadow = host.attachShadow({ mode: "closed" });
+    shadow.innerHTML =
+      "<style>" +
+      ":host { all: initial; }" +
+      "button {" +
+      "  width: 22px; height: 22px; padding: 0; margin: 0;" +
+      "  display: flex; align-items: center; justify-content: center;" +
+      "  line-height: 1; box-sizing: border-box;" +
+      "  border: 1px solid rgba(0,0,0,0.12); border-radius: 6px;" +
+      "  background: #ffffff; color: #0a84ff;" +
+      "  box-shadow: 0 1px 4px rgba(0,0,0,0.18);" +
+      "  cursor: pointer; opacity: 0.9;" +
+      "}" +
+      "button:hover { opacity: 1; }" +
+      "svg { width: 14px; height: 14px; display: block; }" +
+      "@media (prefers-color-scheme: dark) {" +
+      "  button { background: #2c2c2e; color: #64a8ff;" +
+      "           border-color: rgba(255,255,255,0.14);" +
+      "           box-shadow: 0 1px 4px rgba(0,0,0,0.4); }" +
+      "}" +
+      "</style>";
+
     const badge = document.createElement("button");
     badge.type = "button";
-    badge.className = "sybr-badge";
     badge.title = "Autofill from Arca";
     // Inline SVG key (currentColor): renders identically on every platform,
     // unlike the key emoji which falls back to a dark monochrome glyph on
-    // Windows. Colors come from content.css (theme-aware).
+    // Windows.
     badge.innerHTML =
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
       '<circle cx="8" cy="15" r="4"/><path d="M10.85 12.15 19 4"/><path d="m18 5 2 2"/><path d="m15 8 2 2"/></svg>';
+    shadow.appendChild(badge);
 
     const place = () => {
       const rect = field.getBoundingClientRect();
       // Hide when the field is gone or not rendered (offsetParent null covers
       // display:none and detached views).
       if (field.offsetParent === null || (rect.width === 0 && rect.height === 0)) {
-        badge.style.display = "none";
+        host.style.setProperty("display", "none", "important");
         return;
       }
-      badge.style.display = "flex";
+      host.style.setProperty("display", "block", "important");
       // Viewport coords (position: fixed) — no scroll offsets. Vertically
       // centered on the field, tucked just inside its right edge.
-      badge.style.top = `${rect.top + rect.height / 2 - 11}px`;
-      badge.style.left = `${rect.right - 28}px`;
+      host.style.setProperty("top", `${rect.top + rect.height / 2 - 11}px`, "important");
+      host.style.setProperty("left", `${rect.right - 28}px`, "important");
     };
 
     badge.addEventListener("mousedown", (e) => e.preventDefault());
@@ -616,7 +663,7 @@
       showMatches(field, false, isIdentifier); // manual: always give feedback
     });
 
-    document.body.appendChild(badge);
+    document.body.appendChild(host);
     placements.push(place);
     place();
     window.addEventListener("scroll", place, { passive: true });
