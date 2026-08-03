@@ -126,7 +126,17 @@ const swCtx = vm.createContext({
   Map,
 });
 swCtx.globalThis = swCtx;
-vm.runInContext(src("background.js"), swCtx);
+// background.js is an ES module (it imports the bookmark reconciler), and
+// `vm.runInContext` runs scripts, not modules. The import is stripped and the
+// two names it brings in are supplied on the context instead — the same thing
+// the harness already does for every browser API. The bookmark logic has its
+// own tests in bookmarks.test.mjs; nothing here exercises it.
+swCtx.readAll = async () => [];
+swCtx.apply = async () => ({ added: 0, removed: 0, refused: null });
+vm.runInContext(
+  src("background.js").replace(/^import\s[^\n]*\n/m, ""),
+  swCtx,
+);
 
 /** Deliver a message to the worker the way chrome.runtime.sendMessage does. */
 function toWorker(msg, tabId) {

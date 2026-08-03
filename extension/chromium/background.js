@@ -6,6 +6,8 @@
 // releases a credential on an explicit "fill" for a matching origin while
 // unlocked; "listLogins" only ever returns metadata.
 
+import { readAll, apply } from "./bookmarks.js";
+
 const api = globalThis.browser ?? globalThis.chrome;
 
 // Must match the native messaging host manifest `name`.
@@ -287,6 +289,56 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         length: msg.length,
         symbols: msg.symbols,
       }).then(sendResponse);
+      return true;
+
+    // ── Bookmarks ─────────────────────────────────────────────────────────
+    //
+    // Both directions are driven from the popup, never on a timer. Push-out is
+    // the only thing Arca does that can DESTROY something the vault cannot
+    // restore — bookmarks live in the browser — so it does not happen while
+    // nobody is looking.
+    case "bookmarksToArca":
+      readAll(api)
+        .then((items) =>
+          sendNative({
+            type: "import_bookmarks",
+            // Metadata only, and only what a bookmark is: no ids, no dates.
+            items: items.map((b) => ({
+              title: b.title,
+              url: b.url,
+              folder: b.folder,
+            })),
+          }),
+        )
+        .then((r) =>
+          sendResponse(
+            r.ok && r.response && r.response.type === "imported_bookmarks"
+              ? { ok: true, added: r.response.added, read: true }
+              : { ok: false, error: (r.response && r.response.message) || r.error },
+          ),
+        )
+        .catch((e) => sendResponse({ ok: false, error: String(e) }));
+      return true;
+
+    case "bookmarksFromArca":
+      sendNative({ type: "list_bookmarks" })
+        .then(async (r) => {
+          if (!r.ok || !r.response || r.response.type !== "bookmarks") {
+            return {
+              ok: false,
+              error: (r.response && r.response.message) || r.error || "unavailable",
+            };
+          }
+          // `deletions` and `confirmed` come from the popup, so removing
+          // anything is always something a person chose twice.
+          const res = await apply(api, r.response.items, {
+            deletions: !!msg.deletions,
+            confirmed: !!msg.confirmed,
+          });
+          return { ok: true, ...res };
+        })
+        .then(sendResponse)
+        .catch((e) => sendResponse({ ok: false, error: String(e) }));
       return true;
 
     case "saveLogin":

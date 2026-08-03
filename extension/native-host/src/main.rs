@@ -53,6 +53,13 @@ enum Request {
         #[serde(default)]
         user_handle: Vec<u8>,
     },
+    /// Hand the browser's bookmarks to Arca.
+    ImportBookmarks {
+        #[serde(default)]
+        items: Vec<serde_json::Value>,
+    },
+    /// Fetch Arca's whole bookmark list, to apply to this browser.
+    ListBookmarks,
     /// Assert a WebAuthn passkey (navigator.credentials.get).
     PasskeyGet {
         origin: String,
@@ -90,6 +97,14 @@ enum Request {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Response {
+    /// How many bookmarks an import added.
+    ImportedBookmarks {
+        added: u64,
+    },
+    /// Arca's bookmark list, for the extension to apply to this browser.
+    Bookmarks {
+        items: Vec<serde_json::Value>,
+    },
     Hello {
         name: String,
         version: String,
@@ -222,6 +237,36 @@ fn handle(request: Request) -> Response {
                 message: "No matching passkey (or app locked / origin mismatch).".to_string(),
             },
         },
+        Request::ImportBookmarks { items } => {
+            match bridge_request(serde_json::json!({
+                "type": "import_bookmarks", "items": items,
+            })) {
+                Some(v) if v.get("type").and_then(|t| t.as_str()) == Some("imported_bookmarks") => {
+                    Response::ImportedBookmarks {
+                        added: v.get("added").and_then(|a| a.as_u64()).unwrap_or(0),
+                    }
+                }
+                _ => Response::Error {
+                    message: "Could not import bookmarks (app locked or not running).".to_string(),
+                },
+            }
+        }
+        Request::ListBookmarks => {
+            match bridge_request(serde_json::json!({ "type": "list_bookmarks" })) {
+                Some(v) if v.get("type").and_then(|t| t.as_str()) == Some("bookmarks") => {
+                    Response::Bookmarks {
+                        items: v
+                            .get("items")
+                            .and_then(|i| i.as_array())
+                            .cloned()
+                            .unwrap_or_default(),
+                    }
+                }
+                _ => Response::Error {
+                    message: "Could not read bookmarks (app locked or not running).".to_string(),
+                },
+            }
+        }
         Request::SaveProbe {
             url,
             username,

@@ -131,6 +131,21 @@
       <p class="hint" id="policyHint"></p>
       <ul id="siteList"></ul>
     </section>
+    <section id="bookmarks">
+      <hr />
+      <h2>Bookmarks</h2>
+      <p class="hint">
+        Arca keeps the master list. Send this browser's bookmarks up, then
+        write the list back into any browser.
+      </p>
+      <button id="bmUp" type="button">Send this browser's bookmarks to Arca</button>
+      <button id="bmDown" type="button">Write Arca's bookmarks into this browser</button>
+      <label class="hint">
+        <input id="bmDelete" type="checkbox" />
+        Also remove bookmarks Arca does not have
+      </label>
+      <p class="hint" id="bmStatus"></p>
+    </section>
     <script src="popup.js"></script>
   </body>
 </html>

@@ -64,6 +64,20 @@ pub struct ConsentContext {
     pub title: String,
 }
 
+/// One bookmark across the extension boundary.
+///
+/// Deliberately not the vault's own type: this crosses to a browser extension,
+/// so it carries a title, a URL and a folder and nothing else — no item id, no
+/// timestamps, nothing that would let a compromised extension reason about the
+/// rest of the vault.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BookmarkWire {
+    pub title: String,
+    pub url: String,
+    #[serde(default)]
+    pub folder: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Request {
@@ -112,6 +126,12 @@ enum Request {
     },
     /// Store a new / updated login captured from a submitted form (after the
     /// user clicked "Save" in the browser prompt).
+    /// Bookmarks read out of the browser, on their way into the vault.
+    ImportBookmarks {
+        items: Vec<BookmarkWire>,
+    },
+    /// Arca's whole bookmark list, on its way out to the browser.
+    ListBookmarks,
     SaveLogin {
         url: String,
         #[serde(default)]
@@ -168,6 +188,12 @@ impl Request {
             Request::Unlock
             | Request::Hello { .. }
             | Request::Match { .. }
+            // Bookmark sync is one request that completes on its own, and
+            // push-out is the kind of thing that later grows a timer. Counting
+            // it would then let a browser hold the vault open just by existing,
+            // so it does not count now, before anyone can rely on it doing so.
+            | Request::ImportBookmarks { .. }
+            | Request::ListBookmarks
             | Request::SaveProbe { .. } => false,
         }
     }
@@ -209,6 +235,14 @@ enum Response {
     },
     /// Arca was brought forward and asked the user to unlock. Says nothing
     /// about whether they did — the extension retries and finds out.
+    /// How many of an import were new.
+    ImportedBookmarks {
+        added: usize,
+    },
+    /// The master list, for the extension to apply.
+    Bookmarks {
+        items: Vec<BookmarkWire>,
+    },
     UnlockRequested,
     Error {
         message: String,
@@ -778,6 +812,12 @@ fn handle_request(
                     }
                 }
                 let Some((cid, uh, pk)) = found else {
+                    // Logged after the guard is gone. The commonest and least
+                    // obvious outcome: the site offered a passkey, Arca has
+                    // none for it, and the browser silently takes over — from
+                    // the outside indistinguishable from Arca being broken.
+                    drop(st);
+                    log_passkey_outcome(state, &rp_id, "no_passkey_stored");
                     return Response::Error {
                         message: "not_found".into(),
                     };
@@ -792,6 +832,9 @@ fn handle_request(
             // which relying parties trust for step-up defenses. `false` = this
             // is a sign-in, so the prompt says "sign in" (not "create").
             let Some(user_verified) = approve_passkey(&rp_id, false, app, consent) else {
+                // Cancelled, or a biometric prompt that never came back — which
+                // looks to the user like the browser hanging on the sign-in.
+                log_passkey_outcome(state, &rp_id, "declined_or_no_verification");
                 return Response::Error {
                     message: "denied".into(),
                 };
@@ -804,6 +847,7 @@ fn handle_request(
                     message: "internal".into(),
                 };
             };
+            log_passkey_outcome(state, &rp_id, "signed");
             if let Some(app) = app {
                 let _ = app.emit("passkey-used", rp_id);
             }
@@ -814,6 +858,80 @@ fn handle_request(
                 user_handle,
             }
         }
+        // Bookmarks are not secrets, but the SET of them is: it describes
+        // where someone works, banks and reads. So both directions need the
+        // vault open, exactly like a password would.
+        Request::ImportBookmarks { items } => {
+            let Ok(mut st) = state.lock() else {
+                return Response::Error { message: "internal".into() };
+            };
+            let mut seen: std::collections::HashSet<(String, String)> =
+                std::collections::HashSet::new();
+            let mut added = 0usize;
+            {
+                let Some(vault) = st.vault.as_mut().filter(|v| v.is_unlocked()) else {
+                    return Response::Error { message: "locked".into() };
+                };
+                if let Ok(summaries) = vault.list_items(false) {
+                    for sum in summaries {
+                        let Ok(item) = vault.get_item(sum.id) else { continue };
+                        if let VaultItem::Bookmark { url, folder, .. } = &item.data {
+                            seen.insert((url.clone(), folder.clone()));
+                        }
+                    }
+                }
+                for b in items {
+                    if b.url.is_empty() || !seen.insert((b.url.clone(), b.folder.clone())) {
+                        continue;
+                    }
+                    let item = vault_core::Item::new(
+                        VaultItem::Bookmark {
+                            title: b.title,
+                            url: b.url,
+                            folder: b.folder,
+                            notes: String::new(),
+                        },
+                        0,
+                    );
+                    if vault.upsert_item(item).is_ok() {
+                        added += 1;
+                    }
+                }
+            }
+            if added > 0 {
+                // A bulk insert is what a rollback point is for.
+                st.store.snapshot_now();
+                let AppState { store, vault, .. } = &mut *st;
+                if let Some(v) = vault.as_mut() {
+                    let _ = store.save_synced(v);
+                }
+            }
+            Response::ImportedBookmarks { added }
+        }
+
+        Request::ListBookmarks => {
+            let Ok(st) = state.lock() else {
+                return Response::Error { message: "internal".into() };
+            };
+            let Some(vault) = st.vault.as_ref().filter(|v| v.is_unlocked()) else {
+                return Response::Error { message: "locked".into() };
+            };
+            let mut items = Vec::new();
+            if let Ok(summaries) = vault.list_items(false) {
+                for sum in summaries {
+                    let Ok(item) = vault.get_item(sum.id) else { continue };
+                    if let VaultItem::Bookmark { title, url, folder, .. } = &item.data {
+                        items.push(BookmarkWire {
+                            title: title.clone(),
+                            url: url.clone(),
+                            folder: folder.clone(),
+                        });
+                    }
+                }
+            }
+            Response::Bookmarks { items }
+        }
+
         Request::SaveProbe {
             url,
             username,
@@ -1221,13 +1339,36 @@ struct PasskeySuppressedDto {
 ///
 /// Non-secret by construction — an origin and an rp_id, which the relying party
 /// already knows. Bounded so it cannot grow without limit.
+/// Record how a ceremony ENDED.
+///
+/// The arrival line alone was not enough the first time it mattered: a UniFi
+/// sign-in was logged as having reached the app, and the log had nothing to say
+/// about whether it found a passkey, was refused, timed out on a Touch ID
+/// prompt nobody saw, or signed successfully. Those need four different fixes.
+pub fn log_passkey_outcome(state: &Mutex<AppState>, rp_id: &str, outcome: &str) {
+    log_line(state, &format!("\tresult\trp_id={rp_id}\t{outcome}"));
+}
+
 fn log_passkey_request(state: &Mutex<AppState>, origin: &str, rp_id: &str, is_create: bool) {
+    let kind = if is_create { "create" } else { "get" };
+    log_line(state, &format!("{kind}\torigin={origin}\trp_id={rp_id}"));
+}
+
+/// Append one tab-separated line to `passkey-requests.log`, timestamped.
+///
+/// The vault's own directory — no extra dependency, and it is where every other
+/// file of ours already lives. The lock is taken and dropped here, never held
+/// across the write.
+fn log_line(state: &Mutex<AppState>, rest: &str) {
     use std::io::Write;
-    // The vault's own directory — no extra dependency, and it is where every
-    // other file of ours already lives. The lock is taken and dropped here, not
-    // held across the write.
+    // `try_lock`, NOT `lock`. This is called from inside request handlers, and
+    // one of them called it while already holding the guard — a std::sync
+    // Mutex is not reentrant, so the app deadlocked on its own debug log and
+    // the passkey test hung forever. A log line is worth losing; a hung
+    // credential bridge is not, and the next caller to make the same mistake
+    // should get a missing line rather than a frozen browser.
     let Some(dir) = state
-        .lock()
+        .try_lock()
         .ok()
         .and_then(|st| st.store.path().parent().map(|p| p.to_path_buf()))
     else {
@@ -1238,17 +1379,17 @@ fn log_passkey_request(state: &Mutex<AppState>, origin: &str, rp_id: &str, is_cr
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let kind = if is_create { "create" } else { "get" };
-    let line = format!("{stamp}\t{kind}\torigin={origin}\trp_id={rp_id}\n");
+    let line = format!("{stamp}\t{rest}\n");
 
     // Trim before appending, so the file stays roughly bounded without needing
     // a rotation scheme for what is a debugging aid.
     const MAX_LINES: usize = 500;
     if let Ok(existing) = std::fs::read_to_string(&path) {
-        if existing.lines().count() >= MAX_LINES {
+        let count = existing.lines().count();
+        if count >= MAX_LINES {
             let keep: String = existing
                 .lines()
-                .skip(existing.lines().count() - MAX_LINES / 2)
+                .skip(count - MAX_LINES / 2)
                 .map(|l| format!("{l}\n"))
                 .collect();
             let _ = std::fs::write(&path, keep);
