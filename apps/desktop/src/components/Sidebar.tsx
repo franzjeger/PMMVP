@@ -1,6 +1,7 @@
 import type { ComponentType } from "react";
 import { CATEGORIES, type CategoryId } from "../lib/categories";
 import {
+  BookmarkIcon,
   ClockIcon,
   GearIcon,
   KeyIcon,
@@ -21,6 +22,7 @@ const ICONS: Record<CategoryId, ComponentType<{ className?: string }>> = {
   wifi: WifiIcon,
   sshKeys: SshIcon,
   notes: NoteIcon,
+  bookmarks: BookmarkIcon,
   security: ShieldIcon,
   deleted: TrashIcon,
 };

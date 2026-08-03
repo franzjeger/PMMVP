@@ -315,6 +315,28 @@ export function DetailPane({
           </>
         )}
 
+        {detail.kind === "bookmark" && (
+          <>
+            <Row label="Address">
+              {/* Through the app, like every other link here: a plain anchor in
+                  a Tauri webview either navigates the app window away from
+                  itself or does nothing at all. */}
+              <button
+                onClick={() => api.openExternal(detail.url)}
+                className="flex w-full items-start gap-2 text-left text-accent hover:underline"
+              >
+                <span className="min-w-0 break-all">{detail.url}</span>
+                <ExternalLinkIcon className="h-4 w-4 shrink-0 translate-y-0.5" />
+              </button>
+            </Row>
+            {detail.folder && (
+              <Row label="Folder">
+                <span className="block break-all">{detail.folder}</span>
+              </Row>
+            )}
+          </>
+        )}
+
         {detail.kind === "sshKey" && <SshDetail id={detail.id} onCopy={onCopy} />}
 
         {detail.kind === "secureNote" && (

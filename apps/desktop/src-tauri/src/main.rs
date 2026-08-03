@@ -4,6 +4,7 @@
 
 mod agent;
 mod biometric;
+mod bookmarks;
 mod bridge;
 mod clipboard;
 mod related_origins;
@@ -214,6 +215,8 @@ fn main() {
             commands::upsert_item,
             commands::upsert_wifi,
             commands::upsert_secure_note,
+            commands::list_bookmark_sources,
+            commands::import_bookmarks,
             commands::wifi_qr,
             commands::generate_ssh_key,
             commands::ssh_public_key,

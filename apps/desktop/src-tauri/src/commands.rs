@@ -87,6 +87,9 @@ pub struct ItemDetailDto {
     pub security: String,
     /// Hidden SSID.
     pub hidden: bool,
+    // ---- Bookmark fields (empty for other kinds) ----
+    /// Folder path, `/`-separated. Empty means the top of the bar.
+    pub folder: String,
 }
 
 #[derive(Serialize)]
@@ -160,6 +163,7 @@ fn kind_str(kind: ItemKind) -> &'static str {
         ItemKind::SshKey => "sshKey",
         ItemKind::Wifi => "wifi",
         ItemKind::SecureNote => "secureNote",
+        ItemKind::Bookmark => "bookmark",
     }
 }
 
@@ -1038,6 +1042,19 @@ fn do_get_item(state: &Mutex<AppState>, id: &str) -> Result<ItemDetailDto, CmdEr
             false,
             None,
         ),
+        // A bookmark's URL is the whole point of it, so it must not fall into
+        // the stub arm below and arrive with nothing but a title.
+        VaultItem::Bookmark {
+            title, url, notes, ..
+        } => (
+            title.clone(),
+            String::new(),
+            url.clone(),
+            notes.clone(),
+            false,
+            false,
+            None,
+        ),
         // Stub kinds expose only their title for now.
         other => (
             other.title().to_string(),
@@ -1059,6 +1076,10 @@ fn do_get_item(state: &Mutex<AppState>, id: &str) -> Result<ItemDetailDto, CmdEr
         } => (ssid.clone(), security.clone(), *hidden),
         _ => (String::new(), String::new(), false),
     };
+    let folder = match &item.data {
+        VaultItem::Bookmark { folder, .. } => folder.clone(),
+        _ => String::new(),
+    };
     Ok(ItemDetailDto {
         id: item.id.to_string(),
         kind: kind_str(item.data.kind()).to_string(),
@@ -1075,6 +1096,7 @@ fn do_get_item(state: &Mutex<AppState>, id: &str) -> Result<ItemDetailDto, CmdEr
         ssid,
         security,
         hidden,
+        folder,
     })
 }
 
@@ -2313,4 +2335,105 @@ mod tests {
                 .has_totp
         );
     }
+}
+
+/// A browser profile Arca can read bookmarks from.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookmarkSourceDto {
+    pub label: String,
+    pub path: String,
+    /// How many bookmarks this profile holds right now.
+    ///
+    /// Counted up front rather than after the user commits: "Brave — Default
+    /// (0)" tells them the file is unreadable BEFORE they pick it, which on
+    /// macOS is the normal outcome and needs explaining, not hiding.
+    pub count: usize,
+}
+
+/// Browser profiles on this machine whose bookmarks Arca can read.
+///
+/// Reads only, and only file contents the user already owns.
+///
+/// PLATFORM: on macOS this list is usually EMPTY even when the browsers are
+/// installed. Reading another app's `~/Library/Application Support/<app>`
+/// requires Full Disk Access there, and a password manager should not be asking
+/// for that to do a job the browser extension does with no permission at all.
+/// Linux and Windows have no such wall, and this is the whole import path
+/// there.
+#[tauri::command]
+pub fn list_bookmark_sources() -> Vec<BookmarkSourceDto> {
+    crate::bookmarks::discover()
+        .into_iter()
+        .map(|s| {
+            let count = crate::bookmarks::read_file(&s.path)
+                .map(|b| b.len())
+                .unwrap_or(0);
+            BookmarkSourceDto {
+                label: s.label,
+                path: s.path.to_string_lossy().into_owned(),
+                count,
+            }
+        })
+        .collect()
+}
+
+/// Import bookmarks from one browser profile into the vault.
+///
+/// Returns how many were ADDED. Re-importing the same profile is a no-op: a
+/// bookmark already in the vault at the same URL and folder is left alone, so
+/// running this after every browsing session does not breed duplicates.
+#[tauri::command]
+pub fn import_bookmarks(state: St<'_>, path: String) -> Result<usize, CmdError> {
+    let mut st = guard(state.inner())?;
+    let imported = crate::bookmarks::read_file(std::path::Path::new(&path))
+        .map_err(|_| CmdError::new("read_failed", "Could not read that browser profile."))?;
+
+    let added = {
+        let vault = st.vault.as_mut().ok_or_else(CmdError::no_vault)?;
+        if !vault.is_unlocked() {
+            return Err(CmdError::new("locked", "Unlock Arca first."));
+        }
+
+        // What is already there, so a second import adds nothing. URL plus
+        // folder, because the same page filed in two places is two bookmarks
+        // to the person who filed it that way.
+        let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        if let Ok(summaries) = vault.list_items(false) {
+            for s in summaries {
+                let Ok(item) = vault.get_item(s.id) else { continue };
+                if let vault_core::VaultItem::Bookmark { url, folder, .. } = &item.data {
+                    seen.insert((url.clone(), folder.clone()));
+                }
+            }
+        }
+
+        let mut added = 0usize;
+        for b in imported {
+            if !seen.insert((b.url.clone(), b.folder.clone())) {
+                continue;
+            }
+            let item = vault_core::Item::new(
+                vault_core::VaultItem::Bookmark {
+                    title: b.title,
+                    url: b.url,
+                    folder: b.folder,
+                    notes: String::new(),
+                },
+                0,
+            );
+            if vault.upsert_item(item).is_ok() {
+                added += 1;
+            }
+        }
+        added
+    };
+
+    if added > 0 {
+        // A bulk insert is exactly what a rollback point is for.
+        st.store.snapshot_now();
+        persist(&mut st)?;
+    }
+    st.touch();
+    Ok(added)
 }

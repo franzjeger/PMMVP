@@ -354,9 +354,26 @@ func vaultLogMessage(for error: Error) -> String {
 /// One item of any kind, as produced by `vault_ffi_items`. Metadata only.
 struct VaultItemMeta: Decodable, Identifiable, Hashable {
     enum Kind: String, Decodable {
-        case login, passkey, wifi
+        case login, passkey, wifi, bookmark
         case sshKey = "ssh_key"
         case secureNote = "secure_note"
+
+        /// A kind this build has never heard of.
+        ///
+        /// `items()` decodes the WHOLE list in one go, so without this a single
+        /// entry of a kind added after this app shipped would fail the decode
+        /// and the phone would show an EMPTY VAULT. The desktop and the phone
+        /// ship on completely different cadences — one is a script away, the
+        /// other waits on review — so that is not a hypothetical.
+        ///
+        /// Degrading to "an entry this version cannot render" is the only
+        /// honest outcome: the user still sees that something is there.
+        case unknown
+
+        init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = Kind(rawValue: raw) ?? .unknown
+        }
 
         /// The SF Symbol for this kind. Here rather than in a view because two
         /// screens draw the same list and must not disagree about what a Wi-Fi
@@ -368,6 +385,8 @@ struct VaultItemMeta: Decodable, Identifiable, Hashable {
             case .sshKey: return "terminal.fill"
             case .wifi: return "wifi"
             case .secureNote: return "note.text"
+            case .bookmark: return "bookmark.fill"
+            case .unknown: return "questionmark.square.dashed"
             }
         }
 
@@ -378,6 +397,8 @@ struct VaultItemMeta: Decodable, Identifiable, Hashable {
             case .sshKey: return "SSH key"
             case .wifi: return "Wi-Fi"
             case .secureNote: return "Note"
+            case .bookmark: return "Bookmark"
+            case .unknown: return "Unsupported"
             }
         }
     }

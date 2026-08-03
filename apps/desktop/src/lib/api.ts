@@ -20,7 +20,13 @@ export interface VaultStatus {
   biometricAvailable: boolean;
 }
 
-export type ItemKind = "login" | "passkey" | "sshKey" | "wifi" | "secureNote";
+export type ItemKind =
+  | "login"
+  | "passkey"
+  | "sshKey"
+  | "wifi"
+  | "secureNote"
+  | "bookmark";
 
 export interface SyncStatus {
   connected: boolean;
@@ -59,6 +65,15 @@ export interface ItemDetail {
   ssid: string;
   security: string;
   hidden: boolean;
+  /** Bookmark only: folder path, `/`-separated. Empty means the top of the bar. */
+  folder: string;
+}
+
+/** A browser profile Arca can read bookmarks from. */
+export interface BookmarkSource {
+  label: string;
+  path: string;
+  count: number;
 }
 
 export interface WifiInput {
@@ -284,6 +299,13 @@ export const api = {
   sshPublicKey: (id: string) => invoke<SshPublicKey>("ssh_public_key", { id }),
   sshAgentInfo: () => invoke<SshAgentInfo>("ssh_agent_info"),
   deleteItem: (id: string) => invoke<void>("delete_item", { id }),
+  // Empty on macOS unless Arca has Full Disk Access — reading another app's
+  // Application Support directory is refused there. Linux and Windows have no
+  // such wall.
+  bookmarkSources: () => invoke<BookmarkSource[]>("list_bookmark_sources"),
+  /** Returns how many were ADDED; re-importing the same profile adds nothing. */
+  importBookmarks: (path: string) =>
+    invoke<number>("import_bookmarks", { path }),
   restoreItem: (id: string) => invoke<void>("restore_item", { id }),
   purgeItem: (id: string) => invoke<void>("purge_item", { id }),
 
