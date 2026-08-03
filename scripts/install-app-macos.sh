@@ -36,6 +36,20 @@ fi
 echo "==> Building release bundle…"
 (cd "$REPO/apps/desktop" && npm run tauri build -- --bundles app)
 
+# The native messaging host, in RELEASE, because that is the binary the browsers
+# actually run: the manifests in each browser's NativeMessagingHosts directory
+# point at target/release/vault-native-host by absolute path.
+#
+# It is built here, with the app, because the two speak one protocol and had
+# already drifted apart once. A day's work went into both sides of a new message
+# type, every test passed, and the browser answered "malformed message" — the
+# installed host was five days old and had never heard of it. Nothing was broken
+# except that the two halves of one product were built by two different commands
+# and only one of them ever ran.
+echo "==> Building the native messaging host (release)…"
+cargo build --release -p vault-native-host --manifest-path "$REPO/Cargo.toml" \
+  || die "the native messaging host failed to build"
+
 # Signing: the app carries RESTRICTED entitlements (App Group + keychain access
 # group, shared with the AutoFill extension). macOS (AMFI) only honors those
 # with a provisioning profile that authorizes them — Developer ID without a
