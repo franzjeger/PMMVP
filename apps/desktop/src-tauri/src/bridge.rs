@@ -538,6 +538,7 @@ fn handle_request(
                 };
             }
             // Anti-phishing: the RP id must belong to the page's origin.
+            log_passkey_request(state, &origin, &rp_id, true);
             // Related Origin Requests apply to the ceremony too — a passkey
             // registered for login.microsoft.com must be usable on the page
             // Microsoft actually redirects you to. No lock is held here.
@@ -726,6 +727,7 @@ fn handle_request(
                     message: "passkeys_disabled".into(),
                 };
             }
+            log_passkey_request(state, &origin, &rp_id, false);
             // Related Origin Requests apply to the ceremony too — a passkey
             // registered for login.microsoft.com must be usable on the page
             // Microsoft actually redirects you to. No lock is held here.
@@ -1207,6 +1209,55 @@ fn approve_passkey(
 struct PasskeySuppressedDto {
     site: String,
     is_create: bool,
+}
+
+/// Append one line about an incoming passkey ceremony, so a prompt that appears
+/// out of nowhere can be traced instead of guessed at.
+///
+/// This exists because the "GitHub keeps asking for Touch ID" report has come
+/// back repeatedly with nothing to read: the ceremony arrives from a browser
+/// context we cannot see, and the app recorded nothing at all. A prompt the
+/// user did not expect is exactly the event that needs a paper trail.
+///
+/// Non-secret by construction — an origin and an rp_id, which the relying party
+/// already knows. Bounded so it cannot grow without limit.
+fn log_passkey_request(state: &Mutex<AppState>, origin: &str, rp_id: &str, is_create: bool) {
+    use std::io::Write;
+    // The vault's own directory — no extra dependency, and it is where every
+    // other file of ours already lives. The lock is taken and dropped here, not
+    // held across the write.
+    let Some(dir) = state
+        .lock()
+        .ok()
+        .and_then(|st| st.store.path().parent().map(|p| p.to_path_buf()))
+    else {
+        return;
+    };
+    let path = dir.join("passkey-requests.log");
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let kind = if is_create { "create" } else { "get" };
+    let line = format!("{stamp}\t{kind}\torigin={origin}\trp_id={rp_id}\n");
+
+    // Trim before appending, so the file stays roughly bounded without needing
+    // a rotation scheme for what is a debugging aid.
+    const MAX_LINES: usize = 500;
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        if existing.lines().count() >= MAX_LINES {
+            let keep: String = existing
+                .lines()
+                .skip(existing.lines().count() - MAX_LINES / 2)
+                .map(|l| format!("{l}\n"))
+                .collect();
+            let _ = std::fs::write(&path, keep);
+        }
+    }
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = f.write_all(line.as_bytes());
+    }
 }
 
 fn approve_passkey_inner(
