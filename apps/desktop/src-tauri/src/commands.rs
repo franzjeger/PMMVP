@@ -201,10 +201,6 @@ fn persist(st: &mut AppState) -> Result<(), CmdError> {
     store.save_synced(vault)?;
     // Local state changed: let the cloud-sync loop know there is work.
     crate::sync::mark_dirty();
-    // The macOS AutoFill extension reads its own copy in the App Group
-    // container. Refresh it here, at the one place every edit passes through,
-    // so a password changed in the app is the password Safari fills.
-    let _ = mirror_vault_file(st);
     Ok(())
 }
 
@@ -503,26 +499,18 @@ fn publish_identities(app: &tauri::AppHandle) {
 /// Both halves are best-effort by design. A credential provider that cannot
 /// start is an inconvenience; an app that will not unlock is a lockout.
 #[cfg(target_os = "macos")]
-fn mirror_vault_file(st: &AppState) -> &'static str {
-    let Some(container) = vault_appgroup::container_path(crate::APP_GROUP) else {
-        return "no App Group container (signed without the profile?)";
-    };
-    // Every save, not only unlock: a password changed at 10:00 that AutoFill
-    // still fills with the 09:00 value is worse than no AutoFill at all.
-    match std::fs::copy(st.store.path(), container.join("default.vault")) {
-        Ok(_) => "vault mirrored",
-        Err(_) => "vault copy FAILED",
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn mirror_vault_file(_st: &AppState) -> &'static str {
-    "not macOS"
-}
-
-#[cfg(target_os = "macos")]
 fn mirror_for_autofill(st: &AppState) -> String {
-    let vault_note = mirror_vault_file(st);
+    // The vault half is the store's job now (VaultStore::with_mirror), so it
+    // cannot be skipped by a save path that forgot to ask. Report it here
+    // anyway: this log line is where anyone debugging AutoFill looks first.
+    // Saves keep the mirror current, but an unlock is not a save — and after a
+    // cloud sync pulled a phone's edits down, "not a save" meant AutoFill kept
+    // filling the password from before the merge.
+    let vault_note = if st.store.refresh_mirror() {
+        "vault mirrored"
+    } else {
+        "vault NOT mirrored (no App Group container?)"
+    };
 
     // The extension opens with the device key and nothing else — it has no way
     // to ask for the master password. So AutoFill on macOS requires quick

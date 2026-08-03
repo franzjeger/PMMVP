@@ -103,6 +103,16 @@ fn main() {
             let vault_path = resolve_vault_path(app, &data_dir);
 
             let store = VaultStore::new(vault_path, KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
+            // The sandboxed AutoFill extension can only read the App Group
+            // container, so every save is mirrored there. Set on the store
+            // rather than at the save sites: a cloud-sync merge saved without
+            // touching the mirror once, and AutoFill spent the afternoon
+            // filling the password from before the merge.
+            #[cfg(target_os = "macos")]
+            let store = match vault_appgroup::container_path(APP_GROUP) {
+                Some(container) => store.with_mirror(container.join("default.vault")),
+                None => store,
+            };
             // Eagerly load the locked vault if a file already exists.
             let vault = if store.exists() {
                 store.load().ok()
