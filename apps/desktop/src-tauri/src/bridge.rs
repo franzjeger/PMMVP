@@ -162,6 +162,45 @@ enum Request {
         #[serde(default)]
         symbols: Option<bool>,
     },
+    /// Mint a password and store it as a new login, in one step.
+    ///
+    /// For the `arca` command line, which exists so provisioning work can
+    /// finish. Creating an account with a generated one-time password is
+    /// ordinary administration; before this, the only ways to do it were to
+    /// type the password into a terminal by hand or to let it sit in plain text
+    /// in whatever transcript the automation was writing.
+    ///
+    /// Generating and saving are ONE request on purpose. Two calls would mean
+    /// the password crosses the socket, gets held by the caller, and comes back
+    /// — for no gain, since the app has both halves already. Here the secret is
+    /// created and filed inside the app, and the caller learns its id.
+    ///
+    /// `reveal` is the caller saying it needs the value itself, and it is not
+    /// the default. Whoever asks gets it; nobody gets it by accident.
+    CreateLogin {
+        title: String,
+        #[serde(default)]
+        username: String,
+        #[serde(default)]
+        url: String,
+        #[serde(default)]
+        notes: String,
+        #[serde(default)]
+        length: Option<usize>,
+        #[serde(default)]
+        symbols: Option<bool>,
+        #[serde(default)]
+        reveal: bool,
+    },
+    /// The password of one stored login, by id.
+    ///
+    /// This is a read of a secret, and it is deliberate. It widens nothing:
+    /// `fill` already returns a password to anything that can read the bridge
+    /// token, and that token is readable by any process running as this user.
+    /// The boundary here has always been the user account, never the process.
+    ReadPassword {
+        id: String,
+    },
 }
 
 impl Request {
@@ -181,6 +220,8 @@ impl Request {
             | Request::PasskeyCreate { .. }
             | Request::PasskeyGet { .. }
             | Request::SaveLogin { .. }
+            | Request::CreateLogin { .. }
+            | Request::ReadPassword { .. }
             | Request::GeneratePassword { .. } => true,
             // NOT activity: the vault is locked, so there is no idle timer to
             // reset, and counting it would let a page keep a future session
@@ -231,6 +272,17 @@ enum Response {
     Saved,
     /// Result of `GeneratePassword`.
     GeneratedPassword {
+        password: String,
+    },
+    /// A login was created. `password` is present only when the caller asked
+    /// for it, so the common path returns an id and nothing secret.
+    CreatedLogin {
+        id: String,
+        title: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
+    },
+    Password {
         password: String,
     },
     /// Arca was brought forward and asked the user to unlock. Says nothing
@@ -1180,6 +1232,109 @@ fn handle_request(
                 },
                 Err(_) => Response::Error {
                     message: "internal".into(),
+                },
+            }
+        }
+        Request::CreateLogin {
+            title,
+            username,
+            url,
+            notes,
+            length,
+            symbols,
+            reveal,
+        } => {
+            if title.trim().is_empty() {
+                return Response::Error {
+                    message: "title_required".into(),
+                };
+            }
+            // Same clamp as the extension's generator, for the same reason: a
+            // service that caps passwords at 16 is a real thing, and refusing
+            // sends the caller off to invent one by hand.
+            let opts = vault_core::password::PasswordOptions {
+                length: length.unwrap_or(24).clamp(8, 64),
+                symbols: symbols.unwrap_or(true),
+                ..Default::default()
+            };
+            let Ok(password) = vault_core::password::generate_password(&opts) else {
+                return Response::Error {
+                    message: "internal".into(),
+                };
+            };
+            let password = password.to_string();
+
+            let mut st = match state.lock() {
+                Ok(s) => s,
+                Err(_) => {
+                    return Response::Error {
+                        message: "internal".into(),
+                    }
+                }
+            };
+            let id = {
+                let AppState { store, vault, .. } = &mut *st;
+                let Some(vault) = vault.as_mut().filter(|v| v.is_unlocked()) else {
+                    return Response::Error {
+                        message: "locked".into(),
+                    };
+                };
+                let item = vault_core::Item::new(
+                    VaultItem::Login {
+                        title: title.clone(),
+                        username: username.clone(),
+                        password: password.clone(),
+                        url: url.clone(),
+                        totp_secret: None,
+                        notes: notes.clone(),
+                    },
+                    0,
+                );
+                let id = item.id;
+                if vault.upsert_item(item).is_err() || store.save_synced(vault).is_err() {
+                    return Response::Error {
+                        message: "internal".into(),
+                    };
+                }
+                id
+            };
+            crate::sync::mark_dirty();
+            Response::CreatedLogin {
+                id: id.to_string(),
+                title,
+                password: if reveal { Some(password) } else { None },
+            }
+        }
+        Request::ReadPassword { id } => {
+            let Ok(uuid) = id.parse::<uuid::Uuid>() else {
+                return Response::Error {
+                    message: "invalid_id".into(),
+                };
+            };
+            let st = match state.lock() {
+                Ok(s) => s,
+                Err(_) => {
+                    return Response::Error {
+                        message: "internal".into(),
+                    }
+                }
+            };
+            let Some(vault) = st.vault.as_ref().filter(|v| v.is_unlocked()) else {
+                return Response::Error {
+                    message: "locked".into(),
+                };
+            };
+            match vault.get_item(uuid) {
+                Ok(item) => match &item.data {
+                    VaultItem::Login { password, .. } => Response::Password {
+                        password: password.clone(),
+                    },
+                    _ => Response::Error {
+                        message: "not_a_login".into(),
+                    },
+                },
+                Err(_) => Response::Error {
+                    message: "not_found".into(),
                 },
             }
         }

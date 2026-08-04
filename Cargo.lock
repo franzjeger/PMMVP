@@ -96,6 +96,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "arca-cli"
+version = "0.3.0"
+dependencies = [
+ "dirs 5.0.1",
+ "serde_json",
+]
+
+[[package]]
 name = "argon2"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

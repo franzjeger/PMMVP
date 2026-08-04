@@ -36,16 +36,26 @@ fi
 echo "==> Building release bundle…"
 (cd "$REPO/apps/desktop" && npm run tauri build -- --bundles app)
 
-# The native messaging host, in RELEASE, because that is the binary the browsers
-# actually run: the manifests in each browser's NativeMessagingHosts directory
-# point at target/release/vault-native-host by absolute path.
+# EVERY binary that speaks the app's protocols is built HERE, with the app.
 #
-# It is built here, with the app, because the two speak one protocol and had
-# already drifted apart once. A day's work went into both sides of a new message
-# type, every test passed, and the browser answered "malformed message" — the
-# installed host was five days old and had never heard of it. Nothing was broken
-# except that the two halves of one product were built by two different commands
-# and only one of them ever ran.
+# They drifted once and it cost an afternoon: a new bridge message, both sides
+# written and tested, and the browser answered "malformed message" because the
+# installed native host was five days old and had never heard of it. Nothing was
+# broken except that two halves of one product were built by two different
+# commands and only one of them was ever run. A protocol means nothing if its
+# ends can be a week apart.
+
+# The `arca` command line, on PATH, so scripts and automation can create a login
+# and use it without the secret passing through their own output.
+echo "==> Building and installing the arca command line…"
+cargo build --release -p arca-cli --manifest-path "$REPO/Cargo.toml" \
+  || die "the arca command line failed to build"
+mkdir -p "$HOME/.local/bin"
+install -m 755 "$REPO/target/release/arca" "$HOME/.local/bin/arca"
+
+# The native messaging host, in RELEASE, because that is the binary the browsers
+# actually run: each browser's NativeMessagingHosts manifest points at
+# target/release/vault-native-host by absolute path.
 echo "==> Building the native messaging host (release)…"
 cargo build --release -p vault-native-host --manifest-path "$REPO/Cargo.toml" \
   || die "the native messaging host failed to build"
