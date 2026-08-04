@@ -6,8 +6,8 @@ mod agent;
 mod biometric;
 mod bridge;
 mod clipboard;
-mod related_origins;
 mod commands;
+mod related_origins;
 mod state;
 mod sync;
 

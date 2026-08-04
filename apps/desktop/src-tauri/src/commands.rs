@@ -409,7 +409,9 @@ fn publish_identities(app: &tauri::AppHandle) {
             };
             let mut out = Vec::new();
             for s in summaries {
-                let Ok(item) = vault.get_item(s.id) else { continue };
+                let Ok(item) = vault.get_item(s.id) else {
+                    continue;
+                };
                 match &item.data {
                     vault_core::VaultItem::Login { url, username, .. } => {
                         let host = crate::bridge::host_of(url);
