@@ -25,6 +25,12 @@ use serde::{Deserialize, Serialize};
 const HOST_NAME: &str = "no.sybr.vault";
 const PROTOCOL_VERSION: u32 = 1;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Version of the desktop app's newline-JSON bridge protocol this host is
+/// written against. Must match `PROTOCOL_VERSION` in the app's `bridge.rs`;
+/// a mismatch means the two shipped out of step, and refusing the connection
+/// reads as itself rather than as garbled requests.
+const BRIDGE_PROTOCOL: u32 = 1;
 /// Reject absurd frame sizes (browsers cap extension->host at 1 MiB).
 const MAX_MESSAGE_BYTES: u32 = 8 * 1024 * 1024;
 
@@ -384,17 +390,33 @@ fn bridge_request(payload: serde_json::Value) -> Option<serde_json::Value> {
     let mut writer = stream.try_clone().ok()?;
     let mut reader = BufReader::new(stream);
 
-    // Authenticate.
+    // Authenticate, declaring the protocol we speak. An app newer than this
+    // host answers with its own version; one older than the versioning itself
+    // omits the field, which is v1 by definition.
     writeln!(
         writer,
         "{}",
-        serde_json::json!({ "type": "hello", "token": token })
+        serde_json::json!({
+            "type": "hello",
+            "token": token,
+            "protocol": BRIDGE_PROTOCOL,
+        })
     )
     .ok()?;
     let mut line = String::new();
     reader.read_line(&mut line).ok()?;
     let hello: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
     if hello.get("type").and_then(|v| v.as_str()) != Some("ok") {
+        return None;
+    }
+    // Refuse an app that speaks a dialect we were not written against, rather
+    // than sending it requests it may read differently than we meant them.
+    // Absent means an app from before versioning, which is v1.
+    let app_protocol = hello
+        .get("protocol")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(BRIDGE_PROTOCOL as u64);
+    if app_protocol != BRIDGE_PROTOCOL as u64 {
         return None;
     }
 
