@@ -23,11 +23,25 @@ out of shell history, CI logs and agent transcripts.
 | `arca status` | Is the app running and unlocked. |
 | `arca new --title T [--user U] [--url X] [--notes N] [--length 8-64] [--no-symbols] [--show]` | Mint and store. Prints the id on stdout; everything human goes to stderr, so `ID=$(arca new …)` works. |
 | `arca show <id>` | Print the password. A separate verb so it never happens by accident. |
+| `arca rm <id>` | Retract an item. Moves it to Deleted in the app, restorable there. Prints what it removed. |
 | `arca exec <id> -- <cmd…>` | Run `cmd` with `ARCA_PASSWORD` set. The child's exit code is passed through. |
 
 Exit codes: `0` ok, `1` failed, `2` bad usage, `3` app locked or not running.
 `3` is separate on purpose — a script can tell "unlock it" from "start it" and
 say so, instead of reporting a generic failure.
+
+## `rm` is soft, and only soft
+
+`arca rm` sets the deleted flag. The item moves to Deleted in the app and can
+be restored there; the vault also snapshots on every save. Purging for good is
+not offered and should not be: automation that can create a credential ought to
+be able to take it back — an offboarding script, a failed run cleaning up after
+itself — but nothing running unattended needs the power to make a vault entry
+unrecoverable.
+
+It prints the TITLE of what it removed, so a caller that was handed an id from
+somewhere else can see whether it retracted the right thing while that is still
+one click away.
 
 ## What it is not
 

@@ -192,6 +192,16 @@ enum Request {
         #[serde(default)]
         reveal: bool,
     },
+    /// Retract an item, by id.
+    ///
+    /// A SOFT delete: the item moves to Deleted and can be restored from the
+    /// app. Purging for real is not offered here and should not be. Automation
+    /// that can create a credential should be able to take it back — an
+    /// offboarding script, a failed run cleaning up after itself — but nothing
+    /// running unattended needs the power to make a vault entry unrecoverable.
+    DeleteItem {
+        id: String,
+    },
     /// The password of one stored login, by id.
     ///
     /// This is a read of a secret, and it is deliberate. It widens nothing:
@@ -222,6 +232,7 @@ impl Request {
             | Request::SaveLogin { .. }
             | Request::CreateLogin { .. }
             | Request::ReadPassword { .. }
+            | Request::DeleteItem { .. }
             | Request::GeneratePassword { .. } => true,
             // NOT activity: the vault is locked, so there is no idle timer to
             // reset, and counting it would let a page keep a future session
@@ -284,6 +295,13 @@ enum Response {
     },
     Password {
         password: String,
+    },
+    /// What was retracted. The TITLE comes back so a caller can confirm the
+    /// right thing went, rather than trusting that an id it was handed
+    /// somewhere else pointed where it thought.
+    Deleted {
+        id: String,
+        title: String,
     },
     /// Arca was brought forward and asked the user to unlock. Says nothing
     /// about whether they did — the extension retries and finds out.
@@ -1304,6 +1322,51 @@ fn handle_request(
                 title,
                 password: if reveal { Some(password) } else { None },
             }
+        }
+        Request::DeleteItem { id } => {
+            let Ok(uuid) = id.parse::<uuid::Uuid>() else {
+                return Response::Error {
+                    message: "invalid_id".into(),
+                };
+            };
+            let mut st = match state.lock() {
+                Ok(s) => s,
+                Err(_) => {
+                    return Response::Error {
+                        message: "internal".into(),
+                    }
+                }
+            };
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let title = {
+                let AppState { store, vault, .. } = &mut *st;
+                let Some(vault) = vault.as_mut().filter(|v| v.is_unlocked()) else {
+                    return Response::Error {
+                        message: "locked".into(),
+                    };
+                };
+                // Read the title BEFORE deleting, so the reply can say what
+                // went even though the item is now flagged.
+                let Ok(item) = vault.get_item(uuid) else {
+                    return Response::Error {
+                        message: "not_found".into(),
+                    };
+                };
+                let title = item.data.title().to_string();
+                if vault.delete_item(uuid, now).is_err()
+                    || store.save_synced(vault).is_err()
+                {
+                    return Response::Error {
+                        message: "internal".into(),
+                    };
+                }
+                title
+            };
+            crate::sync::mark_dirty();
+            Response::Deleted { id, title }
         }
         Request::ReadPassword { id } => {
             let Ok(uuid) = id.parse::<uuid::Uuid>() else {

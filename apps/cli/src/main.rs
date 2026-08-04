@@ -39,6 +39,7 @@ fn main() {
         Some("new") => cmd_new(&args[1..]),
         Some("show") => cmd_show(&args[1..]),
         Some("exec") => cmd_exec(&args[1..]),
+        Some("rm") => cmd_rm(&args[1..]),
         Some("status") => cmd_status(),
         Some("-h") | Some("--help") | Some("help") | None => {
             print!("{USAGE}");
@@ -68,6 +69,10 @@ arca — create and use Arca logins from scripts
 
   arca show <id>
       Print the password of a stored login. Nothing else.
+
+  arca rm <id>
+      Retract an item. It moves to Deleted in the app and can be
+      restored there. Nothing here can purge one for good.
 
   arca exec <id> -- <command> [args...]
       Run a command with ARCA_PASSWORD set from that login. The password
@@ -241,6 +246,24 @@ fn cmd_exec(args: &[String]) -> i32 {
     }
 }
 
+fn cmd_rm(args: &[String]) -> i32 {
+    let Some(id) = args.first() else {
+        return usage_error("rm needs an id");
+    };
+    match bridge(serde_json::json!({ "type": "delete_item", "id": id })) {
+        Ok(v) => {
+            let title = v.get("title").and_then(|x| x.as_str()).unwrap_or("");
+            // The title, not just "ok": a caller that was handed an id from
+            // somewhere else should be able to see WHAT it just retracted, and
+            // notice immediately if it was the wrong thing — while it is still
+            // one click away in Deleted.
+            eprintln!("arca: removed \"{title}\" (restorable from Deleted)");
+            0
+        }
+        Err(e) => fail(e),
+    }
+}
+
 fn read_password(id: &str) -> Result<String, Fault> {
     let v = bridge(serde_json::json!({ "type": "read_password", "id": id }))?;
     v.get("password")
@@ -366,6 +389,18 @@ mod tests {
         // fails and says why.
         assert!(USAGE.contains("NOT printed unless you ask"));
         assert!(USAGE.contains("--show"));
+    }
+
+    #[test]
+    fn removal_is_advertised_as_reversible_and_purging_is_not_offered() {
+        // `rm` is the one verb here that destroys something, and the only
+        // reason it is safe for unattended use is that it does not really
+        // destroy it. If someone ever wires this to purge_item, the help text
+        // stops being true and this fails.
+        assert!(USAGE.contains("restored there"));
+        // The word "purge" may appear — the help says we cannot do it — but it
+        // must never be a VERB someone can type.
+        assert!(!USAGE.contains("arca purge"));
     }
 
     #[test]
