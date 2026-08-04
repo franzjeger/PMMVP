@@ -1,4 +1,4 @@
-//! Biometric (Touch ID) gate for quick unlock.
+//! Biometric (Touch ID on macOS, Windows Hello on Windows) gate for quick unlock.
 //!
 //! This is a *presence* gate placed in front of the keychain-backed quick
 //! unlock: before the app uses the stored device key to unlock the vault, the
@@ -13,8 +13,9 @@
 //! item that the OS will not release without Touch ID) is the stronger,
 //! Apple-equivalent design and is tracked as a hardening follow-up.
 //!
-//! The unsafe FFI lives inside `robius-authentication`; this module uses only
-//! its safe API, so the crate-wide `#![forbid(unsafe_code)]` still holds.
+//! The unsafe interop lives in `robius-authentication` (macOS) and the
+//! `vault-winhello` crate (Windows); this module uses only their safe APIs,
+//! so the crate-wide `#![forbid(unsafe_code)]` still holds.
 
 /// Whether biometric authentication is wired on this platform.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
