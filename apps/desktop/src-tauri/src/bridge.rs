@@ -1255,7 +1255,11 @@ fn log_passkey_request(state: &Mutex<AppState>, origin: &str, rp_id: &str, is_cr
         }
     }
     let _ = std::fs::create_dir_all(&dir);
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let _ = f.write_all(line.as_bytes());
     }
 }

@@ -165,9 +165,8 @@ mod tests {
     #[test]
     fn accepts_the_real_microsoft_document() {
         // The actual file, verbatim — the case this whole module exists for.
-        let hosts = accept(
-            r#"{"origins":["https://login.live.com","https://login.microsoftonline.com"]}"#,
-        );
+        let hosts =
+            accept(r#"{"origins":["https://login.live.com","https://login.microsoftonline.com"]}"#);
         assert!(hosts.iter().any(|h| h == "login.microsoftonline.com"));
         assert!(hosts.iter().any(|h| h == "login.live.com"));
     }
@@ -197,7 +196,10 @@ mod tests {
             "https://four.com","https://five.com",
             "https://six.com"]}"#;
         let hosts = accept(doc);
-        assert!(hosts.contains(&"b.one.com".to_string()), "same label is free");
+        assert!(
+            hosts.contains(&"b.one.com".to_string()),
+            "same label is free"
+        );
         assert!(hosts.contains(&"five.com".to_string()));
         assert!(
             !hosts.contains(&"six.com".to_string()),
@@ -207,7 +209,13 @@ mod tests {
 
     #[test]
     fn junk_is_an_empty_list_not_a_panic() {
-        for body in ["", "not json", "{}", r#"{"origins":"nope"}"#, r#"{"origins":[1,2]}"#] {
+        for body in [
+            "",
+            "not json",
+            "{}",
+            r#"{"origins":"nope"}"#,
+            r#"{"origins":[1,2]}"#,
+        ] {
             assert!(accept(body).is_empty(), "{body:?}");
         }
     }
