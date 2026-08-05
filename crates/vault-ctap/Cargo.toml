@@ -1,0 +1,30 @@
+# The CTAP2 authenticator protocol, so Arca can answer WebAuthn ceremonies from
+# anywhere on the system rather than only inside a browser we ship an extension
+# for. Transport-agnostic on purpose: this crate speaks CBOR in and CBOR out,
+# and knows nothing about USB HID, uhid, or the desktop app.
+[package]
+name = "vault-ctap"
+description = "CTAP2 authenticator protocol for Arca (transport-agnostic)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+# CBOR is CTAP2's wire format. Same encoder the vault's at-rest payload uses.
+ciborium.workspace = true
+# SHA-256 for rpIdHash. No other primitive is needed here: this crate never
+# touches key material — signing happens behind the Backend trait.
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# The test suite cross-checks our authenticatorData against the WebAuthn-path
+# implementation in vault-core, so the two cannot drift apart unnoticed.
+vault-core.workspace = true
+p256.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

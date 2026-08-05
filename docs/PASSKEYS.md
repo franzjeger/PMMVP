@@ -1,12 +1,13 @@
 # Passkeys (WebAuthn) — architecture & roadmap
 
-**Status:** there are **two** ways an authenticator can reach a passkey
+**Status:** there are **three** ways an authenticator can reach a passkey
 ceremony, and Arca ships one of them.
 
 | Path | State |
 | --- | --- |
 | **Browser extension** (`extension/chromium/passkey.js`) | **Working**, on every Chromium browser and on Linux, where no platform authenticator exists at all. This is what signs you in today. |
 | **OS credential provider** (`apps/macos/`, `apps/ios/`) | **Not built for passkeys.** `ProvidesPasskeys` is deliberately `false`, so Arca does not appear in the system chooser only to fail. Gated on an Apple Developer account. |
+| **CTAP2 authenticator** (`crates/vault-ctap`, `crates/vault-uhid`, `app/ctap.rs`) | **Complete and wired to the vault; not yet run against a kernel.** Starts with the app on Linux, best-effort. See below. |
 
 The cryptographic core underneath both is `crates/vault-core/src/passkey.rs`,
 implemented and unit-tested.
@@ -37,6 +38,127 @@ Two things about this path are easy to get wrong, and both shipped broken once:
   *succeeds*, Arca reports success, and the site fails on its own error.
 
 `extension/test/passkey.test.mjs` covers both against the real files.
+
+## The CTAP2 path (Linux)
+
+The extension path solves one browser at a time. Every other WebAuthn client on
+the machine — Firefox, an Electron app like teams-for-linux, `ssh-keygen -t
+ecdsa-sk` — needs its own shim, written against its own injection quirks, and
+`contextIsolation: false` makes some of them unsafe to write at all.
+
+There is a way out that costs one implementation instead of N: **speak CTAP2**,
+the protocol a hardware security key speaks. Every one of those clients already
+talks it. Nothing has to know Arca exists.
+
+Upstream, the `credentialsd` D-Bus portal from the Credentials for Linux project
+is building the standards-track answer, but it mediates access to *external*
+authenticators — USB, BLE, phone — and has no provider interface a password
+manager can register through. The slot Arca wants does not exist yet. Presenting
+as a security key does not need it to.
+
+```
+ ┌───────────────────────────────────────────────────────────────────┐
+ │  Any WebAuthn client: Chromium, Firefox, Electron, ssh-keygen     │
+ └───────────────┬───────────────────────────────────────────────────┘
+                 │  CTAP2 over USB HID
+                 ▼
+ ┌───────────────────────────────────────────────────────────────────┐
+ │  vault-uhid — the virtual device      [BUILT, KERNEL UNVERIFIED]  │
+ │   • /dev/uhid event codec, FIDO report descriptor                 │
+ │   • run loop: reader thread + authenticator thread + KEEPALIVE    │
+ │   • needs a udev rule; see 70-arca-uhid.rules and the crate docs  │
+ └───────────────┬───────────────────────────────────────────────────┘
+                 │  64-byte HID reports
+                 ▼
+ ┌───────────────────────────────────────────────────────────────────┐
+ │  vault-ctap::hid — CTAPHID framing              [DONE + TESTED]   │
+ │   • initialisation/continuation packets, channels, reassembly     │
+ │   • INIT/PING/CBOR/CANCEL, transaction atomicity, timeouts        │
+ └───────────────┬───────────────────────────────────────────────────┘
+                 │  command byte + CBOR
+                 ▼
+ ┌───────────────────────────────────────────────────────────────────┐
+ │  vault-ctap                                     [DONE + TESTED]   │
+ │   • getInfo / makeCredential / getAssertion / getNextAssertion    │
+ │   • CTAP2 canonical CBOR, status codes, silent pre-flight         │
+ │   • no I/O, no key material — a Backend trait is the only seam    │
+ └───────────────┬───────────────────────────────────────────────────┘
+                 │  Backend: discover / lookup / create / sign / confirm
+                 ▼
+ ┌───────────────────────────────────────────────────────────────────┐
+ │  VaultAuthenticator — apps/desktop/src-tauri/src/ctap.rs  [DONE]  │
+ │   • the same vault, the same prompt and decline cooldown, and     │
+ │     the same passkey log as the extension path in bridge.rs       │
+ │   • started from main.rs on Linux; best-effort, never fatal       │
+ └───────────────────────────────────────────────────────────────────┘
+```
+
+Four decisions in `vault-ctap` worth knowing before extending it:
+
+- **No CTAP PIN protocol.** `getInfo` reports `uv: true` and omits `clientPin`
+  entirely, so platforms drive us with built-in user verification and Arca's
+  master-password prompt *is* the verification. A website can never see, set, or
+  brute-force a PIN belonging to the vault.
+- **Silent assertions are answered without prompting.** `up: false, uv: false` is
+  how browsers enumerate credentials before showing any UI; prompting there would
+  mean a master-password dialog on every page that mentions WebAuthn. The
+  signature comes back with UP and UV clear, and WebAuthn §7.2 requires the
+  relying party to reject it — the same bargain every hardware key makes.
+- **`authenticatorReset` is refused.** On a real key a reset wipes its
+  credentials; here those are items in the user's vault, next to their passwords,
+  and the command would be reachable by anything that can open the HID device.
+- **What this path gives up.** The extension binds `rp_id` to a page origin the
+  page cannot forge. A CTAP authenticator never sees an origin — only an rpId the
+  *client* vouches for. Browsers do that check correctly; a malicious native
+  process does not have to. The consent prompt must therefore show the rpId, and
+  it is the user who is the phishing check.
+
+Known gaps: no extensions (`hmac-secret`, `credProtect`, `credBlob`), no
+credential management, and `authenticatorSelection` is answered even though we
+advertise `FIDO_2_0` — a platform that asks gets a useful answer rather than an
+error, and it contradicts nothing else we claim.
+
+### Verifying the transport
+
+Every layer above has unit tests, but nothing has yet been run against a real
+kernel — the uhid codec is checked against transcribed struct offsets, not
+against Linux's opinion of them. The first thing to do is prove the round trip:
+
+```sh
+cargo build -p vault-uhid --example smoke
+sudo ./target/debug/examples/smoke     # /dev/uhid is root-only by default
+
+# in another shell
+fido2-token -L                         # does it appear as a FIDO device?
+fido2-token -I /dev/hidrawN            # CTAPHID INIT + authenticatorGetInfo
+```
+
+`fido2-token -I` exercises the whole stack — device creation, hidraw, CTAPHID
+framing, canonical CBOR — and prints back the versions, options and AAGUID from
+`get_info`. If those match what `vault-ctap` claims, the transport is sound.
+
+Then the real thing, which needs the app itself to reach `/dev/uhid`:
+
+```sh
+sudo install -m 644 crates/vault-uhid/70-arca-uhid.rules /etc/udev/rules.d/
+sudo udevadm control --reload && sudo udevadm trigger
+```
+
+Restart Arca, unlock the vault, and register a passkey at
+<https://webauthn.io> — the browser should offer "Arca Passkey Authenticator"
+as a security key, and Arca should ask for the master password naming
+`webauthn.io`. The passkey then appears in the vault like any other item, and
+`passkey-requests.log` records the ceremony with origin `(ctap-hid)`.
+
+Two things to watch for on that first run, because they are the ones that will
+differ from the tests:
+
+- **A prompt on page load with no ceremony behind it.** That would mean a silent
+  pre-flight assertion is being treated as a real one. It should not be — the
+  test suite covers it — but it is the failure that would make Arca unusable
+  rather than merely broken.
+- **The browser giving up after a few seconds.** That is `KEEPALIVE` not
+  reaching the host, and it only shows up against a real one.
 
 ## What the OS credential provider would add
 

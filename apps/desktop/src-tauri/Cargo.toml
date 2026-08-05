@@ -56,6 +56,13 @@ zeroize.workspace = true
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 
+# The virtual FIDO security key. Linux only: it exists because Linux has no
+# platform authenticator, and it is how every WebAuthn client on the machine —
+# not just the browser we ship an extension for — reaches the vault.
+[target.'cfg(target_os = "linux")'.dependencies]
+vault-ctap.workspace = true
+vault-uhid.workspace = true
+
 [dev-dependencies]
 tempfile = "3"
 

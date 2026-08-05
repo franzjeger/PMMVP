@@ -1,0 +1,26 @@
+# Arca's virtual FIDO authenticator.
+#
+# Install to /etc/udev/rules.d/70-arca-uhid.rules, then:
+#     sudo udevadm control --reload && sudo udevadm trigger
+#
+# ---------------------------------------------------------------------------
+# READ THIS BEFORE INSTALLING THE FIRST RULE
+#
+# /dev/uhid creates arbitrary HID devices, and a HID device can be a keyboard.
+# Granting it to the logged-in user means anything running as that user can
+# synthesise keystrokes into the session — a capability Wayland otherwise
+# withholds. That is a real escalation and it is the price of running the
+# virtual key without a privileged helper.
+#
+# The hardened alternative is a socket-activated root helper that opens
+# /dev/uhid and passes the file descriptor to Arca, so no user-facing process
+# ever holds the capability. Prefer that for anything but development.
+# ---------------------------------------------------------------------------
+
+# Let the user at the active seat create the virtual authenticator.
+KERNEL=="uhid", TAG+="uaccess"
+
+# And let them talk to it once it exists. Matching on the FIDO usage page
+# (0xF1D0) rather than on a vendor id is deliberate: the device deliberately
+# carries no vendor id, because every real one belongs to a real company.
+KERNEL=="hidraw*", ATTRS{name}=="Arca Passkey Authenticator", TAG+="uaccess"

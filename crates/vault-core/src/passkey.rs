@@ -159,15 +159,33 @@ pub fn assert(
     client_data_hash: &[u8],
     user_verified: bool,
 ) -> Result<(Vec<u8>, Vec<u8>)> {
-    let signing = SigningKey::from_slice(private_key).map_err(|_| Error::Passkey)?;
     let auth_data = authenticator_data(rp_id, 0, None, user_verified);
 
     let mut signed = auth_data.clone();
     signed.extend_from_slice(client_data_hash);
-    // ES256: SigningKey signs the SHA-256 digest of the message internally.
-    let signature: Signature = signing.sign(&signed);
 
-    Ok((auth_data, signature.to_der().as_bytes().to_vec()))
+    Ok((auth_data, sign(private_key, &signed)?))
+}
+
+/// Sign an arbitrary message with a stored credential key, returning a
+/// DER-encoded ES256 signature.
+///
+/// [`assert`] is the WebAuthn-shaped door and should be preferred wherever the
+/// caller has an rpId and a `clientDataHash`. This one exists for CTAP2, where
+/// the authenticatorData is assembled by the protocol layer (its flags vary per
+/// request) and only the signature is wanted back.
+///
+/// SECURITY: this signs whatever it is given. The caller owns the meaning of
+/// `message`, and for any WebAuthn use it MUST be
+/// `authenticatorData || clientDataHash` with an authenticatorData whose
+/// rpIdHash covers the relying party the user actually approved. Hand it
+/// anything else and the resulting signature attests to something nobody
+/// consented to.
+pub fn sign(private_key: &[u8], message: &[u8]) -> Result<Vec<u8>> {
+    let signing = SigningKey::from_slice(private_key).map_err(|_| Error::Passkey)?;
+    // ES256: SigningKey signs the SHA-256 digest of the message internally.
+    let signature: Signature = signing.sign(message);
+    Ok(signature.to_der().as_bytes().to_vec())
 }
 
 /// The public key (SEC1 uncompressed, 65 bytes) for a stored private key, so a
@@ -271,6 +289,29 @@ mod tests {
     #[test]
     fn bad_private_key_is_an_error_not_a_panic() {
         assert!(assert(&[0u8; 4], "rp", &[0u8; 32], true).is_err());
+        assert!(sign(&[0u8; 4], b"message").is_err());
         assert!(public_key_sec1(&[9u8; 10]).is_err());
+    }
+
+    #[test]
+    fn assert_signs_exactly_what_the_raw_signer_would() {
+        // The CTAP2 path assembles its own authenticatorData and calls `sign`
+        // directly; if the two ever diverged, Arca's two doors would produce
+        // signatures over different bytes for the same ceremony.
+        let pk = create("example.com", true).unwrap();
+        let hash = sha256(b"client data");
+        let (auth_data, from_assert) = assert(&pk.private_key, "example.com", &hash, true).unwrap();
+
+        let mut message = auth_data;
+        message.extend_from_slice(&hash);
+        let from_sign = sign(&pk.private_key, &message).unwrap();
+
+        // ECDSA is randomised, so the signatures differ — but both must verify
+        // against the same key over the same message.
+        let vk = VerifyingKey::from_sec1_bytes(&public_key_sec1(&pk.private_key).unwrap()).unwrap();
+        for der in [from_assert, from_sign] {
+            let sig = Signature::from_der(&der).unwrap();
+            assert!(vk.verify(&message, &sig).is_ok());
+        }
     }
 }

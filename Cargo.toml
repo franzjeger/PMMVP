@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/vault-core",
     "crates/vault-store",
+    "crates/vault-ctap",
+    "crates/vault-uhid",
     "crates/vault-ffi",
     "crates/vault-secmem",
     "crates/vault-appgroup",
@@ -21,6 +23,8 @@ members = [
 default-members = [
     "crates/vault-core",
     "crates/vault-store",
+    "crates/vault-ctap",
+    "crates/vault-uhid",
     "crates/vault-ffi",
     "crates/vault-secmem",
     "crates/vault-sync",
@@ -40,6 +44,8 @@ repository = "https://example.invalid/vault"
 # --- internal ---
 vault-core = { path = "crates/vault-core" }
 vault-store = { path = "crates/vault-store" }
+vault-ctap = { path = "crates/vault-ctap" }
+vault-uhid = { path = "crates/vault-uhid" }
 vault-secmem = { path = "crates/vault-secmem" }
 vault-appgroup = { path = "crates/vault-appgroup" }
 vault-sync = { path = "crates/vault-sync" }

@@ -1409,7 +1409,7 @@ fn handle_request(
 /// on denial. A passkey operation must NEVER proceed without this.
 /// Whether Arca should handle passkey ceremonies at all (the Settings kill
 /// switch). Defaults to on if the state lock is unavailable.
-fn passkeys_enabled(state: &Mutex<AppState>) -> bool {
+pub(crate) fn passkeys_enabled(state: &Mutex<AppState>) -> bool {
     state
         .lock()
         .map(|st| st.settings.handle_passkeys)
@@ -1503,7 +1503,7 @@ fn clear_passkey_decline(key: &str) {
 /// prompt for each, so accepting a background "create a passkey" can never be
 /// mistaken for a login. The decline cooldown is keyed per (site, action) so a
 /// declined create never suppresses a real sign-in.
-fn approve_passkey(
+pub(crate) fn approve_passkey(
     rp_id: &str,
     is_create: bool,
     app: Option<&AppHandle>,
@@ -1567,7 +1567,12 @@ pub fn log_passkey_outcome(state: &Mutex<AppState>, rp_id: &str, outcome: &str) 
     log_line(state, &format!("\tresult\trp_id={rp_id}\t{outcome}"));
 }
 
-fn log_passkey_request(state: &Mutex<AppState>, origin: &str, rp_id: &str, is_create: bool) {
+pub(crate) fn log_passkey_request(
+    state: &Mutex<AppState>,
+    origin: &str,
+    rp_id: &str,
+    is_create: bool,
+) {
     let kind = if is_create { "create" } else { "get" };
     log_line(state, &format!("{kind}\torigin={origin}\trp_id={rp_id}"));
 }

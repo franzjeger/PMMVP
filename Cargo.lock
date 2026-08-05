@@ -5601,6 +5601,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "vault-ctap"
+version = "0.3.0"
+dependencies = [
+ "ciborium",
+ "p256",
+ "sha2",
+ "thiserror 2.0.18",
+ "vault-core",
+]
+
+[[package]]
 name = "vault-desktop"
 version = "0.3.0"
 dependencies = [
@@ -5625,9 +5636,11 @@ dependencies = [
  "vault-appgroup",
  "vault-core",
  "vault-credstore",
+ "vault-ctap",
  "vault-sharedkey",
  "vault-store",
  "vault-sync",
+ "vault-uhid",
  "vault-winhello",
  "zeroize",
 ]
@@ -5695,6 +5708,15 @@ dependencies = [
  "sha2",
  "vault-core",
  "zeroize",
+]
+
+[[package]]
+name = "vault-uhid"
+version = "0.3.0"
+dependencies = [
+ "p256",
+ "vault-core",
+ "vault-ctap",
 ]
 
 [[package]]

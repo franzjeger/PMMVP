@@ -12,6 +12,12 @@ mod commands;
 mod state;
 mod sync;
 
+// The virtual security key. Linux only: it is the answer to a platform
+// authenticator that does not exist there, and macOS and Windows each have
+// their own.
+#[cfg(target_os = "linux")]
+mod ctap;
+
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -154,6 +160,13 @@ fn main() {
 
             // ssh-agent: expose vault SSH keys to ssh/git (Unix socket).
             agent::start(app.handle().clone());
+
+            // A virtual FIDO security key, so every WebAuthn client on the
+            // machine reaches the vault — not only the browser we ship an
+            // extension for. Best-effort: without access to /dev/uhid the
+            // device simply never appears, and the extension path is unchanged.
+            #[cfg(target_os = "linux")]
+            ctap::start(app.handle().clone());
 
             // Background idle-timeout auto-lock.
             let handle = app.handle().clone();

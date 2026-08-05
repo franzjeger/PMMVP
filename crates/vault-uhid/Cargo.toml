@@ -1,0 +1,27 @@
+# The Linux end of the CTAP2 path: a virtual HID security key on /dev/uhid.
+#
+# Its own crate because it is Linux-only device I/O, and vault-ctap is meant to
+# stay a pure protocol library that any transport can drive. Note that this is
+# still `unsafe_code = "forbid"`: uhid is driven by writing byte structures to a
+# character device, so there is no ioctl and no FFI struct to transmute.
+[package]
+name = "vault-uhid"
+description = "Serve Arca's CTAP2 authenticator as a virtual HID security key on Linux."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+vault-ctap.workspace = true
+
+# For the `smoke` example only: a throwaway in-memory vault to drive the device
+# with, so the wire protocol can be tested with real FIDO tooling.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+vault-core.workspace = true
+p256.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
