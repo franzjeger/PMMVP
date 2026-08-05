@@ -159,7 +159,20 @@ final class ScannerController: UIViewController, AVCaptureMetadataOutputObjectsD
             // silence.
             guard !delivered else { return }
             delivered = true
-            session.stopRunning()
+            // stopRunning() blocks until the capture pipeline has torn down —
+            // and this delegate runs on the MAIN queue, which is the same queue
+            // the session is still trying to deliver frames on. Stopping from
+            // here asks the session to drain while holding the thread it drains
+            // onto: the UI freezes, and the half-dismissed sheet is left on
+            // screen. viewWillAppear/viewWillDisappear already hand the call to
+            // a background queue for exactly this reason; so does this one now.
+            //
+            // The `delivered` latch is set synchronously above, so the frames
+            // that keep arriving until the session actually stops are still
+            // dropped — the secret is handed back exactly once, as before.
+            DispatchQueue.global(qos: .userInitiated).async { [session] in
+                session.stopRunning()
+            }
             onScan?(payload)
         }
     }
