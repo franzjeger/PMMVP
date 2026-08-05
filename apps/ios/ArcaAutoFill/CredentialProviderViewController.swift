@@ -156,6 +156,59 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
         host.didMove(toParent: self)
     }
 
+    // MARK: Entry points Arca cannot service
+
+    // EVERY entry point this class does not override inherits Apple's default,
+    // and that default DOES NOTHING. It does not complete the request and it
+    // does not cancel it — the OS presents this view controller, the sheet
+    // slides halfway up showing an empty white view, and it stays there. From
+    // the outside the app has frozen; in fact it is waiting for a reply nobody
+    // will ever send.
+    //
+    // That is what a user hit: scanning a code with the Camera app, choosing
+    // Arca from the system's list of credential providers, and getting a blank
+    // half-screen. Which method the OS invoked is not the point — the point is
+    // that this class declared it could be a credential provider and then left
+    // whole doors unanswered.
+    //
+    // So every remaining door is answered here. Where Arca genuinely cannot do
+    // the job, it says so and the sheet goes away, which is a bad outcome the
+    // user can act on rather than a hang they cannot.
+
+    /// The user picked Arca from a system configuration flow.
+    ///
+    /// Nothing to configure in a sheet — the vault lives in the app — but this
+    /// MUST complete or the sheet hangs, and completing is what dismisses it.
+    override func prepareInterfaceForExtensionConfiguration() {
+        log.info("extension configuration requested; completing")
+        extensionContext.completeExtensionConfigurationRequest()
+    }
+
+    /// Registering a new passkey from the system UI. Arca stores passkeys, but
+    /// this extension has no registration path yet, and the browser extension
+    /// is the route on every platform today.
+    override func prepareInterface(forPasskeyRegistration registrationRequest: ASCredentialRequest) {
+        log.error("passkey registration is not implemented in this extension")
+        cancel(.failed)
+    }
+
+    /// One-time codes. `ProvidesOneTimeCodes` is NOT declared in Info.plist, so
+    /// the OS should never ask — but "should never" is exactly the assumption
+    /// that leaves a sheet hanging when it turns out to be wrong.
+    @available(iOS 18.0, *)
+    override func prepareOneTimeCodeCredentialList(for serviceIdentifiers: [ASCredentialServiceIdentifier]) {
+        log.error("one-time code list requested but not supported")
+        cancel(.failed)
+    }
+
+    /// Text insertion, iOS 18+. Not declared either, and answered for the same
+    /// reason.
+    @available(iOS 18.0, *)
+    override func prepareInterfaceForUserChoosingTextToInsert() {
+        log.error("text insertion requested but not supported")
+        cancel(.failed)
+    }
+
     private func cancel(_ code: ASExtensionError.Code) {
         extensionContext.cancelRequest(withError: ASExtensionError(code))
     }
