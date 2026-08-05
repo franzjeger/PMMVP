@@ -36,6 +36,30 @@ fi
 echo "==> Building release bundle…"
 (cd "$REPO/apps/desktop" && npm run tauri build -- --bundles app)
 
+# EVERY binary that speaks the app's protocols is built HERE, with the app.
+#
+# They drifted once and it cost an afternoon: a new bridge message, both sides
+# written and tested, and the browser answered "malformed message" because the
+# installed native host was five days old and had never heard of it. Nothing was
+# broken except that two halves of one product were built by two different
+# commands and only one of them was ever run. A protocol means nothing if its
+# ends can be a week apart.
+
+# The `arca` command line, on PATH, so scripts and automation can create a login
+# and use it without the secret passing through their own output.
+echo "==> Building and installing the arca command line…"
+cargo build --release -p arca-cli --manifest-path "$REPO/Cargo.toml" \
+  || die "the arca command line failed to build"
+mkdir -p "$HOME/.local/bin"
+install -m 755 "$REPO/target/release/arca" "$HOME/.local/bin/arca"
+
+# The native messaging host, in RELEASE, because that is the binary the browsers
+# actually run: each browser's NativeMessagingHosts manifest points at
+# target/release/vault-native-host by absolute path.
+echo "==> Building the native messaging host (release)…"
+cargo build --release -p vault-native-host --manifest-path "$REPO/Cargo.toml" \
+  || die "the native messaging host failed to build"
+
 # Signing: the app carries RESTRICTED entitlements (App Group + keychain access
 # group, shared with the AutoFill extension). macOS (AMFI) only honors those
 # with a provisioning profile that authorizes them — Developer ID without a
@@ -85,12 +109,41 @@ if [ -n "$IDENTITY" ] && [ -n "$PROFILE_SRC" ] && [ -f "$PROFILE_SRC" ]; then
   # nested code, so signing the app first and the appex after would invalidate
   # the outer signature. --deep is not enough here — it would reuse the app's
   # entitlements for the extension, which needs its own.
+  #
+  # $(AppIdentifierPrefix) is an XCODE variable. Xcode expands it while
+  # packaging; plain codesign does NOT, and signs the literal text instead. That
+  # produced an appex whose keychain group was the eleven characters
+  # "$(AppIdentifi…" and could therefore never reach the device key the app
+  # writes to LY6LJ395B8.no.sybr.vault.shared — an AutoFill extension that
+  # authenticates and then cannot decrypt. Expand it here, from the profile the
+  # app is actually signed with rather than a constant that can drift.
+  TEAM="$(security cms -D -i "$PROFILE_SRC" 2>/dev/null \
+    | plutil -extract Entitlements.com\\.apple\\.developer\\.team-identifier raw -o - - 2>/dev/null)"
+  [ -n "$TEAM" ] || die "could not read the team identifier out of $PROFILE_SRC"
+  APPEX_ENT="$REPO/target/ArcaAutoFill.expanded.entitlements"
+  sed "s/\$(AppIdentifierPrefix)/$TEAM./g" \
+    "$REPO/apps/macos/ArcaAutoFill/ArcaAutoFill.entitlements" > "$APPEX_ENT"
+  grep -q '\$(' "$APPEX_ENT" && die "unexpanded build variables remain in $APPEX_ENT"
+
   echo "==> Signing the extension, then the app"
-  codesign --force \
-    --entitlements "$REPO/apps/macos/ArcaAutoFill/ArcaAutoFill.entitlements" \
+  codesign --force --entitlements "$APPEX_ENT" \
     -s "$IDENTITY" "$APP_SRC/Contents/PlugIns/ArcaAutoFill.appex"
-  echo "==> Signing with: $IDENTITY (entitled: shared App Group + keychain)"
+  echo "==> Signing with: $IDENTITY (entitled: AutoFill + shared App Group + keychain)"
   codesign --force --entitlements "$ENTITLEMENTS" -s "$IDENTITY" "$APP_SRC"
+
+  # Assert what was actually SEALED, not what we passed in. Both of this
+  # build's AutoFill bugs were invisible until read back this way: a capability
+  # missing from the app, and a variable left unexpanded in the extension.
+  for target in "$APP_SRC" "$APP_SRC/Contents/PlugIns/ArcaAutoFill.appex"; do
+    sealed="$(codesign -d --entitlements - --xml "$target" 2>/dev/null | plutil -p - 2>/dev/null)"
+    case "$sealed" in
+      *'authentication-services.autofill-credential-provider'*) ;;
+      *) die "$(basename "$target") was signed WITHOUT the AutoFill capability; it will never be offered as a provider" ;;
+    esac
+    case "$sealed" in
+      *'$(AppIdentifierPrefix)'*) die "$(basename "$target") carries an unexpanded \$(AppIdentifierPrefix)" ;;
+    esac
+  done
 else
   # Fallback: no dev cert/profile — sign WITHOUT the restricted entitlements so
   # the app still launches; only cross-app autofill sharing is unavailable.

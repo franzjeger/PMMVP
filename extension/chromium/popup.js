@@ -45,8 +45,12 @@ const listEl = document.getElementById("siteList");
 
 const HINTS = {
   ask: "Arca answers when you started the sign-in — including when the site sends you to a separate page to finish it.",
+  // Deliberately narrower than it used to read. "Always" no longer covers
+  // registration: sites that re-offer "add a passkey" on a timer turned this
+  // setting into a stream of unprompted Touch ID prompts, so creating a
+  // credential now always needs a click in the page, whatever this says.
   always:
-    "Arca answers every passkey ceremony here, even one the page fires on its own.",
+    "Arca answers every sign-in here, even one the page fires on its own. Registering a new passkey still needs a click from you.",
   never: "Ceremonies here go straight to the browser or your security key.",
 };
 
@@ -136,3 +140,63 @@ function renderList(policies, host) {
   renderList(policies, host);
   siteEl.hidden = false;
 })();
+
+
+// ── Bookmarks ───────────────────────────────────────────────────────────────
+//
+// Push-out is the one thing Arca does that can destroy something the vault
+// cannot restore, so it is a button a person presses, never a timer — and
+// removing anything needs the checkbox AND a confirmation naming the number.
+
+const bmStatus = document.getElementById("bmStatus");
+const say = (msg) => {
+  bmStatus.textContent = msg;
+};
+
+document.getElementById("bmUp").addEventListener("click", () => {
+  say("Reading this browser…");
+  // `.then`, not a callback: Firefox's `browser.runtime.sendMessage` returns a
+  // promise and ignores the callback form entirely, so a callback here would
+  // simply never fire there. The rest of this file already does it this way.
+  api.runtime
+    .sendMessage({ cmd: "bookmarksToArca" })
+    .then((r) => {
+      if (!r || !r.ok) {
+        say(`Could not import: ${(r && r.error) || "no answer from Arca"}`);
+        return;
+      }
+      say(
+        r.added === 0
+          ? "Nothing new — Arca already had them all."
+          : `Added ${r.added} bookmark${r.added === 1 ? "" : "s"} to Arca.`,
+      );
+    })
+    .catch((e) => say(`Could not import: ${e}`));
+});
+
+document.getElementById("bmDown").addEventListener("click", () => {
+  const deletions = document.getElementById("bmDelete").checked;
+  say("Applying Arca's list…");
+  const run = (confirmed) =>
+    api.runtime
+      .sendMessage({ cmd: "bookmarksFromArca", deletions, confirmed })
+      .then((r) => {
+        if (!r || !r.ok) {
+          say(`Could not apply: ${(r && r.error) || "no answer from Arca"}`);
+          return;
+        }
+        if (r.refused) {
+          // The refusal carries the numbers, so the confirmation asks about a
+          // real quantity rather than an abstract "are you sure".
+          if (r.pendingRemovals && confirm(`${r.refused}\n\nGo ahead?`)) {
+            run(true);
+          } else {
+            say(r.refused);
+          }
+          return;
+        }
+        say(`Added ${r.added}, removed ${r.removed}.`);
+      })
+      .catch((e) => say(`Could not apply: ${e}`));
+  run(false);
+});

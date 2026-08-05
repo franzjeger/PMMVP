@@ -53,8 +53,52 @@
   // absorb a cold service-worker start, since timing out here means wrongly
   // handing a ceremony Arca could have answered back to the browser.
   const GATE_TIMEOUT_MS = 3000;
-  async function mayClaim() {
-    const r = await ask("gate", {}, GATE_TIMEOUT_MS);
+
+  // A shim outlives the extension that installed it.
+  //
+  // Reloading or updating the extension does NOT evict code already injected
+  // into an open tab: this function object keeps wrapping WebAuthn in every tab
+  // that was open at the time, running rules that shipped before the fix you
+  // just made. That is how the GitHub prompt loop kept coming back after it had
+  // been fixed, and why "close the tab" was the only cure anyone could find.
+  //
+  // So the shim retires itself the moment it learns it is out of date. Two
+  // signals, because the two ways it goes stale look different from in here:
+  //   • the relay reports a different extension version than the one this shim
+  //     first saw -> the extension was updated underneath us;
+  //   • the relay reports its context is gone -> the extension was reloaded and
+  //     this tab's isolated half is orphaned.
+  // Retirement is permanent and total: no gate, no messaging, no 3-second
+  // stall on every ceremony. The browser's own handler takes over, which is
+  // exactly what would happen if Arca had never been installed.
+  let retired = false;
+  let seenVersion = null;
+
+  function noteVersion(r) {
+    if (r.stale) {
+      retired = true;
+      console.debug("[Arca] passkey shim retired: the extension was reloaded");
+      return;
+    }
+    if (!r.version) return;
+    if (seenVersion === null) {
+      seenVersion = r.version;
+    } else if (seenVersion !== r.version) {
+      retired = true;
+      console.debug(
+        `[Arca] passkey shim retired: extension ${seenVersion} -> ${r.version}`,
+      );
+    }
+  }
+
+  /// `kind` is "create" or "get" — the gate treats them differently, and the
+  /// caller must not be able to get a create past the create rules by asking
+  /// for a get.
+  async function mayClaim(kind) {
+    if (retired) return { allow: false, reason: "shim_retired" };
+    const r = await ask("gate", { isCreate: kind === "create" }, GATE_TIMEOUT_MS);
+    noteVersion(r);
+    if (retired) return { allow: false, reason: "shim_retired" };
     return { allow: !!r.ok, reason: r.reason || "gate_timeout" };
   }
 
@@ -203,7 +247,7 @@
     // Only a user-initiated registration (a real "add a passkey" click) reaches
     // Arca; a page-load / background auto-fired create() defers to the browser
     // so it can never surprise-register a passkey.
-    const gate = await mayClaim();
+    const gate = await mayClaim("create");
     if (!gate.allow) {
       return fallback("create", gate.reason, options, realCreate);
     }
@@ -335,7 +379,7 @@
     if (!request || request.done) return false;
     // The same gate a modal ceremony passes. A page posting messages at us
     // cannot conjure a prompt; only a real gesture in this tab can.
-    const gate = await mayClaim();
+    const gate = await mayClaim("get");
     if (!gate.allow) {
       console.debug(`[Arca] passkey use → refused (${gate.reason})`);
       return false;
@@ -419,7 +463,7 @@
     // somewhere in this tab: a real "sign in with a passkey" click has one,
     // whether it happened here or on the page that navigated here; a page-load
     // auto-fire in a tab the user has not touched does not.
-    const gate = await mayClaim();
+    const gate = await mayClaim("get");
     if (!gate.allow) {
       return fallback("get", gate.reason, options, realGet);
     }

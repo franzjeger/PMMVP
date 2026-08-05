@@ -32,6 +32,7 @@ psl.workspace = true
 # Publishing logins + passkeys to the OS AutoFill store (macOS; a no-op
 # elsewhere, where the browser extension is the path and needs no registration).
 vault-credstore = { path = "../../../crates/vault-credstore" }
+vault-sharedkey = { path = "../../../crates/vault-sharedkey" }
 # Origin parsing for WebAuthn related-origin lists: a hand-rolled prefix check
 # reads "https://good.test@evil.test" as good.test.
 url.workspace = true

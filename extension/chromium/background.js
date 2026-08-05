@@ -6,6 +6,8 @@
 // releases a credential on an explicit "fill" for a matching origin while
 // unlocked; "listLogins" only ever returns metadata.
 
+import { readAll, apply } from "./bookmarks.js";
+
 const api = globalThis.browser ?? globalThis.chrome;
 
 // Must match the native messaging host manifest `name`.
@@ -168,22 +170,45 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // which the page cannot spoof — the same rule the ceremony's origin
       // already follows.
       policyFor(msg.host).then(async (policy) => {
-        if (policy !== "ask") {
+        const version = api.runtime.getManifest().version;
+        const reply = (allow, reason) =>
+          sendResponse({ ok: true, allow, reason, version });
+
+        if (policy === "never") {
+          await clearGesture(tabId);
+          reply(false, "site_never");
+          return;
+        }
+
+        // REGISTRATION IS DIFFERENT, and this is the rule the GitHub prompt
+        // loop kept walking through.
+        //
+        // A create() must have a gesture in the very document that fired it.
+        // Neither the tab-wide ledger nor a site set to "always" may stand in
+        // for one: the ledger exists so a sign-in can follow a click across
+        // Entra's navigation, and "always" is a user saying "let Arca sign me
+        // in here" — neither is consent to mint a new credential. GitHub
+        // re-offers "add a passkey" on a timer, and with either of those
+        // standing in, every offer became a Touch ID prompt on a machine whose
+        // owner had done nothing.
+        if (msg.isCreate) {
+          await clearGesture(tabId);
+          reply(!!msg.localGesture, msg.localGesture ? "gesture" : "create_needs_local_gesture");
+          return;
+        }
+
+        if (policy === "always") {
           // An explicit per-site answer settles it; the gesture is spent either
           // way so it cannot leak into the next ceremony.
           await clearGesture(tabId);
-          sendResponse({
-            ok: true,
-            allow: policy === "always",
-            reason: policy === "always" ? "site_always" : "site_never",
-          });
+          reply(true, "site_always");
           return;
         }
         if (msg.localGesture) {
           // The relay saw the gesture in this very document. Trust it directly
           // rather than racing our own "gesture" message to this worker.
           await clearGesture(tabId);
-          sendResponse({ ok: true, allow: true, reason: "gesture" });
+          reply(true, "gesture");
           return;
         }
         if (msg.sawLocal) {
@@ -193,15 +218,11 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // moved on, so the ledger must not be allowed to overrule that —
           // otherwise the in-document window silently widens to the carry TTL.
           await clearGesture(tabId);
-          sendResponse({ ok: true, allow: false, reason: "gesture_stale" });
+          reply(false, "gesture_stale");
           return;
         }
         const carried = await takeGesture(tabId);
-        sendResponse({
-          ok: true,
-          allow: carried,
-          reason: carried ? "gesture_carried" : "no_gesture",
-        });
+        reply(carried, carried ? "gesture_carried" : "no_gesture");
       });
       return true;
   }
@@ -268,6 +289,56 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         length: msg.length,
         symbols: msg.symbols,
       }).then(sendResponse);
+      return true;
+
+    // ── Bookmarks ─────────────────────────────────────────────────────────
+    //
+    // Both directions are driven from the popup, never on a timer. Push-out is
+    // the only thing Arca does that can DESTROY something the vault cannot
+    // restore — bookmarks live in the browser — so it does not happen while
+    // nobody is looking.
+    case "bookmarksToArca":
+      readAll(api)
+        .then((items) =>
+          sendNative({
+            type: "import_bookmarks",
+            // Metadata only, and only what a bookmark is: no ids, no dates.
+            items: items.map((b) => ({
+              title: b.title,
+              url: b.url,
+              folder: b.folder,
+            })),
+          }),
+        )
+        .then((r) =>
+          sendResponse(
+            r.ok && r.response && r.response.type === "imported_bookmarks"
+              ? { ok: true, added: r.response.added, read: true }
+              : { ok: false, error: (r.response && r.response.message) || r.error },
+          ),
+        )
+        .catch((e) => sendResponse({ ok: false, error: String(e) }));
+      return true;
+
+    case "bookmarksFromArca":
+      sendNative({ type: "list_bookmarks" })
+        .then(async (r) => {
+          if (!r.ok || !r.response || r.response.type !== "bookmarks") {
+            return {
+              ok: false,
+              error: (r.response && r.response.message) || r.error || "unavailable",
+            };
+          }
+          // `deletions` and `confirmed` come from the popup, so removing
+          // anything is always something a person chose twice.
+          const res = await apply(api, r.response.items, {
+            deletions: !!msg.deletions,
+            confirmed: !!msg.confirmed,
+          });
+          return { ok: true, ...res };
+        })
+        .then(sendResponse)
+        .catch((e) => sendResponse({ ok: false, error: String(e) }));
       return true;
 
     case "saveLogin":

@@ -39,6 +39,27 @@ enum VaultShared {
     static let keychainService = "no.sybr.vault"
     static let keychainAccount = "default-vault"
 
+    /// The account name of the device key THIS process reads.
+    ///
+    /// On macOS it is deliberately not `keychainAccount`. The Tauri app keeps
+    /// its own device key as a plain item in the login keychain under
+    /// service+account `no.sybr.vault`/`default-vault`; one build gave the
+    /// extension's data-protection copy the same pair, and the app's own
+    /// lookup started resolving to an access-controlled item it was never
+    /// built to read — Touch ID fired four times over a single unlock and the
+    /// unlock still fell back to the master password.
+    ///
+    /// iOS has only the data-protection keychain and no second writer, so
+    /// there is nothing to collide with and the name stays as it was — a
+    /// change there would strand every phone's existing enrolment.
+    static var deviceKeyAccount: String {
+        #if os(macOS)
+        "default-vault-autofill"
+        #else
+        keychainAccount
+        #endif
+    }
+
     /// The `ABI_VERSION` in crates/vault-ffi/src/lib.rs that this file was
     /// written against, enforced at open time. A static library from a different
     /// ABI would otherwise be called through the wrong signatures and fail
@@ -333,9 +354,26 @@ func vaultLogMessage(for error: Error) -> String {
 /// One item of any kind, as produced by `vault_ffi_items`. Metadata only.
 struct VaultItemMeta: Decodable, Identifiable, Hashable {
     enum Kind: String, Decodable {
-        case login, passkey, wifi
+        case login, passkey, wifi, bookmark
         case sshKey = "ssh_key"
         case secureNote = "secure_note"
+
+        /// A kind this build has never heard of.
+        ///
+        /// `items()` decodes the WHOLE list in one go, so without this a single
+        /// entry of a kind added after this app shipped would fail the decode
+        /// and the phone would show an EMPTY VAULT. The desktop and the phone
+        /// ship on completely different cadences — one is a script away, the
+        /// other waits on review — so that is not a hypothetical.
+        ///
+        /// Degrading to "an entry this version cannot render" is the only
+        /// honest outcome: the user still sees that something is there.
+        case unknown
+
+        init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = Kind(rawValue: raw) ?? .unknown
+        }
 
         /// The SF Symbol for this kind. Here rather than in a view because two
         /// screens draw the same list and must not disagree about what a Wi-Fi
@@ -347,6 +385,8 @@ struct VaultItemMeta: Decodable, Identifiable, Hashable {
             case .sshKey: return "terminal.fill"
             case .wifi: return "wifi"
             case .secureNote: return "note.text"
+            case .bookmark: return "bookmark.fill"
+            case .unknown: return "questionmark.square.dashed"
             }
         }
 
@@ -357,6 +397,8 @@ struct VaultItemMeta: Decodable, Identifiable, Hashable {
             case .sshKey: return "SSH key"
             case .wifi: return "Wi-Fi"
             case .secureNote: return "Note"
+            case .bookmark: return "Bookmark"
+            case .unknown: return "Unsupported"
             }
         }
     }
@@ -1061,7 +1103,7 @@ final class VaultSession: @unchecked Sendable {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: VaultShared.keychainService,
-            kSecAttrAccount as String: VaultShared.keychainAccount,
+            kSecAttrAccount as String: VaultShared.deviceKeyAccount,
             kSecAttrAccessGroup as String: VaultShared.keychainAccessGroup,
         ]
         #if os(macOS)

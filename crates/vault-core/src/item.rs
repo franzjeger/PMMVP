@@ -18,6 +18,7 @@ pub enum ItemKind {
     SshKey,
     Wifi,
     SecureNote,
+    Bookmark,
 }
 
 /// The secret-bearing payload of a vault entry.
@@ -122,6 +123,29 @@ pub enum VaultItem {
         notes: String,
     },
 
+    /// A browser bookmark.
+    ///
+    /// Nothing here is a password, but the SET is sensitive in a way no single
+    /// entry is: a few thousand bookmarks describe where someone works, banks,
+    /// and reads. So it lives in the vault with everything else rather than in
+    /// a convenient plaintext file beside it.
+    ///
+    /// `folder` is a PATH ("Bar/Arbeid/Kunder"), not a tree. Every browser
+    /// stores bookmarks as a tree, and modelling one here would mean node ids,
+    /// parent pointers and reparenting rules in a store that has no other
+    /// hierarchy. A path is flat, sorts naturally, survives a browser that
+    /// names its roots differently, and rebuilds the tree on the way out. Empty
+    /// means the bar's top level.
+    Bookmark {
+        title: String,
+        #[serde(default)]
+        url: String,
+        #[serde(default)]
+        folder: String,
+        #[serde(default)]
+        notes: String,
+    },
+
     /// A free-form secure note: a title plus an encrypted body. The body is
     /// secret (zeroized with the payload, redacted in Debug). `body` is
     /// `#[serde(default)]` so notes written before it existed still load.
@@ -173,6 +197,7 @@ impl VaultItem {
             VaultItem::SshKey { .. } => ItemKind::SshKey,
             VaultItem::Wifi { .. } => ItemKind::Wifi,
             VaultItem::SecureNote { .. } => ItemKind::SecureNote,
+            VaultItem::Bookmark { .. } => ItemKind::Bookmark,
         }
     }
 
@@ -183,7 +208,8 @@ impl VaultItem {
             | VaultItem::Passkey { title, .. }
             | VaultItem::SshKey { title, .. }
             | VaultItem::Wifi { title, .. }
-            | VaultItem::SecureNote { title, .. } => title,
+            | VaultItem::SecureNote { title, .. }
+            | VaultItem::Bookmark { title, .. } => title,
         }
     }
 
@@ -197,6 +223,8 @@ impl VaultItem {
             // The network name is the recognizable label.
             VaultItem::Wifi { ssid, .. } => ssid,
             VaultItem::SecureNote { .. } => "",
+            // The folder is what tells two bookmarks with the same title apart.
+            VaultItem::Bookmark { folder, .. } => folder,
         }
     }
 
@@ -217,6 +245,9 @@ impl VaultItem {
             VaultItem::SshKey { .. } => "",
             VaultItem::Wifi { .. } => "",
             VaultItem::SecureNote { .. } => "",
+            // Deliberately the real URL: a bookmark then groups in the list
+            // next to the login and passkey for the same site.
+            VaultItem::Bookmark { url, .. } => url,
         }
     }
 }
@@ -283,6 +314,17 @@ impl std::fmt::Debug for VaultItem {
                 .field("security", security)
                 .field("hidden", hidden)
                 .field("password", &REDACTED)
+                .field("notes", &REDACTED)
+                .finish(),
+            // A single bookmark is not a secret, and its title and folder are
+            // what make a log line useful. The URL is redacted anyway: a
+            // browsing history is exactly the kind of thing that should not
+            // end up in a log because one entry looked harmless.
+            VaultItem::Bookmark { title, folder, .. } => f
+                .debug_struct("Bookmark")
+                .field("title", title)
+                .field("folder", folder)
+                .field("url", &REDACTED)
                 .field("notes", &REDACTED)
                 .finish(),
             VaultItem::SecureNote { title, .. } => f

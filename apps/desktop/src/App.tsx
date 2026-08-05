@@ -15,6 +15,7 @@ import {
   onPasskeyRegistrationBlocked,
   onPasskeyVerifyRequest,
   onSyncMerged,
+  onAutoFillPublished,
   onUnlockRequested,
   onVaultLocked,
   onVaultUnlocked,
@@ -141,6 +142,16 @@ export default function App() {
       onVaultUnlocked(() => {
         setAutoLocked(false);
         void refreshStatus();
+      }),
+      onAutoFillPublished(({ count, ok, message }) => {
+        // Silent on the happy path — nobody needs a receipt every unlock. Loud
+        // when the OS took nothing, which is the case that looks like a bug in
+        // Arca and is a switch in System Settings.
+        if (!ok) {
+          setToast(`${message}. System Settings ▸ General ▸ AutoFill & Passwords.`);
+        } else if (count === 0) {
+          setToast("No logins with a website to offer in system AutoFill.");
+        }
       }),
       onClipboardCleared(() => setToast("Clipboard cleared")),
       onAutofilled((what) => setToast(`Autofilled ${what}`)),

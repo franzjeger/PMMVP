@@ -42,6 +42,9 @@ pub struct VaultStore {
     /// Fingerprint of the bytes we last read/wrote, for external-change (sync)
     /// detection in [`VaultStore::save_synced`].
     last_seen: AtomicU64,
+    /// A second path every successful write is copied to (see
+    /// [`VaultStore::with_mirror`]).
+    mirror: Option<PathBuf>,
 }
 
 impl VaultStore {
@@ -58,11 +61,63 @@ impl VaultStore {
             keychain_service: keychain_service.into(),
             keychain_account: keychain_account.into(),
             last_seen: AtomicU64::new(0),
+            mirror: None,
         }
+    }
+
+    /// Copy every successful write to `path` as well.
+    ///
+    /// This exists for the macOS AutoFill extension, which is sandboxed to the
+    /// App Group container and so cannot read the canonical vault in app data.
+    /// It is deliberately here rather than at the call sites: there are five
+    /// places that save a vault (commands, cloud sync, and three in the browser
+    /// bridge), and a copy bolted onto some of them is a copy that goes stale
+    /// the day someone adds a sixth. Exactly that happened — a sync-merged save
+    /// left AutoFill serving the pre-merge vault.
+    ///
+    /// The mirror is a plain byte copy of an already-encrypted file, and it is
+    /// best-effort: a failure to write it never fails the save.
+    pub fn with_mirror(mut self, path: impl Into<PathBuf>) -> Self {
+        self.mirror = Some(path.into());
+        self
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The one place vault bytes reach the disk. Both save paths route here so
+    /// the mirror and the change-detection fingerprint cannot diverge from what
+    /// was actually written.
+    fn write_and_mirror(&self, bytes: &[u8]) -> Result<()> {
+        write_atomic(&self.path, bytes)?;
+        self.last_seen.store(fingerprint(bytes), Ordering::Relaxed);
+        if let Some(mirror) = &self.mirror {
+            // Written directly rather than copied from `self.path`: on macOS
+            // `fs::copy` carries the source's mtime across, which made a fresh
+            // mirror look twelve minutes stale and cost a round of doubt about
+            // whether it had run at all.
+            let _ = write_atomic(mirror, bytes);
+        }
+        Ok(())
+    }
+
+    /// Bring the mirror up to date with the file on disk, without saving.
+    ///
+    /// Saves keep the mirror current, but a session that only reads never
+    /// saves — so after an unlock the mirror could still be whatever it was
+    /// when the app last wrote, which on a machine that syncs from a phone is
+    /// not the same vault at all. Returns false when there is no mirror or the
+    /// copy failed; callers treat that as "AutoFill may be stale", never as a
+    /// reason to fail.
+    pub fn refresh_mirror(&self) -> bool {
+        let Some(mirror) = &self.mirror else {
+            return false;
+        };
+        match fs::read(&self.path) {
+            Ok(bytes) => write_atomic(mirror, &bytes).is_ok(),
+            Err(_) => false,
+        }
     }
 
     /// Whether a vault file exists at the configured path.
@@ -85,9 +140,7 @@ impl VaultStore {
     pub fn save(&self, vault: &Vault) -> Result<()> {
         let bytes = vault.to_bytes()?;
         let _ = snapshot::capture(&self.path);
-        write_atomic(&self.path, &bytes)?;
-        self.last_seen.store(fingerprint(&bytes), Ordering::Relaxed);
-        Ok(())
+        self.write_and_mirror(&bytes)
     }
 
     /// Snapshots of this vault, newest first (see [`snapshot::list`]).
@@ -139,8 +192,7 @@ impl VaultStore {
         // Snapshot before the merged result lands: a merge that pulled in a bad
         // peer state is exactly what you want to roll back.
         let _ = snapshot::capture(&self.path);
-        write_atomic(&self.path, &bytes)?;
-        self.last_seen.store(fingerprint(&bytes), Ordering::Relaxed);
+        self.write_and_mirror(&bytes)?;
         Ok(merged)
     }
 
@@ -188,6 +240,19 @@ impl VaultStore {
             .ok_or(Error::QuickUnlockNotEnabled)?;
         vault.unlock_with_device_key(&device_key)?;
         Ok(())
+    }
+
+    /// The device key quick unlock uses, if it is enabled.
+    ///
+    /// Exposed for exactly one caller: the macOS AutoFill extension runs
+    /// sandboxed and cannot read this keychain, so the app mirrors the same key
+    /// into the shared access group the extension *can* read (see
+    /// `vault-sharedkey`). Handing out the key is not a widening of exposure —
+    /// it is already in this process on every quick unlock — but it is not a
+    /// general-purpose accessor either. Callers must not persist it anywhere
+    /// the OS keychain is not already protecting.
+    pub fn device_key(&self) -> Result<Option<SymmetricKey>> {
+        keychain::get(&self.keychain_service, &self.keychain_account)
     }
 
     /// Disable quick-unlock: delete the keychain device key and clear the
@@ -280,6 +345,46 @@ mod tests {
             totp_secret: None,
             notes: String::new(),
         }
+    }
+
+    #[test]
+    fn the_mirror_tracks_every_save_path() {
+        // Both save paths, because the bug this guards against was one of them
+        // bypassing the mirror: a cloud-sync merge went through `save_synced`
+        // and left the macOS AutoFill extension serving the pre-merge vault —
+        // it filled a password that had already been changed on another device,
+        // and the site simply bounced back to its login form.
+        let dir = tempfile::tempdir().unwrap();
+        let mirror = dir.path().join("container/default.vault");
+        std::fs::create_dir_all(mirror.parent().unwrap()).unwrap();
+        let store = VaultStore::new(dir.path().join("test.vault"), "test.svc", "test.acct")
+            .with_mirror(&mirror);
+
+        let mut v = Vault::create("pw", cheap_params()).unwrap();
+        store.save(&v).unwrap();
+        assert_eq!(
+            std::fs::read(store.path()).unwrap(),
+            std::fs::read(&mirror).unwrap(),
+            "save() must reach the mirror"
+        );
+
+        v.upsert_item(Item::new(login(), 42)).unwrap();
+        store.save_synced(&mut v).unwrap();
+        assert_eq!(
+            std::fs::read(store.path()).unwrap(),
+            std::fs::read(&mirror).unwrap(),
+            "save_synced() must reach the mirror too"
+        );
+    }
+
+    #[test]
+    fn a_store_without_a_mirror_writes_only_its_own_file() {
+        // Every non-macOS platform, and macOS before the container resolves.
+        let dir = tempfile::tempdir().unwrap();
+        let store = VaultStore::new(dir.path().join("test.vault"), "test.svc", "test.acct");
+        store.save(&Vault::create("pw", cheap_params()).unwrap()).unwrap();
+        let files: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(files.len(), 1, "no stray copies");
     }
 
     #[test]

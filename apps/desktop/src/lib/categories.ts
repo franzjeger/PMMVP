@@ -7,6 +7,7 @@ export type CategoryId =
   | "wifi"
   | "sshKeys"
   | "notes"
+  | "bookmarks"
   | "security"
   | "deleted";
 
@@ -22,6 +23,7 @@ export const CATEGORIES: CategoryDef[] = [
   { id: "wifi", label: "Wi-Fi" },
   { id: "sshKeys", label: "SSH Keys" },
   { id: "notes", label: "Notes" },
+  { id: "bookmarks", label: "Bookmarks" },
   { id: "security", label: "Security" },
   { id: "deleted", label: "Deleted" },
 ];
@@ -44,6 +46,8 @@ export function filterByCategory(
       return items.filter((i) => !i.isDeleted && i.kind === "sshKey");
     case "notes":
       return items.filter((i) => !i.isDeleted && i.kind === "secureNote");
+    case "bookmarks":
+      return items.filter((i) => !i.isDeleted && i.kind === "bookmark");
     case "security":
       return []; // TODO(phase-2): weak / reused / breached audit
     case "deleted":

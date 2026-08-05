@@ -8,8 +8,10 @@ members = [
     "crates/vault-appgroup",
     "crates/vault-winhello",
     "crates/vault-credstore",
+    "crates/vault-sharedkey",
     "crates/vault-sync",
     "apps/desktop/src-tauri",
+    "apps/cli",
     "extension/native-host",
 ]
 
@@ -22,6 +24,7 @@ default-members = [
     "crates/vault-ffi",
     "crates/vault-secmem",
     "crates/vault-sync",
+    "apps/cli",
     "extension/native-host",
 ]
 

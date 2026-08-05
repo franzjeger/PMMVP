@@ -78,6 +78,20 @@ pub struct ConsentContext {
     pub title: String,
 }
 
+/// One bookmark across the extension boundary.
+///
+/// Deliberately not the vault's own type: this crosses to a browser extension,
+/// so it carries a title, a URL and a folder and nothing else — no item id, no
+/// timestamps, nothing that would let a compromised extension reason about the
+/// rest of the vault.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BookmarkWire {
+    pub title: String,
+    pub url: String,
+    #[serde(default)]
+    pub folder: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Request {
@@ -130,6 +144,12 @@ enum Request {
     },
     /// Store a new / updated login captured from a submitted form (after the
     /// user clicked "Save" in the browser prompt).
+    /// Bookmarks read out of the browser, on their way into the vault.
+    ImportBookmarks {
+        items: Vec<BookmarkWire>,
+    },
+    /// Arca's whole bookmark list, on its way out to the browser.
+    ListBookmarks,
     SaveLogin {
         url: String,
         #[serde(default)]
@@ -160,6 +180,55 @@ enum Request {
         #[serde(default)]
         symbols: Option<bool>,
     },
+    /// Mint a password and store it as a new login, in one step.
+    ///
+    /// For the `arca` command line, which exists so provisioning work can
+    /// finish. Creating an account with a generated one-time password is
+    /// ordinary administration; before this, the only ways to do it were to
+    /// type the password into a terminal by hand or to let it sit in plain text
+    /// in whatever transcript the automation was writing.
+    ///
+    /// Generating and saving are ONE request on purpose. Two calls would mean
+    /// the password crosses the socket, gets held by the caller, and comes back
+    /// — for no gain, since the app has both halves already. Here the secret is
+    /// created and filed inside the app, and the caller learns its id.
+    ///
+    /// `reveal` is the caller saying it needs the value itself, and it is not
+    /// the default. Whoever asks gets it; nobody gets it by accident.
+    CreateLogin {
+        title: String,
+        #[serde(default)]
+        username: String,
+        #[serde(default)]
+        url: String,
+        #[serde(default)]
+        notes: String,
+        #[serde(default)]
+        length: Option<usize>,
+        #[serde(default)]
+        symbols: Option<bool>,
+        #[serde(default)]
+        reveal: bool,
+    },
+    /// Retract an item, by id.
+    ///
+    /// A SOFT delete: the item moves to Deleted and can be restored from the
+    /// app. Purging for real is not offered here and should not be. Automation
+    /// that can create a credential should be able to take it back — an
+    /// offboarding script, a failed run cleaning up after itself — but nothing
+    /// running unattended needs the power to make a vault entry unrecoverable.
+    DeleteItem {
+        id: String,
+    },
+    /// The password of one stored login, by id.
+    ///
+    /// This is a read of a secret, and it is deliberate. It widens nothing:
+    /// `fill` already returns a password to anything that can read the bridge
+    /// token, and that token is readable by any process running as this user.
+    /// The boundary here has always been the user account, never the process.
+    ReadPassword {
+        id: String,
+    },
 }
 
 impl Request {
@@ -179,6 +248,9 @@ impl Request {
             | Request::PasskeyCreate { .. }
             | Request::PasskeyGet { .. }
             | Request::SaveLogin { .. }
+            | Request::CreateLogin { .. }
+            | Request::ReadPassword { .. }
+            | Request::DeleteItem { .. }
             | Request::GeneratePassword { .. } => true,
             // NOT activity: the vault is locked, so there is no idle timer to
             // reset, and counting it would let a page keep a future session
@@ -186,6 +258,12 @@ impl Request {
             Request::Unlock
             | Request::Hello { .. }
             | Request::Match { .. }
+            // Bookmark sync is one request that completes on its own, and
+            // push-out is the kind of thing that later grows a timer. Counting
+            // it would then let a browser hold the vault open just by existing,
+            // so it does not count now, before anyone can rely on it doing so.
+            | Request::ImportBookmarks { .. }
+            | Request::ListBookmarks
             | Request::SaveProbe { .. } => false,
         }
     }
@@ -231,8 +309,34 @@ enum Response {
     GeneratedPassword {
         password: String,
     },
+    /// A login was created. `password` is present only when the caller asked
+    /// for it, so the common path returns an id and nothing secret.
+    CreatedLogin {
+        id: String,
+        title: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
+    },
+    Password {
+        password: String,
+    },
+    /// What was retracted. The TITLE comes back so a caller can confirm the
+    /// right thing went, rather than trusting that an id it was handed
+    /// somewhere else pointed where it thought.
+    Deleted {
+        id: String,
+        title: String,
+    },
     /// Arca was brought forward and asked the user to unlock. Says nothing
     /// about whether they did — the extension retries and finds out.
+    /// How many of an import were new.
+    ImportedBookmarks {
+        added: usize,
+    },
+    /// The master list, for the extension to apply.
+    Bookmarks {
+        items: Vec<BookmarkWire>,
+    },
     UnlockRequested,
     Error {
         message: String,
@@ -820,6 +924,12 @@ fn handle_request(
                     }
                 }
                 let Some((cid, uh, pk)) = found else {
+                    // Logged after the guard is gone. The commonest and least
+                    // obvious outcome: the site offered a passkey, Arca has
+                    // none for it, and the browser silently takes over — from
+                    // the outside indistinguishable from Arca being broken.
+                    drop(st);
+                    log_passkey_outcome(state, &rp_id, "no_passkey_stored");
                     return Response::Error {
                         message: "not_found".into(),
                     };
@@ -834,6 +944,9 @@ fn handle_request(
             // which relying parties trust for step-up defenses. `false` = this
             // is a sign-in, so the prompt says "sign in" (not "create").
             let Some(user_verified) = approve_passkey(&rp_id, false, app, consent) else {
+                // Cancelled, or a biometric prompt that never came back — which
+                // looks to the user like the browser hanging on the sign-in.
+                log_passkey_outcome(state, &rp_id, "declined_or_no_verification");
                 return Response::Error {
                     message: "denied".into(),
                 };
@@ -846,6 +959,7 @@ fn handle_request(
                     message: "internal".into(),
                 };
             };
+            log_passkey_outcome(state, &rp_id, "signed");
             if let Some(app) = app {
                 let _ = app.emit("passkey-used", rp_id);
             }
@@ -856,6 +970,80 @@ fn handle_request(
                 user_handle,
             }
         }
+        // Bookmarks are not secrets, but the SET of them is: it describes
+        // where someone works, banks and reads. So both directions need the
+        // vault open, exactly like a password would.
+        Request::ImportBookmarks { items } => {
+            let Ok(mut st) = state.lock() else {
+                return Response::Error { message: "internal".into() };
+            };
+            let mut seen: std::collections::HashSet<(String, String)> =
+                std::collections::HashSet::new();
+            let mut added = 0usize;
+            {
+                let Some(vault) = st.vault.as_mut().filter(|v| v.is_unlocked()) else {
+                    return Response::Error { message: "locked".into() };
+                };
+                if let Ok(summaries) = vault.list_items(false) {
+                    for sum in summaries {
+                        let Ok(item) = vault.get_item(sum.id) else { continue };
+                        if let VaultItem::Bookmark { url, folder, .. } = &item.data {
+                            seen.insert((url.clone(), folder.clone()));
+                        }
+                    }
+                }
+                for b in items {
+                    if b.url.is_empty() || !seen.insert((b.url.clone(), b.folder.clone())) {
+                        continue;
+                    }
+                    let item = vault_core::Item::new(
+                        VaultItem::Bookmark {
+                            title: b.title,
+                            url: b.url,
+                            folder: b.folder,
+                            notes: String::new(),
+                        },
+                        0,
+                    );
+                    if vault.upsert_item(item).is_ok() {
+                        added += 1;
+                    }
+                }
+            }
+            if added > 0 {
+                // A bulk insert is what a rollback point is for.
+                st.store.snapshot_now();
+                let AppState { store, vault, .. } = &mut *st;
+                if let Some(v) = vault.as_mut() {
+                    let _ = store.save_synced(v);
+                }
+            }
+            Response::ImportedBookmarks { added }
+        }
+
+        Request::ListBookmarks => {
+            let Ok(st) = state.lock() else {
+                return Response::Error { message: "internal".into() };
+            };
+            let Some(vault) = st.vault.as_ref().filter(|v| v.is_unlocked()) else {
+                return Response::Error { message: "locked".into() };
+            };
+            let mut items = Vec::new();
+            if let Ok(summaries) = vault.list_items(false) {
+                for sum in summaries {
+                    let Ok(item) = vault.get_item(sum.id) else { continue };
+                    if let VaultItem::Bookmark { title, url, folder, .. } = &item.data {
+                        items.push(BookmarkWire {
+                            title: title.clone(),
+                            url: url.clone(),
+                            folder: folder.clone(),
+                        });
+                    }
+                }
+            }
+            Response::Bookmarks { items }
+        }
+
         Request::SaveProbe {
             url,
             username,
@@ -1107,6 +1295,154 @@ fn handle_request(
                 },
             }
         }
+        Request::CreateLogin {
+            title,
+            username,
+            url,
+            notes,
+            length,
+            symbols,
+            reveal,
+        } => {
+            if title.trim().is_empty() {
+                return Response::Error {
+                    message: "title_required".into(),
+                };
+            }
+            // Same clamp as the extension's generator, for the same reason: a
+            // service that caps passwords at 16 is a real thing, and refusing
+            // sends the caller off to invent one by hand.
+            let opts = vault_core::password::PasswordOptions {
+                length: length.unwrap_or(24).clamp(8, 64),
+                symbols: symbols.unwrap_or(true),
+                ..Default::default()
+            };
+            let Ok(password) = vault_core::password::generate_password(&opts) else {
+                return Response::Error {
+                    message: "internal".into(),
+                };
+            };
+            let password = password.to_string();
+
+            let mut st = match state.lock() {
+                Ok(s) => s,
+                Err(_) => {
+                    return Response::Error {
+                        message: "internal".into(),
+                    }
+                }
+            };
+            let id = {
+                let AppState { store, vault, .. } = &mut *st;
+                let Some(vault) = vault.as_mut().filter(|v| v.is_unlocked()) else {
+                    return Response::Error {
+                        message: "locked".into(),
+                    };
+                };
+                let item = vault_core::Item::new(
+                    VaultItem::Login {
+                        title: title.clone(),
+                        username: username.clone(),
+                        password: password.clone(),
+                        url: url.clone(),
+                        totp_secret: None,
+                        notes: notes.clone(),
+                    },
+                    0,
+                );
+                let id = item.id;
+                if vault.upsert_item(item).is_err() || store.save_synced(vault).is_err() {
+                    return Response::Error {
+                        message: "internal".into(),
+                    };
+                }
+                id
+            };
+            crate::sync::mark_dirty();
+            Response::CreatedLogin {
+                id: id.to_string(),
+                title,
+                password: if reveal { Some(password) } else { None },
+            }
+        }
+        Request::DeleteItem { id } => {
+            let Ok(uuid) = id.parse::<uuid::Uuid>() else {
+                return Response::Error {
+                    message: "invalid_id".into(),
+                };
+            };
+            let mut st = match state.lock() {
+                Ok(s) => s,
+                Err(_) => {
+                    return Response::Error {
+                        message: "internal".into(),
+                    }
+                }
+            };
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let title = {
+                let AppState { store, vault, .. } = &mut *st;
+                let Some(vault) = vault.as_mut().filter(|v| v.is_unlocked()) else {
+                    return Response::Error {
+                        message: "locked".into(),
+                    };
+                };
+                // Read the title BEFORE deleting, so the reply can say what
+                // went even though the item is now flagged.
+                let Ok(item) = vault.get_item(uuid) else {
+                    return Response::Error {
+                        message: "not_found".into(),
+                    };
+                };
+                let title = item.data.title().to_string();
+                if vault.delete_item(uuid, now).is_err()
+                    || store.save_synced(vault).is_err()
+                {
+                    return Response::Error {
+                        message: "internal".into(),
+                    };
+                }
+                title
+            };
+            crate::sync::mark_dirty();
+            Response::Deleted { id, title }
+        }
+        Request::ReadPassword { id } => {
+            let Ok(uuid) = id.parse::<uuid::Uuid>() else {
+                return Response::Error {
+                    message: "invalid_id".into(),
+                };
+            };
+            let st = match state.lock() {
+                Ok(s) => s,
+                Err(_) => {
+                    return Response::Error {
+                        message: "internal".into(),
+                    }
+                }
+            };
+            let Some(vault) = st.vault.as_ref().filter(|v| v.is_unlocked()) else {
+                return Response::Error {
+                    message: "locked".into(),
+                };
+            };
+            match vault.get_item(uuid) {
+                Ok(item) => match &item.data {
+                    VaultItem::Login { password, .. } => Response::Password {
+                        password: password.clone(),
+                    },
+                    _ => Response::Error {
+                        message: "not_a_login".into(),
+                    },
+                },
+                Err(_) => Response::Error {
+                    message: "not_found".into(),
+                },
+            }
+        }
     }
 }
 
@@ -1263,13 +1599,36 @@ struct PasskeySuppressedDto {
 ///
 /// Non-secret by construction — an origin and an rp_id, which the relying party
 /// already knows. Bounded so it cannot grow without limit.
+/// Record how a ceremony ENDED.
+///
+/// The arrival line alone was not enough the first time it mattered: a UniFi
+/// sign-in was logged as having reached the app, and the log had nothing to say
+/// about whether it found a passkey, was refused, timed out on a Touch ID
+/// prompt nobody saw, or signed successfully. Those need four different fixes.
+pub fn log_passkey_outcome(state: &Mutex<AppState>, rp_id: &str, outcome: &str) {
+    log_line(state, &format!("\tresult\trp_id={rp_id}\t{outcome}"));
+}
+
 fn log_passkey_request(state: &Mutex<AppState>, origin: &str, rp_id: &str, is_create: bool) {
+    let kind = if is_create { "create" } else { "get" };
+    log_line(state, &format!("{kind}\torigin={origin}\trp_id={rp_id}"));
+}
+
+/// Append one tab-separated line to `passkey-requests.log`, timestamped.
+///
+/// The vault's own directory — no extra dependency, and it is where every other
+/// file of ours already lives. The lock is taken and dropped here, never held
+/// across the write.
+fn log_line(state: &Mutex<AppState>, rest: &str) {
     use std::io::Write;
-    // The vault's own directory — no extra dependency, and it is where every
-    // other file of ours already lives. The lock is taken and dropped here, not
-    // held across the write.
+    // `try_lock`, NOT `lock`. This is called from inside request handlers, and
+    // one of them called it while already holding the guard — a std::sync
+    // Mutex is not reentrant, so the app deadlocked on its own debug log and
+    // the passkey test hung forever. A log line is worth losing; a hung
+    // credential bridge is not, and the next caller to make the same mistake
+    // should get a missing line rather than a frozen browser.
     let Some(dir) = state
-        .lock()
+        .try_lock()
         .ok()
         .and_then(|st| st.store.path().parent().map(|p| p.to_path_buf()))
     else {
@@ -1280,17 +1639,17 @@ fn log_passkey_request(state: &Mutex<AppState>, origin: &str, rp_id: &str, is_cr
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let kind = if is_create { "create" } else { "get" };
-    let line = format!("{stamp}\t{kind}\torigin={origin}\trp_id={rp_id}\n");
+    let line = format!("{stamp}\t{rest}\n");
 
     // Trim before appending, so the file stays roughly bounded without needing
     // a rotation scheme for what is a debugging aid.
     const MAX_LINES: usize = 500;
     if let Ok(existing) = std::fs::read_to_string(&path) {
-        if existing.lines().count() >= MAX_LINES {
+        let count = existing.lines().count();
+        if count >= MAX_LINES {
             let keep: String = existing
                 .lines()
-                .skip(existing.lines().count() - MAX_LINES / 2)
+                .skip(count - MAX_LINES / 2)
                 .map(|l| format!("{l}\n"))
                 .collect();
             let _ = std::fs::write(&path, keep);

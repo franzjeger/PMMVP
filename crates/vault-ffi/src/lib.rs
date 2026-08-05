@@ -323,6 +323,7 @@ fn kind_name(kind: ItemKind) -> &'static str {
         ItemKind::SshKey => "ssh_key",
         ItemKind::Wifi => "wifi",
         ItemKind::SecureNote => "secure_note",
+        ItemKind::Bookmark => "bookmark",
     }
 }
 
@@ -384,6 +385,12 @@ enum ItemDetail {
     SecureNote {
         title: String,
         body: String,
+    },
+    Bookmark {
+        title: String,
+        url: String,
+        folder: String,
+        notes: String,
     },
 }
 
@@ -461,6 +468,17 @@ fn item_detail_json(vault: &Vault, id_str: &str) -> vault_core::Result<String> {
         VaultItem::SecureNote { title, body } => ItemDetail::SecureNote {
             title: title.clone(),
             body: body.clone(),
+        },
+        VaultItem::Bookmark {
+            title,
+            url,
+            folder,
+            notes,
+        } => ItemDetail::Bookmark {
+            title: title.clone(),
+            url: url.clone(),
+            folder: folder.clone(),
+            notes: notes.clone(),
         },
     };
     serde_json::to_string(&detail).map_err(|_| Error::Serialization)

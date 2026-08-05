@@ -99,10 +99,15 @@ const mapArea = (m) => ({
   remove: async (k) => void m.delete(k),
 });
 
+// The version the LIVE extension reports. An update replaces the service
+// worker, so this is where a new generation appears; the shim already sitting
+// in a page learns about it from the gate's answer.
+let swVersion = "0.3.0";
+
 const swChrome = {
   runtime: {
     onMessage: { addListener: (fn) => swListeners.push(fn) },
-    getManifest: () => ({ version: "0.3.0" }),
+    getManifest: () => ({ version: swVersion }),
     sendNativeMessage: (_host, _msg, cb) =>
       queueMicrotask(() => cb(NATIVE_ANSWER)),
     lastError: null,
@@ -121,7 +126,17 @@ const swCtx = vm.createContext({
   Map,
 });
 swCtx.globalThis = swCtx;
-vm.runInContext(src("background.js"), swCtx);
+// background.js is an ES module (it imports the bookmark reconciler), and
+// `vm.runInContext` runs scripts, not modules. The import is stripped and the
+// two names it brings in are supplied on the context instead — the same thing
+// the harness already does for every browser API. The bookmark logic has its
+// own tests in bookmarks.test.mjs; nothing here exercises it.
+swCtx.readAll = async () => [];
+swCtx.apply = async () => ({ added: 0, removed: 0, refused: null });
+vm.runInContext(
+  src("background.js").replace(/^import\s[^\n]*\n/m, ""),
+  swCtx,
+);
 
 /** Deliver a message to the worker the way chrome.runtime.sendMessage does. */
 function toWorker(msg, tabId) {
@@ -141,6 +156,7 @@ function toWorker(msg, tabId) {
 
 // ── One browser document: isolated relay + main-world shim ──────────────────
 function makeDocument({ host, tabId }) {
+  let relayVersion = "0.3.0";
   const isolated = [];
   const main = [];
   const logs = [];
@@ -167,9 +183,18 @@ function makeDocument({ host, tabId }) {
     location: loc,
   };
 
+  // A live extension context. `id` is what `contextAlive()` reads, and its
+  // ABSENCE is the orphan signal, so the harness must model both states or the
+  // retirement path is untestable — and, worse, every other test would run
+  // against a relay that believes it has been reloaded.
+  const relayRuntime = {
+    id: "arca-test-extension",
+    sendMessage: (m) => toWorker(m, tabId),
+    getManifest: () => ({ version: relayVersion }),
+  };
   const relayCtx = vm.createContext({
     globalThis: null,
-    chrome: { runtime: { sendMessage: (m) => toWorker(m, tabId) } },
+    chrome: { runtime: relayRuntime },
     window: relayWindow,
     location: loc,
     console,
@@ -181,9 +206,13 @@ function makeDocument({ host, tabId }) {
   vm.runInContext(src("passkey-relay.js"), relayCtx);
 
   let realGetCalls = 0;
+  let realCreateCalls = 0;
   const navigatorStub = {
     credentials: {
-      create: async () => ({ __real: "create" }),
+      create: async () => {
+        realCreateCalls++;
+        return { __real: "create" };
+      },
       get: async (opts) => {
         realGetCalls++;
         // A CONDITIONAL request stays pending while the browser offers autofill
@@ -240,6 +269,28 @@ function makeDocument({ host, tabId }) {
       return m ? m[1] : null;
     },
     realGetCalls: () => realGetCalls,
+    realCreateCalls: () => realCreateCalls,
+    /// The extension was RELOADED: this tab's isolated half is orphaned and its
+    /// `runtime.id` is gone, while the page-world shim keeps running.
+    orphan: () => {
+      relayRuntime.id = undefined;
+    },
+    /// The extension was UPDATED: the context still works, but the live worker
+    /// answering the gate belongs to a newer generation than the shim wrapping
+    /// WebAuthn in this page.
+    upgrade: (v) => {
+      swVersion = v;
+      relayVersion = v;
+    },
+    create: () =>
+      mainCtx.navigator.credentials.create({
+        publicKey: {
+          challenge: new Uint8Array([1, 2, 3]).buffer,
+          rp: { id: host, name: host },
+          user: { id: new Uint8Array([9]).buffer, name: "frank", displayName: "Frank" },
+          pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+        },
+      }),
     webauthn,
     lastLog: () => logs[logs.length - 1] || "",
     get: (mediation) =>
@@ -427,6 +478,83 @@ console.log("\nThe credential handed to the relying party");
   check("getClientExtensionResults()", JSON.stringify(cred.getClientExtensionResults()), "{}");
 
   NATIVE_ANSWER = { type: "error", message: "locked" };
+}
+
+console.log("\nRegistration is judged on THIS document's gesture, nothing else");
+{
+  // The nag Frank kept hitting: GitHub re-offers "add a passkey" on a timer.
+  // Any stand-in for a real click turned every one of those offers into a
+  // Touch ID prompt on a machine whose owner had done nothing.
+  storage.local.set("passkeyPolicy", { "gh.example": "always" });
+
+  // A gesture that happened in the PREVIOUS document. Good enough to sign in
+  // with (Entra needs exactly that); never good enough to mint a credential.
+  const a = makeDocument({ host: "gh.example", tabId: 20 });
+  a.gesture();
+  await tick();
+  advance(1200);
+  const b = makeDocument({ host: "gh.example", tabId: 20 });
+  await b.create();
+  check("a carried gesture cannot register", b.fellBackTo(), "create_needs_local_gesture");
+  check("the browser got the ceremony instead", b.realCreateCalls(), 1);
+
+  // "always" means "sign me in here", not "register whatever you like here".
+  const c = makeDocument({ host: "gh.example", tabId: 21 });
+  await c.create();
+  check("site=always cannot register either", c.fellBackTo(), "create_needs_local_gesture");
+
+  // ...while a real click in the page still registers normally.
+  const d = makeDocument({ host: "gh.example", tabId: 22 });
+  d.gesture();
+  await tick();
+  advance(300);
+  await d.create();
+  check("a real in-document click still registers", d.fellBackTo(), CLAIMED);
+
+  // And sign-in on that same site is untouched by the create rule.
+  const e = makeDocument({ host: "gh.example", tabId: 23 });
+  await e.get();
+  check("sign-in still honours site=always", e.fellBackTo(), CLAIMED);
+
+  storage.local.set("passkeyPolicy", {});
+}
+
+console.log("\nA shim retires itself once the extension moves on without it");
+{
+  // Reloading or updating the extension does NOT evict code already injected
+  // into an open tab. The old shim keeps wrapping WebAuthn with the rules that
+  // shipped that day, which is why "close the tab" was the only known cure for
+  // a passkey bug that had already been fixed.
+  const reloaded = makeDocument({ host: "stale.example", tabId: 24 });
+  reloaded.gesture();
+  await tick();
+  reloaded.orphan(); // the extension was reloaded; runtime.id is gone
+  await reloaded.get();
+  check("an orphaned tab hands the ceremony back", reloaded.fellBackTo(), "shim_retired");
+  check("and the browser really ran it", reloaded.realGetCalls(), 1);
+
+  // Retirement is permanent: no second chance, no waiting on a dead relay.
+  reloaded.gesture();
+  await tick();
+  await reloaded.create();
+  check("retirement outlives a fresh gesture", reloaded.fellBackTo(), "shim_retired");
+  check("registration went to the browser too", reloaded.realCreateCalls(), 1);
+
+  // The other way it goes stale: the context still answers, but from a newer
+  // generation than the code running in this page.
+  const updated = makeDocument({ host: "updated.example", tabId: 25 });
+  updated.gesture();
+  await tick();
+  advance(300);
+  await updated.get();
+  check("a matching version claims normally", updated.fellBackTo(), CLAIMED);
+
+  updated.upgrade("0.4.0");
+  updated.gesture();
+  await tick();
+  advance(300);
+  await updated.get();
+  check("a newer extension retires the old shim", updated.fellBackTo(), "shim_retired");
 }
 
 console.log(`\n${pass} checks passed\n`);

@@ -87,6 +87,9 @@ pub struct ItemDetailDto {
     pub security: String,
     /// Hidden SSID.
     pub hidden: bool,
+    // ---- Bookmark fields (empty for other kinds) ----
+    /// Folder path, `/`-separated. Empty means the top of the bar.
+    pub folder: String,
 }
 
 #[derive(Serialize)]
@@ -160,6 +163,7 @@ fn kind_str(kind: ItemKind) -> &'static str {
         ItemKind::SshKey => "sshKey",
         ItemKind::Wifi => "wifi",
         ItemKind::SecureNote => "secureNote",
+        ItemKind::Bookmark => "bookmark",
     }
 }
 
@@ -398,12 +402,16 @@ fn publish_identities(app: &tauri::AppHandle) {
     use tauri::Manager;
     let app = app.clone();
     std::thread::spawn(move || {
-        let identities = {
+        let (identities, mirror) = {
             let state = app.state::<Mutex<AppState>>();
             let Ok(st) = state.lock() else { return };
             let Some(vault) = st.vault.as_ref().filter(|v| v.is_unlocked()) else {
                 return;
             };
+            // Publishing without this is the failure that looks most like
+            // success: the identities appear in Safari, and every one of them
+            // fails to fill.
+            let mirror = mirror_for_autofill(&st);
             let Ok(summaries) = vault.list_items(false) else {
                 return;
             };
@@ -440,9 +448,33 @@ fn publish_identities(app: &tauri::AppHandle) {
                     _ => {}
                 }
             }
-            out
+            (out, mirror)
         };
         let outcome = vault_credstore::replace(&identities);
+
+        // Written down, not only emitted. The last time this answer existed
+        // only as an event, nothing listened and the question "did it publish?"
+        // had no way to be answered at all.
+        if let Ok(st) = app.state::<Mutex<AppState>>().lock() {
+            if let Some(dir) = st.store.path().parent() {
+                use std::io::Write;
+                let stamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(dir.join("autofill-publish.log"))
+                {
+                    let _ = writeln!(
+                        f,
+                        "{stamp}\tcount={}\t{outcome}\t{mirror}",
+                        identities.len()
+                    );
+                }
+            }
+        }
         // Told, not swallowed: "AutoFill is off for Arca" is a switch the user
         // can flip, and the store accepts a publish in that state and discards
         // it — so silence here would look exactly like success.
@@ -455,6 +487,51 @@ fn publish_identities(app: &tauri::AppHandle) {
             }),
         );
     });
+}
+
+/// Give the sandboxed AutoFill extension the two things it needs to serve what
+/// [`publish_identities`] advertises: the vault bytes, and the key that opens
+/// them.
+///
+/// The extension is sandboxed, so it can reach exactly one vault file (the App
+/// Group container) and exactly one keychain (data-protection, shared access
+/// group). The app uses neither: it keeps the canonical vault in app data and
+/// its own device key in the login keychain. `ArcaHost` used to bridge that gap
+/// on unlock, and when that harness was deleted the bridge went with it —
+/// leaving an extension that appeared in Safari, took a fingerprint, and then
+/// failed with `noDeviceKey`, against a container copy that had stopped being
+/// updated two weeks earlier.
+///
+/// Both halves are best-effort by design. A credential provider that cannot
+/// start is an inconvenience; an app that will not unlock is a lockout.
+#[cfg(target_os = "macos")]
+fn mirror_for_autofill(st: &AppState) -> String {
+    // The vault half is the store's job now (VaultStore::with_mirror), so it
+    // cannot be skipped by a save path that forgot to ask. Report it here
+    // anyway: this log line is where anyone debugging AutoFill looks first.
+    // Saves keep the mirror current, but an unlock is not a save — and after a
+    // cloud sync pulled a phone's edits down, "not a save" meant AutoFill kept
+    // filling the password from before the merge.
+    let vault_note = if st.store.refresh_mirror() {
+        "vault mirrored"
+    } else {
+        "vault NOT mirrored (no App Group container?)"
+    };
+
+    // The extension opens with the device key and nothing else — it has no way
+    // to ask for the master password. So AutoFill on macOS requires quick
+    // unlock, and saying so beats an extension that silently never works.
+    let key_note = match st.store.device_key() {
+        Ok(Some(key)) => vault_sharedkey::store(key.as_bytes()).to_string(),
+        Ok(None) => "quick unlock is off, so AutoFill has no key to open with".to_string(),
+        Err(_) => "could not read the device key".to_string(),
+    };
+    format!("{vault_note}; {key_note}")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn mirror_for_autofill(_st: &AppState) -> String {
+    "not macOS".to_string()
 }
 
 /// Kick a background sync right away (used after unlock so peer changes land
@@ -629,6 +706,11 @@ pub fn enable_quick_unlock(state: St<'_>) -> Result<(), CmdError> {
         store.enable_quick_unlock(vault)?;
     }
     persist(&mut st)?;
+    // Share the brand-new key with the AutoFill extension NOW. It is otherwise
+    // shared on unlock, and the user who just switched Touch ID on is already
+    // unlocked — so AutoFill would keep failing until the next lock/unlock
+    // cycle, which reads as "turning it on did nothing".
+    let _ = mirror_for_autofill(&st);
     st.touch();
     Ok(())
 }
@@ -843,6 +925,11 @@ pub fn disable_quick_unlock(state: St<'_>) -> Result<(), CmdError> {
         let vault = vault.as_mut().ok_or_else(CmdError::no_vault)?;
         store.disable_quick_unlock(vault)?;
     }
+    // Turning quick unlock off must also take away the extension's copy.
+    // Leaving it behind would let AutoFill go on opening the vault with a key
+    // the user just revoked.
+    #[cfg(target_os = "macos")]
+    let _ = vault_sharedkey::clear();
     persist(&mut st)?;
     st.touch();
     Ok(())
@@ -957,6 +1044,19 @@ fn do_get_item(state: &Mutex<AppState>, id: &str) -> Result<ItemDetailDto, CmdEr
             false,
             None,
         ),
+        // A bookmark's URL is the whole point of it, so it must not fall into
+        // the stub arm below and arrive with nothing but a title.
+        VaultItem::Bookmark {
+            title, url, notes, ..
+        } => (
+            title.clone(),
+            String::new(),
+            url.clone(),
+            notes.clone(),
+            false,
+            false,
+            None,
+        ),
         // Stub kinds expose only their title for now.
         other => (
             other.title().to_string(),
@@ -978,6 +1078,10 @@ fn do_get_item(state: &Mutex<AppState>, id: &str) -> Result<ItemDetailDto, CmdEr
         } => (ssid.clone(), security.clone(), *hidden),
         _ => (String::new(), String::new(), false),
     };
+    let folder = match &item.data {
+        VaultItem::Bookmark { folder, .. } => folder.clone(),
+        _ => String::new(),
+    };
     Ok(ItemDetailDto {
         id: item.id.to_string(),
         kind: kind_str(item.data.kind()).to_string(),
@@ -994,6 +1098,7 @@ fn do_get_item(state: &Mutex<AppState>, id: &str) -> Result<ItemDetailDto, CmdEr
         ssid,
         security,
         hidden,
+        folder,
     })
 }
 
@@ -2232,4 +2337,105 @@ mod tests {
                 .has_totp
         );
     }
+}
+
+/// A browser profile Arca can read bookmarks from.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookmarkSourceDto {
+    pub label: String,
+    pub path: String,
+    /// How many bookmarks this profile holds right now.
+    ///
+    /// Counted up front rather than after the user commits: "Brave — Default
+    /// (0)" tells them the file is unreadable BEFORE they pick it, which on
+    /// macOS is the normal outcome and needs explaining, not hiding.
+    pub count: usize,
+}
+
+/// Browser profiles on this machine whose bookmarks Arca can read.
+///
+/// Reads only, and only file contents the user already owns.
+///
+/// PLATFORM: on macOS this list is usually EMPTY even when the browsers are
+/// installed. Reading another app's `~/Library/Application Support/<app>`
+/// requires Full Disk Access there, and a password manager should not be asking
+/// for that to do a job the browser extension does with no permission at all.
+/// Linux and Windows have no such wall, and this is the whole import path
+/// there.
+#[tauri::command]
+pub fn list_bookmark_sources() -> Vec<BookmarkSourceDto> {
+    crate::bookmarks::discover()
+        .into_iter()
+        .map(|s| {
+            let count = crate::bookmarks::read_file(&s.path)
+                .map(|b| b.len())
+                .unwrap_or(0);
+            BookmarkSourceDto {
+                label: s.label,
+                path: s.path.to_string_lossy().into_owned(),
+                count,
+            }
+        })
+        .collect()
+}
+
+/// Import bookmarks from one browser profile into the vault.
+///
+/// Returns how many were ADDED. Re-importing the same profile is a no-op: a
+/// bookmark already in the vault at the same URL and folder is left alone, so
+/// running this after every browsing session does not breed duplicates.
+#[tauri::command]
+pub fn import_bookmarks(state: St<'_>, path: String) -> Result<usize, CmdError> {
+    let mut st = guard(state.inner())?;
+    let imported = crate::bookmarks::read_file(std::path::Path::new(&path))
+        .map_err(|_| CmdError::new("read_failed", "Could not read that browser profile."))?;
+
+    let added = {
+        let vault = st.vault.as_mut().ok_or_else(CmdError::no_vault)?;
+        if !vault.is_unlocked() {
+            return Err(CmdError::new("locked", "Unlock Arca first."));
+        }
+
+        // What is already there, so a second import adds nothing. URL plus
+        // folder, because the same page filed in two places is two bookmarks
+        // to the person who filed it that way.
+        let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        if let Ok(summaries) = vault.list_items(false) {
+            for s in summaries {
+                let Ok(item) = vault.get_item(s.id) else { continue };
+                if let vault_core::VaultItem::Bookmark { url, folder, .. } = &item.data {
+                    seen.insert((url.clone(), folder.clone()));
+                }
+            }
+        }
+
+        let mut added = 0usize;
+        for b in imported {
+            if !seen.insert((b.url.clone(), b.folder.clone())) {
+                continue;
+            }
+            let item = vault_core::Item::new(
+                vault_core::VaultItem::Bookmark {
+                    title: b.title,
+                    url: b.url,
+                    folder: b.folder,
+                    notes: String::new(),
+                },
+                0,
+            );
+            if vault.upsert_item(item).is_ok() {
+                added += 1;
+            }
+        }
+        added
+    };
+
+    if added > 0 {
+        // A bulk insert is exactly what a rollback point is for.
+        st.store.snapshot_now();
+        persist(&mut st)?;
+    }
+    st.touch();
+    Ok(added)
 }

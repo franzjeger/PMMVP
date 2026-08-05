@@ -20,7 +20,13 @@ export interface VaultStatus {
   biometricAvailable: boolean;
 }
 
-export type ItemKind = "login" | "passkey" | "sshKey" | "wifi" | "secureNote";
+export type ItemKind =
+  | "login"
+  | "passkey"
+  | "sshKey"
+  | "wifi"
+  | "secureNote"
+  | "bookmark";
 
 export interface SyncStatus {
   connected: boolean;
@@ -59,6 +65,15 @@ export interface ItemDetail {
   ssid: string;
   security: string;
   hidden: boolean;
+  /** Bookmark only: folder path, `/`-separated. Empty means the top of the bar. */
+  folder: string;
+}
+
+/** A browser profile Arca can read bookmarks from. */
+export interface BookmarkSource {
+  label: string;
+  path: string;
+  count: number;
 }
 
 export interface WifiInput {
@@ -284,6 +299,13 @@ export const api = {
   sshPublicKey: (id: string) => invoke<SshPublicKey>("ssh_public_key", { id }),
   sshAgentInfo: () => invoke<SshAgentInfo>("ssh_agent_info"),
   deleteItem: (id: string) => invoke<void>("delete_item", { id }),
+  // Empty on macOS unless Arca has Full Disk Access — reading another app's
+  // Application Support directory is refused there. Linux and Windows have no
+  // such wall.
+  bookmarkSources: () => invoke<BookmarkSource[]>("list_bookmark_sources"),
+  /** Returns how many were ADDED; re-importing the same profile adds nothing. */
+  importBookmarks: (path: string) =>
+    invoke<number>("import_bookmarks", { path }),
   restoreItem: (id: string) => invoke<void>("restore_item", { id }),
   purgeItem: (id: string) => invoke<void>("purge_item", { id }),
 
@@ -412,6 +434,21 @@ export function onUnlockRequested(cb: () => void): Promise<UnlistenFn> {
  */
 export function onVaultUnlocked(cb: () => void): Promise<UnlistenFn> {
   return listen("vault-unlocked", () => cb());
+}
+
+/**
+ * Fired after the app publishes its logins and passkeys to the OS AutoFill
+ * store. Worth surfacing because the store ACCEPTS a publish while AutoFill is
+ * switched off for Arca and silently discards it — so without this, "nothing
+ * shows up in Safari" and "everything published fine" look identical.
+ */
+export function onAutoFillPublished(
+  cb: (info: { count: number; ok: boolean; message: string }) => void,
+): Promise<UnlistenFn> {
+  return listen<{ count: number; ok: boolean; message: string }>(
+    "autofill-published",
+    (e) => cb(e.payload),
+  );
 }
 
 /** Fired by the backend when the vault auto-locks (idle or window blur). */

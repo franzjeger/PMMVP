@@ -96,6 +96,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "arca-cli"
+version = "0.3.0"
+dependencies = [
+ "dirs 5.0.1",
+ "serde_json",
+]
+
+[[package]]
 name = "argon2"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5617,6 +5625,7 @@ dependencies = [
  "vault-appgroup",
  "vault-core",
  "vault-credstore",
+ "vault-sharedkey",
  "vault-store",
  "vault-sync",
  "vault-winhello",
@@ -5652,6 +5661,13 @@ version = "0.3.0"
 dependencies = [
  "region",
  "zeroize",
+]
+
+[[package]]
+name = "vault-sharedkey"
+version = "0.3.0"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
