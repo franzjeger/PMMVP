@@ -183,6 +183,48 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
         ])
     }
 
+    // MARK: Doors this extension declared and never answered
+
+    // Info.plist promises the system ProvidesPasswords AND ProvidesPasskeys.
+    // Sign-in with a stored passkey works. REGISTERING one does not, and the
+    // entry point for it was simply absent — which is not the same as absent.
+    //
+    // Every method this class does not override inherits Apple's default, and
+    // that default DOES NOTHING: it neither completes the request nor cancels
+    // it. So "save a passkey → choose Arca" presented this view controller,
+    // called a method that answers nothing, and left the sheet on screen
+    // forever. The app had not crashed and was not busy; it was never going to
+    // reply.
+    //
+    // Cancelling is not the good outcome — the good outcome is registering the
+    // passkey, and that is worth building. But an error the user can act on
+    // beats a window they have to force-quit, and declaring a capability the
+    // code cannot service is the actual defect either way.
+
+    /// Register a new passkey from the system UI. Not implemented here; the
+    /// browser extension is the working route on macOS today.
+    override func prepareInterface(forPasskeyRegistration registrationRequest: ASCredentialRequest) {
+        log.error("passkey registration is not implemented in this extension")
+        cancel(.failed)
+    }
+
+    /// The user picked Arca from a system configuration flow. Nothing to
+    /// configure in a sheet — the vault lives in the app — but this MUST
+    /// complete, because completing is what dismisses it.
+    override func prepareInterfaceForExtensionConfiguration() {
+        log.info("extension configuration requested; completing")
+        extensionContext.completeExtensionConfigurationRequest()
+    }
+
+    /// One-time codes. `ProvidesOneTimeCodes` is not declared, so the system
+    /// should never ask — and "should never" is exactly the assumption that
+    /// left the other sheet hanging.
+    @available(macOS 15.0, *)
+    override func prepareOneTimeCodeCredentialList(for serviceIdentifiers: [ASCredentialServiceIdentifier]) {
+        log.error("one-time code list requested but not supported")
+        cancel(.failed)
+    }
+
     @MainActor
     private func cancel(_ code: ASExtensionError.Code) {
         extensionContext.cancelRequest(withError: ASExtensionError(code))
