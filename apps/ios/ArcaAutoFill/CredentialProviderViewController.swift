@@ -184,6 +184,26 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
         extensionContext.completeExtensionConfigurationRequest()
     }
 
+    /// The door the system knocks on FIRST when a site offers to save a passkey.
+    ///
+    /// iOS 18 tries the no-UI path before presenting anything. Leaving it
+    /// unanswered is why "save passkey -> choose Arca" still hung after the
+    /// UI-side registration entry point was answered: the request never got
+    /// that far. One door was fixed and the one in front of it was not.
+    ///
+    /// Refused outright rather than with `.userInteractionRequired`. Asking the
+    /// system to present UI only to decline in the next breath costs the user a
+    /// sheet to dismiss and tells them nothing extra — registration is not
+    /// implemented here at all, so say so now and let the system fall back to
+    /// its own passkey handling.
+    @available(iOS 18.0, *)
+    override func performWithoutUserInteractionIfPossible(
+        passkeyRegistration registrationRequest: ASPasskeyCredentialRequest
+    ) {
+        log.error("no-UI passkey registration is not implemented in this extension")
+        cancel(.failed)
+    }
+
     /// Registering a new passkey from the system UI. Arca stores passkeys, but
     /// this extension has no registration path yet, and the browser extension
     /// is the route on every platform today.
