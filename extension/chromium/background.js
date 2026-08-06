@@ -12,7 +12,13 @@
 // happy shipped an extension where cleanup and mirroring threw on every call.
 // The manifest declares this worker as a module precisely so these are legal;
 // the test harness is what has to bend, not the code that has to run.
-import { readAll, apply, planCleanup, OWNED_FOLDER_TITLE } from "./bookmarks.js";
+import {
+  readAll,
+  apply,
+  planCleanup,
+  barRootId,
+  OWNED_FOLDER_TITLE,
+} from "./bookmarks.js";
 import { buildTree, fingerprint, mirrorGate } from "./mirror.js";
 
 const api = globalThis.browser ?? globalThis.chrome;
@@ -597,8 +603,11 @@ async function reconcileMirror(why) {
   const { root, used, dropped } = buildTree(items);
   let folderId;
   try {
+    // Resolved from the tree, not assumed. Chromium's bar is "1" and Firefox's
+    // is "toolbar_____"; a hardcoded parent is why this wrote nothing at all
+    // in Firefox while reporting success.
     const folder = await api.bookmarks.create({
-      parentId: "1",
+      parentId: barRootId(await api.bookmarks.getTree()),
       title: OWNED_FOLDER_TITLE,
     });
     folderId = folder.id;

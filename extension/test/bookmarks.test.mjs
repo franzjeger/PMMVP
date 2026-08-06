@@ -8,7 +8,7 @@
 // point of this file, so they are tested against the real module rather than a
 // description of it.
 import assert from "node:assert/strict";
-import { flatten, plan, apply, planCleanup, OWNED_FOLDER_TITLE } from "../chromium/bookmarks.js";
+import { flatten, plan, apply, planCleanup, OWNED_FOLDER_TITLE, barRootId, rootLabel, ROOT_IDS } from "../chromium/bookmarks.js";
 
 let pass = 0;
 const check = (name, got, want) => {
@@ -140,7 +140,7 @@ console.log("\napply() survives a node the browser refuses");
   check("the good ones still landed", res.added, 2);
 }
 
-console.log(`\n${pass} checks passed\n`);
+
 
 
 // ── Cleanup at startup ──────────────────────────────────────────────────────
@@ -201,3 +201,80 @@ console.log("\nThings cleanup must never remove");
   check("a REUSED id is refused", reused.remove.length, 0);
   check("and names what it found instead", reused.notes.some((n) => n.includes("id reused")), true);
 }
+
+
+// ── Firefox ────────────────────────────────────────────────────────────────
+//
+// Chromium numbers its roots ("1" is the bar); Firefox pads names
+// ("toolbar_____"). Hardcoding Chromium's is why the mirror wrote nothing at
+// all in Firefox while reporting success — a create with an unknown parentId
+// does not land anywhere a person looks.
+
+const ffTree = [
+  {
+    id: "root________",
+    children: [
+      { id: "toolbar_____", title: "Bokmerkeverktøylinje", children: [] },
+      { id: "menu________", title: "Bokmerkemeny", children: [] },
+      { id: "unfiled_____", title: "Andre bokmerker", children: [] },
+      { id: "mobile______", title: "Mobile bokmerker", children: [] },
+    ],
+  },
+];
+const crTree = [
+  {
+    id: "0",
+    children: [
+      { id: "1", title: "Bookmarks bar", children: [] },
+      { id: "2", title: "Other bookmarks", children: [] },
+      { id: "3", title: "Mobile bookmarks", children: [] },
+    ],
+  },
+];
+
+console.log("\nThe bar is found, not assumed");
+{
+  check("Firefox", barRootId(ffTree), "toolbar_____");
+  check("Chromium", barRootId(crTree), "1");
+  // A browser neither list anticipates still gets the old behaviour rather
+  // than a crash or a write into nowhere.
+  check("an unknown browser falls back", barRootId([{ id: "x", children: [] }]), "1");
+}
+
+console.log("\nRoot labels are the same in both");
+{
+  // The bar contributes NOTHING to a path: its name is localised, and
+  // prefixing every bookmark with it adds a level that means nothing. That has
+  // to hold for "Bokmerkeverktøylinje" exactly as it does for "Bookmarks bar".
+  check("Firefox bar", rootLabel("toolbar_____"), "");
+  check("Chromium bar", rootLabel("1"), "");
+  check("Firefox other", rootLabel("unfiled_____"), "Other");
+  check("Chromium other", rootLabel("2"), "Other");
+  check("a normal folder is not a root", rootLabel("42"), null);
+}
+
+console.log("\nNo root is removable, in either browser");
+{
+  for (const id of ["0", "1", "2", "3", "root________", "toolbar_____", "unfiled_____"]) {
+    assert.ok(ROOT_IDS.has(id), `${id} must be protected`);
+  }
+  console.log("  ok  every root id in both browsers is protected");
+  pass++;
+
+  // The cleanup sweep looks at the bar's top level; in Firefox that is a
+  // different node, and a plan that looked at "1" would find nothing to clean.
+  const ff = [
+    {
+      id: "root________",
+      children: [
+        {
+          id: "toolbar_____",
+          children: [{ id: "99", title: "Arca", children: [] }],
+        },
+      ],
+    },
+  ];
+  check("an empty leftover is swept in Firefox too", planCleanup({ tree: ff, ownedId: null }).remove.join(), "99");
+}
+
+console.log(`\n${pass} checks passed\n`);
