@@ -179,7 +179,9 @@ pub fn parse(text: &str) -> Vec<Imported> {
 
     let mut out = Vec::new();
     for (key, prefix) in ROOTS {
-        let Some(node) = roots.get(*key) else { continue };
+        let Some(node) = roots.get(*key) else {
+            continue;
+        };
         // The root's OWN name is dropped, and its children are walked with the
         // prefix above. Walking the root node itself would fold its name into
         // every path below it, so every single bookmark on the bar would sit
@@ -339,7 +341,13 @@ mod tests {
     #[test]
     fn junk_is_an_empty_list_not_a_panic() {
         // This file belongs to a browser that may be writing it right now.
-        for body in ["", "not json", "{}", r#"{"roots":42}"#, r#"{"roots":{"bookmark_bar":7}}"#] {
+        for body in [
+            "",
+            "not json",
+            "{}",
+            r#"{"roots":42}"#,
+            r#"{"roots":{"bookmark_bar":7}}"#,
+        ] {
             assert!(parse(body).is_empty(), "{body:?}");
         }
     }
@@ -350,9 +358,7 @@ mod tests {
         // the stack ends, and a bookmark file is not a trusted input.
         let mut doc = r#"{"type":"url","name":"deep","url":"https://deep.example"}"#.to_string();
         for i in 0..100 {
-            doc = format!(
-                r#"{{"type":"folder","name":"f{i}","children":[{doc}]}}"#
-            );
+            doc = format!(r#"{{"type":"folder","name":"f{i}","children":[{doc}]}}"#);
         }
         let full = format!(r#"{{"roots":{{"bookmark_bar":{doc}}}}}"#);
         // The point is that it returns at all.

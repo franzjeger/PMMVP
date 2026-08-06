@@ -38,7 +38,10 @@ impl fmt::Display for Mirrored {
             // signed without the profile rather than anything being wrong with
             // the key.
             Mirrored::Failed(-34018) => {
-                write!(f, "no keychain access group (app signed without the profile)")
+                write!(
+                    f,
+                    "no keychain access group (app signed without the profile)"
+                )
             }
             Mirrored::Failed(status) => write!(f, "keychain refused the device key ({status})"),
             Mirrored::NotApplicable => write!(f, "no shared keychain on this platform"),

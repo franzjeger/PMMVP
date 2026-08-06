@@ -382,7 +382,9 @@ mod tests {
         // Every non-macOS platform, and macOS before the container resolves.
         let dir = tempfile::tempdir().unwrap();
         let store = VaultStore::new(dir.path().join("test.vault"), "test.svc", "test.acct");
-        store.save(&Vault::create("pw", cheap_params()).unwrap()).unwrap();
+        store
+            .save(&Vault::create("pw", cheap_params()).unwrap())
+            .unwrap();
         let files: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
         assert_eq!(files.len(), 1, "no stray copies");
     }

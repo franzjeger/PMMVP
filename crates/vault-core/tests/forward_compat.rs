@@ -19,10 +19,19 @@ enum OldVaultItem {
         totp_secret: Option<String>,
         notes: String,
     },
-    Passkey { title: String },
-    SshKey { title: String },
-    Wifi { title: String },
-    SecureNote { title: String, body: String },
+    Passkey {
+        title: String,
+    },
+    SshKey {
+        title: String,
+    },
+    Wifi {
+        title: String,
+    },
+    SecureNote {
+        title: String,
+        body: String,
+    },
 }
 
 #[test]
@@ -45,7 +54,10 @@ fn and_a_whole_list_containing_one() {
     // The real shape: the vault decodes ALL items at once, so one unknown kind
     // decides the fate of every other entry in the file.
     let items = vec![
-        vault_core::VaultItem::SecureNote { title: "Note".into(), body: "b".into() },
+        vault_core::VaultItem::SecureNote {
+            title: "Note".into(),
+            body: "b".into(),
+        },
         vault_core::VaultItem::Bookmark {
             title: "B".into(),
             url: "https://x.test".into(),
@@ -57,5 +69,8 @@ fn and_a_whole_list_containing_one() {
     ciborium::into_writer(&items, &mut buf).unwrap();
     let got: Result<Vec<OldVaultItem>, _> = ciborium::from_reader(&buf[..]);
     println!("OLD CLIENT / LIST WITH ONE: {:?}", got.as_ref().err());
-    assert!(got.is_err(), "one unknown kind takes the whole list with it");
+    assert!(
+        got.is_err(),
+        "one unknown kind takes the whole list with it"
+    );
 }

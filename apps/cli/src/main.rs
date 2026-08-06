@@ -348,18 +348,27 @@ fn bridge(payload: serde_json::Value) -> Result<serde_json::Value, Fault> {
     let mut writer = stream.try_clone().map_err(|_| Fault::Unreachable)?;
     let mut reader = BufReader::new(stream);
 
-    writeln!(writer, "{}", serde_json::json!({ "type": "hello", "token": token }))
-        .map_err(|_| Fault::Unreachable)?;
+    writeln!(
+        writer,
+        "{}",
+        serde_json::json!({ "type": "hello", "token": token })
+    )
+    .map_err(|_| Fault::Unreachable)?;
     let mut line = String::new();
-    reader.read_line(&mut line).map_err(|_| Fault::Unreachable)?;
-    let hello: serde_json::Value = serde_json::from_str(line.trim()).map_err(|_| Fault::Protocol)?;
+    reader
+        .read_line(&mut line)
+        .map_err(|_| Fault::Unreachable)?;
+    let hello: serde_json::Value =
+        serde_json::from_str(line.trim()).map_err(|_| Fault::Protocol)?;
     if hello.get("type").and_then(|v| v.as_str()) != Some("ok") {
         return Err(Fault::Unreachable);
     }
 
     writeln!(writer, "{payload}").map_err(|_| Fault::Unreachable)?;
     line.clear();
-    reader.read_line(&mut line).map_err(|_| Fault::Unreachable)?;
+    reader
+        .read_line(&mut line)
+        .map_err(|_| Fault::Unreachable)?;
     let resp: serde_json::Value = serde_json::from_str(line.trim()).map_err(|_| Fault::Protocol)?;
 
     if resp.get("type").and_then(|v| v.as_str()) == Some("error") {

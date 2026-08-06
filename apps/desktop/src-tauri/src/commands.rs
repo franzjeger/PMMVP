@@ -2400,10 +2400,13 @@ pub fn import_bookmarks(state: St<'_>, path: String) -> Result<usize, CmdError> 
         // What is already there, so a second import adds nothing. URL plus
         // folder, because the same page filed in two places is two bookmarks
         // to the person who filed it that way.
-        let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        let mut seen: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
         if let Ok(summaries) = vault.list_items(false) {
             for s in summaries {
-                let Ok(item) = vault.get_item(s.id) else { continue };
+                let Ok(item) = vault.get_item(s.id) else {
+                    continue;
+                };
                 if let vault_core::VaultItem::Bookmark { url, folder, .. } = &item.data {
                     seen.insert((url.clone(), folder.clone()));
                 }

@@ -975,18 +975,24 @@ fn handle_request(
         // vault open, exactly like a password would.
         Request::ImportBookmarks { items } => {
             let Ok(mut st) = state.lock() else {
-                return Response::Error { message: "internal".into() };
+                return Response::Error {
+                    message: "internal".into(),
+                };
             };
             let mut seen: std::collections::HashSet<(String, String)> =
                 std::collections::HashSet::new();
             let mut added = 0usize;
             {
                 let Some(vault) = st.vault.as_mut().filter(|v| v.is_unlocked()) else {
-                    return Response::Error { message: "locked".into() };
+                    return Response::Error {
+                        message: "locked".into(),
+                    };
                 };
                 if let Ok(summaries) = vault.list_items(false) {
                     for sum in summaries {
-                        let Ok(item) = vault.get_item(sum.id) else { continue };
+                        let Ok(item) = vault.get_item(sum.id) else {
+                            continue;
+                        };
                         if let VaultItem::Bookmark { url, folder, .. } = &item.data {
                             seen.insert((url.clone(), folder.clone()));
                         }
@@ -1023,16 +1029,25 @@ fn handle_request(
 
         Request::ListBookmarks => {
             let Ok(st) = state.lock() else {
-                return Response::Error { message: "internal".into() };
+                return Response::Error {
+                    message: "internal".into(),
+                };
             };
             let Some(vault) = st.vault.as_ref().filter(|v| v.is_unlocked()) else {
-                return Response::Error { message: "locked".into() };
+                return Response::Error {
+                    message: "locked".into(),
+                };
             };
             let mut items = Vec::new();
             if let Ok(summaries) = vault.list_items(false) {
                 for sum in summaries {
-                    let Ok(item) = vault.get_item(sum.id) else { continue };
-                    if let VaultItem::Bookmark { title, url, folder, .. } = &item.data {
+                    let Ok(item) = vault.get_item(sum.id) else {
+                        continue;
+                    };
+                    if let VaultItem::Bookmark {
+                        title, url, folder, ..
+                    } = &item.data
+                    {
                         items.push(BookmarkWire {
                             title: title.clone(),
                             url: url.clone(),
@@ -1398,9 +1413,7 @@ fn handle_request(
                     };
                 };
                 let title = item.data.title().to_string();
-                if vault.delete_item(uuid, now).is_err()
-                    || store.save_synced(vault).is_err()
-                {
+                if vault.delete_item(uuid, now).is_err() || store.save_synced(vault).is_err() {
                     return Response::Error {
                         message: "internal".into(),
                     };
