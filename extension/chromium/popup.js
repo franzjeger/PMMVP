@@ -217,8 +217,8 @@ api.runtime.sendMessage({ cmd: "mirrorSetting" }).then((r) => {
 mirrorEl?.addEventListener("change", async () => {
   const wanted = mirrorEl.checked;
   if (wanted && !confirm(
-    "Er nettleserens egen bokmerkesynk slaatt AV?\n\n" +
-    "Er den paa, lastes Arcas bokmerker opp til Google eller Brave og blir " +
+    "Er nettleserens egen bokmerkesynk sl\u00e5tt AV?\n\n" +
+    "Er den p\u00e5, lastes Arcas bokmerker opp til Google eller Brave og blir " +
     "liggende der permanent. Arca kan ikke fjerne dem derfra."
   )) {
     mirrorEl.checked = false;
