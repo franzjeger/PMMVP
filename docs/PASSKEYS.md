@@ -131,3 +131,48 @@ above, and it is the only way to serve passkeys *outside* the browser.
   software authenticators do).
 - Independent review of `passkey.rs` against the WebAuthn spec is required before
   this is used for real credentials (tracked with the overall audit).
+
+## Known gaps
+
+Neither is a bug today. Both are places where a future change — a stricter
+relying party, a different Windows machine — would surface first, so they are
+written down rather than rediscovered.
+
+### The signature counter is always zero
+
+`passkey::assert` passes `0` as `signCount` on every assertion, and the
+`sign_count` field stored on a `VaultItem::Passkey` is written once as `0` and
+never incremented or read back.
+
+This is legal: WebAuthn treats a constant `0` as "this authenticator does not
+support a signature counter", which is the honest answer for a credential that
+is *designed* to sync across a user's devices — a per-device counter on synced
+material would go backwards on every device switch and look exactly like the
+cloning it exists to detect. Apple and Google's synced passkeys report `0` for
+the same reason.
+
+The consequence to know: a relying party that treats a counter as mandatory, or
+that stores the value and rejects a non-increment, will refuse our assertions.
+Nothing to fix pre-emptively — but if a specific site starts rejecting sign-ins
+that the origin and UV checks should have allowed, look here early.
+
+### Windows Hello is called from a thread with no COM apartment
+
+`vault_winhello::verify` is invoked through `authenticate_off_main`, which hands
+it to `tauri::async_runtime::spawn_blocking` — deliberately, so the blocking
+prompt cannot freeze the UI thread's message pump (the original bug: a PIN box
+that could not be typed into). See `biometric.rs`.
+
+That worker thread is never `CoInitializeEx`'d, and nothing in the tree calls
+`CoIncrementMTAUsage`. The WinRT calls inside `verify` — the activation factory
+and the blocking `operation.get()` — therefore run on whatever apartment state
+the thread happens to have, in practice the process-wide implicit MTA.
+
+It has worked on the machine it was tested on, which is why this is a note and
+not a defect. But UI-invoking interop, parented to a window owned by a different
+thread, called from a thread that never declared its apartment, is the shape of
+thing that fails on someone else's machine rather than yours — as
+`CO_E_NOTINITIALIZED` / `RPC_E_*`, or as focus not returning cleanly after the
+prompt dismisses. If that turns up, the fix is to declare the apartment on that
+worker (or give the prompt its own thread), not to move the call back onto the
+UI thread — that is where this started.

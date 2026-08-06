@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Bridge
+
+- **The local bridge protocol is versioned.** It was a private arrangement
+  between the app and its own native-messaging host, so an unversioned,
+  undocumented wire format cost nothing. It stops being private as soon as
+  something else opens the socket — a passkey client inside an Electron app
+  cannot use native messaging, so it connects directly — and then a change here
+  breaks something over there with no signal but "passkeys stopped working". The
+  handshake now states a version in both directions and refuses a peer it was not
+  written against. Both sides treat an absent version as v1, so an old host and a
+  new app, or the reverse, still work.
+
 ### Passkeys
 
 - **Signing in to Microsoft 365 works.** Two separate bugs stacked on top of

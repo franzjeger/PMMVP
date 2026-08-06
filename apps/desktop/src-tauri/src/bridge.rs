@@ -39,6 +39,20 @@ use crate::state::AppState;
 /// to deny.
 const CONSENT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Version of the newline-delimited JSON protocol this build speaks.
+///
+/// The bridge stopped being a private arrangement between the app and its own
+/// native-messaging host as soon as a second consumer appeared — a passkey
+/// client inside an Electron app cannot use native messaging, so it opens this
+/// socket directly. Two consumers on an unversioned protocol is how a change
+/// here silently breaks something over there, and the failure would surface as
+/// "passkeys stopped working" rather than as a protocol mismatch.
+///
+/// Bump this when an existing request or response changes shape in a way an
+/// older client would get *wrong*. Adding a new request type, or a field an
+/// older client simply ignores, is not such a change.
+const PROTOCOL_VERSION: u32 = 1;
+
 /// Pending autofill-consent requests, keyed by a per-request id. When
 /// `confirm_autofill` is on, the bridge thread parks on the receiver while the
 /// frontend shows an Allow/Deny prompt; `resolve_autofill_consent` sends the
@@ -83,6 +97,10 @@ pub struct BookmarkWire {
 enum Request {
     Hello {
         token: String,
+        /// Protocol the client speaks. Absent means a client written before
+        /// versioning existed, which by definition speaks version 1.
+        #[serde(default)]
+        protocol: Option<u32>,
     },
     Match {
         url: String,
@@ -254,7 +272,13 @@ impl Request {
 #[derive(Debug, Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Response {
-    Ok,
+    /// Handshake accepted. Carries the protocol so a client that is not our own
+    /// native host can check what it is talking to before relying on it. Still
+    /// serialises with `"type":"ok"`, so clients that only test the tag — the
+    /// native host does exactly that — are unaffected.
+    Ok {
+        protocol: u32,
+    },
     Logins {
         items: Vec<LoginMatch>,
     },
@@ -457,14 +481,32 @@ fn handle_request(
         }
     }
     match req {
-        Request::Hello { token: presented } => {
-            if presented == token {
-                *authed = true;
-                Response::Ok
-            } else {
-                Response::Error {
+        Request::Hello {
+            token: presented,
+            protocol,
+        } => {
+            // Token first: an unauthenticated caller must not learn anything
+            // about this build, not even which protocol it speaks.
+            if presented != token {
+                return Response::Error {
                     message: "unauthorized".into(),
+                };
+            }
+            // We can serve a client older than us; we cannot serve one newer,
+            // because we do not know what it means and guessing is worse than
+            // saying so. Absent is the pre-versioning native host, i.e. v1.
+            match protocol {
+                None => {}
+                Some(v) if (1..=PROTOCOL_VERSION).contains(&v) => {}
+                Some(_) => {
+                    return Response::Error {
+                        message: "unsupported_protocol".into(),
+                    }
                 }
+            }
+            *authed = true;
+            Response::Ok {
+                protocol: PROTOCOL_VERSION,
             }
         }
         _ if !*authed => Response::Error {
@@ -1614,7 +1656,11 @@ fn log_line(state: &Mutex<AppState>, rest: &str) {
         }
     }
     let _ = std::fs::create_dir_all(&dir);
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let _ = f.write_all(line.as_bytes());
     }
 }
@@ -2058,7 +2104,10 @@ mod tests {
         }
 
         let automatic = [
-            Request::Hello { token: "t".into() },
+            Request::Hello {
+                token: "t".into(),
+                protocol: None,
+            },
             Request::Match {
                 url: "https://github.com".into(),
             },
@@ -2149,6 +2198,7 @@ mod tests {
         let r = handle_request(
             Request::Hello {
                 token: "nope".into(),
+                protocol: None,
             },
             &state,
             "secret",
@@ -2162,6 +2212,7 @@ mod tests {
         let r = handle_request(
             Request::Hello {
                 token: "secret".into(),
+                protocol: None,
             },
             &state,
             "secret",
@@ -2169,8 +2220,86 @@ mod tests {
             None,
             &mut allow(),
         );
-        assert_eq!(r, Response::Ok);
+        assert_eq!(
+            r,
+            Response::Ok {
+                protocol: PROTOCOL_VERSION
+            }
+        );
         assert!(authed);
+    }
+
+    /// A second consumer now opens this socket directly (a passkey client
+    /// inside an Electron app, which cannot use native messaging), so the
+    /// handshake has to say what it speaks and refuse what it cannot.
+    #[test]
+    fn the_handshake_negotiates_a_protocol_version() {
+        let dir = TempDir::new().unwrap();
+        let state = unlocked_state(&dir);
+
+        let hello = |protocol, token: &str, authed: &mut bool| {
+            handle_request(
+                Request::Hello {
+                    token: token.into(),
+                    protocol,
+                },
+                &state,
+                "secret",
+                authed,
+                None,
+                &mut allow(),
+            )
+        };
+
+        // Absent: the native host as it was written before versioning existed.
+        let mut authed = false;
+        assert_eq!(
+            hello(None, "secret", &mut authed),
+            Response::Ok {
+                protocol: PROTOCOL_VERSION
+            }
+        );
+        assert!(authed);
+
+        // Our own version, stated explicitly.
+        let mut authed = false;
+        assert_eq!(
+            hello(Some(PROTOCOL_VERSION), "secret", &mut authed),
+            Response::Ok {
+                protocol: PROTOCOL_VERSION
+            }
+        );
+        assert!(authed);
+
+        // A client from the future is refused rather than served responses it
+        // would misread, and does not get to send anything afterwards.
+        let mut authed = false;
+        assert_eq!(
+            hello(Some(PROTOCOL_VERSION + 1), "secret", &mut authed),
+            Response::Error {
+                message: "unsupported_protocol".into()
+            }
+        );
+        assert!(!authed);
+
+        // Zero is not a version anyone speaks.
+        let mut authed = false;
+        assert!(matches!(
+            hello(Some(0), "secret", &mut authed),
+            Response::Error { .. }
+        ));
+        assert!(!authed);
+
+        // The token is checked first, so a caller that cannot authenticate
+        // learns nothing about this build — not even that its version is wrong.
+        let mut authed = false;
+        assert_eq!(
+            hello(Some(PROTOCOL_VERSION + 1), "wrong", &mut authed),
+            Response::Error {
+                message: "unauthorized".into()
+            }
+        );
+        assert!(!authed);
     }
 
     #[test]
