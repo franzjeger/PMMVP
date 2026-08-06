@@ -576,9 +576,15 @@ function report(level, message) {
 
 // Anything the worker throws, and any promise nobody caught. Between them these
 // cover the failures that would otherwise show up only as "nothing happened".
-self.addEventListener?.("error", (e) =>
-  report("error", `${e.message} @ ${e.filename}:${e.lineno}`),
-);
-self.addEventListener?.("unhandledrejection", (e) =>
-  report("error", `unhandled rejection: ${(e.reason && e.reason.stack) || e.reason}`),
-);
+// `globalThis`, not `self`. Optional chaining guards a missing PROPERTY, not a
+// missing binding — `self?.x` still throws ReferenceError where `self` was
+// never declared, and the passkey suite runs this file in a vm context that
+// has no `self` at all. One line, 34 checks.
+if (typeof globalThis.addEventListener === "function") {
+  globalThis.addEventListener("error", (e) =>
+    report("error", `${e.message} @ ${e.filename}:${e.lineno}`),
+  );
+  globalThis.addEventListener("unhandledrejection", (e) =>
+    report("error", `unhandled rejection: ${(e.reason && e.reason.stack) || e.reason}`),
+  );
+}
