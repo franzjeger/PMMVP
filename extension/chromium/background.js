@@ -76,6 +76,27 @@ api.alarms?.onAlarm.addListener((a) => {
   if (a.name === "arca-mirror") reconcileMirror("tick");
 });
 
+// The alarm is the BACKSTOP, not the mechanism. Once a minute is fine for
+// catching up, and far too slow for the moment that matters: locking the vault
+// and walking away should not leave the bookmarks sitting there for another
+// fifty seconds.
+//
+// The app cannot call into the extension — there is no channel that way — so
+// the next best trigger is the user arriving. Focusing a window or switching a
+// tab means someone is looking at this browser, which is exactly when a stale
+// folder would be seen. Reconciling then makes it feel immediate without
+// polling harder.
+//
+// Cheap by construction: when nothing has changed the fingerprint matches and
+// reconcile returns before touching a single bookmark. Only a real change
+// costs anything.
+api.windows?.onFocusChanged?.addListener((id) => {
+  // -1 is "left every window of this browser". Nothing to show, nobody
+  // looking, and reconciling on the way out would race the way back in.
+  if (id !== -1) reconcileMirror("window focus");
+});
+api.tabs?.onActivated?.addListener(() => reconcileMirror("tab switch"));
+
 // Registered HERE, near the top, and not at the end of the file. Anything that
 // throws at module scope stops everything below it — so an alarm declared last
 // is an alarm that never exists on exactly the runs where it is needed most.
