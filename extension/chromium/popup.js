@@ -209,21 +209,34 @@ document.getElementById("bmDown").addEventListener("click", () => {
 // cannot clean. Asking is not a cop-out here; it is the only honest option.
 
 const mirrorEl = document.getElementById("mirrorAllowed");
+const confirmBox = document.getElementById("mirrorConfirm");
+
+const setMirror = async (allowed) => {
+  const r = await api.runtime.sendMessage({ cmd: "mirrorSetting", allowed });
+  if (r && r.ok) mirrorEl.checked = !!r.allowed;
+  confirmBox.hidden = true;
+};
 
 api.runtime.sendMessage({ cmd: "mirrorSetting" }).then((r) => {
   if (r && r.ok) mirrorEl.checked = !!r.allowed;
 });
 
-mirrorEl?.addEventListener("change", async () => {
-  const wanted = mirrorEl.checked;
-  if (wanted && !confirm(
-    "Er nettleserens egen bokmerkesynk sl\u00e5tt AV?\n\n" +
-    "Er den p\u00e5, lastes Arcas bokmerker opp til Google eller Brave og blir " +
-    "liggende der permanent. Arca kan ikke fjerne dem derfra."
-  )) {
-    mirrorEl.checked = false;
+// INLINE confirmation, not `confirm()`.
+//
+// A modal dialog takes focus, and an extension popup closes the moment it
+// loses focus — so the rest of the handler never ran, the setting was never
+// stored, and the checkbox was back to unticked next time the popup opened.
+// From the outside that looked exactly like "turning it on does nothing".
+mirrorEl.addEventListener("change", () => {
+  if (!mirrorEl.checked) {
+    void setMirror(false);
     return;
   }
-  const r = await api.runtime.sendMessage({ cmd: "mirrorSetting", allowed: wanted });
-  if (r && r.ok) mirrorEl.checked = !!r.allowed;
+  confirmBox.hidden = false;
+});
+
+document.getElementById("mirrorYes").addEventListener("click", () => setMirror(true));
+document.getElementById("mirrorNo").addEventListener("click", () => {
+  mirrorEl.checked = false;
+  confirmBox.hidden = true;
 });

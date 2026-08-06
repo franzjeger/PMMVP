@@ -146,8 +146,6 @@
       </label>
       <p class="hint" id="bmStatus"></p>
     </section>
-    <script src="popup.js"></script>
-  
     <section id="mirror">
       <h2>Bokmerker i nettleseren</h2>
       <p class="hint">
@@ -158,6 +156,14 @@
         <input type="checkbox" id="mirrorAllowed" />
         <span>Vis Arcas bokmerker her</span>
       </label>
+      <div id="mirrorConfirm" hidden>
+        <p class="warn">
+          Bekreft at nettleserens egen bokmerkesynk er <b>av</b>. Er den på,
+          lastes Arcas bokmerker opp til Google og blir liggende der.
+        </p>
+        <button type="button" id="mirrorYes">Ja, synken er av</button>
+        <button type="button" id="mirrorNo">Avbryt</button>
+      </div>
       <p class="warn" id="mirrorWarn">
         Slå dette PÅ bare hvis nettleserens egen bokmerkesynk er AV. Er den på,
         lastes alt Arca skriver opp til Google eller Brave og blir liggende der.
@@ -166,5 +172,7 @@
         svare på selv.
       </p>
     </section>
+    <script src="popup.js" defer></script>
+  
 </body>
 </html>
