@@ -20,6 +20,70 @@ const api = globalThis.browser ?? globalThis.chrome;
 // Must match the native messaging host manifest `name`.
 const NATIVE_HOST = "no.sybr.vault";
 
+// ── Telling a terminal what went wrong ──────────────────────────────────────
+//
+// A service worker's console lives in the browser's memory and nowhere else.
+// No file, no `log show`, nothing a terminal can reach — so when the person
+// hitting the bug and the person fixing it are not in the same room, an
+// exception here is simply invisible. Both of today's other logs exist for the
+// same reason and both settled arguments that were otherwise guesswork.
+//
+// Fire and forget, and never allowed to throw: a reporter that can fail is a
+// second bug on top of the first one.
+function report(level, message) {
+  try {
+    const p = api.runtime.sendNativeMessage(NATIVE_HOST, {
+      type: "log",
+      level,
+      message: String(message).slice(0, 2000),
+    });
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } catch (_e) {
+    /* the host is unreachable; there is nowhere left to say so */
+  }
+}
+
+// Anything the worker throws, and any promise nobody caught. Between them these
+// cover the failures that would otherwise show up only as "nothing happened".
+// `globalThis`, not `self`. Optional chaining guards a missing PROPERTY, not a
+// missing binding — `self?.x` still throws ReferenceError where `self` was
+// never declared, and the passkey suite runs this file in a vm context that
+// has no `self` at all. One line, 34 checks.
+if (typeof globalThis.addEventListener === "function") {
+  globalThis.addEventListener("error", (e) =>
+    report("error", `${e.message} @ ${e.filename}:${e.lineno}`),
+  );
+  globalThis.addEventListener("unhandledrejection", (e) =>
+    report("error", `unhandled rejection: ${(e.reason && e.reason.stack) || e.reason}`),
+  );
+}
+
+// A line per worker start, before anything else can fail.
+//
+// The reporter used to be installed at the BOTTOM of this file, after startup
+// work had already run — so the one window worth seeing into, the moments
+// between the worker booting and it being ready, reported nothing at all. When
+// the alarm silently stopped firing there was no way to tell a worker that had
+// crashed on boot from one that was never started.
+report("info", "worker start");
+
+// A poll, not a subscription, because there is nothing to subscribe to: the app
+// cannot call into the extension. `alarms` rather than setInterval — a service
+// worker is evicted when idle, and an interval dies with it while an alarm
+// wakes it back up.
+api.alarms?.create("arca-mirror", { periodInMinutes: 1 });
+api.alarms?.onAlarm.addListener((a) => {
+  if (a.name === "arca-mirror") reconcileMirror("tick");
+});
+
+// Registered HERE, near the top, and not at the end of the file. Anything that
+// throws at module scope stops everything below it — so an alarm declared last
+// is an alarm that never exists on exactly the runs where it is needed most.
+// That is not hypothetical: the periodic reconcile went silent for ten minutes
+// and looked like a feature refusing, when nothing was running at all.
+
+
+
 /** Send one message to the native host and resolve a uniform result object. */
 function sendNative(message) {
   return new Promise((resolve) => {
@@ -542,49 +606,3 @@ async function readMirrorState() {
   }
 }
 
-// A poll, not a subscription, because there is nothing to subscribe to: the app
-// cannot call into the extension. `alarms` rather than setInterval — a service
-// worker is evicted when idle, and an interval dies with it while an alarm
-// wakes it back up.
-api.alarms?.create("arca-mirror", { periodInMinutes: 1 });
-api.alarms?.onAlarm.addListener((a) => {
-  if (a.name === "arca-mirror") reconcileMirror("tick");
-});
-
-// ── Telling a terminal what went wrong ──────────────────────────────────────
-//
-// A service worker's console lives in the browser's memory and nowhere else.
-// No file, no `log show`, nothing a terminal can reach — so when the person
-// hitting the bug and the person fixing it are not in the same room, an
-// exception here is simply invisible. Both of today's other logs exist for the
-// same reason and both settled arguments that were otherwise guesswork.
-//
-// Fire and forget, and never allowed to throw: a reporter that can fail is a
-// second bug on top of the first one.
-function report(level, message) {
-  try {
-    const p = api.runtime.sendNativeMessage(NATIVE_HOST, {
-      type: "log",
-      level,
-      message: String(message).slice(0, 2000),
-    });
-    if (p && typeof p.catch === "function") p.catch(() => {});
-  } catch (_e) {
-    /* the host is unreachable; there is nowhere left to say so */
-  }
-}
-
-// Anything the worker throws, and any promise nobody caught. Between them these
-// cover the failures that would otherwise show up only as "nothing happened".
-// `globalThis`, not `self`. Optional chaining guards a missing PROPERTY, not a
-// missing binding — `self?.x` still throws ReferenceError where `self` was
-// never declared, and the passkey suite runs this file in a vm context that
-// has no `self` at all. One line, 34 checks.
-if (typeof globalThis.addEventListener === "function") {
-  globalThis.addEventListener("error", (e) =>
-    report("error", `${e.message} @ ${e.filename}:${e.lineno}`),
-  );
-  globalThis.addEventListener("unhandledrejection", (e) =>
-    report("error", `unhandled rejection: ${(e.reason && e.reason.stack) || e.reason}`),
-  );
-}

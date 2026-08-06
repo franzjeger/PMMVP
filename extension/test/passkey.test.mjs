@@ -125,8 +125,17 @@ const swChrome = {
   runtime: {
     onMessage: { addListener: (fn) => swListeners.push(fn) },
     getManifest: () => ({ version: swVersion }),
-    sendNativeMessage: (_host, _msg, cb) =>
-      queueMicrotask(() => cb(NATIVE_ANSWER)),
+    // BOTH call shapes, because the real API has both: a callback, and a
+    // promise when none is given. The stub only knew the first, so the error
+    // reporter — which uses the promise form — threw inside the harness while
+    // being perfectly correct in a browser.
+    sendNativeMessage: (_host, _msg, cb) => {
+      if (typeof cb === "function") {
+        queueMicrotask(() => cb(NATIVE_ANSWER));
+        return undefined;
+      }
+      return Promise.resolve(NATIVE_ANSWER);
+    },
     lastError: null,
   },
   storage: { local: mapArea(storage.local), session: mapArea(storage.session) },
