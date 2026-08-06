@@ -530,6 +530,17 @@ async function reconcileMirror(why) {
   // Locked, quit, or unreachable. Every one of those means the same thing to a
   // user looking at their bookmarks bar, so they get the same answer.
   if (items === null) {
+    // Logged, and this omission is the whole reason the feature looked broken
+    // for an hour. A locked vault is the COMMONEST reason for no bookmarks and
+    // it was the one path that returned in silence — so "nothing in the log"
+    // meant both "not running" and "running and correctly doing nothing", and
+    // there was no way to tell them apart from here.
+    report(
+      "info",
+      `mirror idle (${why}): Arca is locked or not running — ${
+        answer.ok ? (answer.response && answer.response.message) || "refused" : answer.error
+      }`,
+    );
     if (store.id != null) await cleanupArcaBookmarks(`no vault (${why})`);
     return;
   }
