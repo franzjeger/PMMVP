@@ -8,6 +8,8 @@
 
 import { readAll, apply } from "./bookmarks.js";
 
+import { planCleanup } from "./bookmarks.js";
+
 const api = globalThis.browser ?? globalThis.chrome;
 
 // Must match the native messaging host manifest `name`.
@@ -360,3 +362,61 @@ api.tabs?.onRemoved?.addListener((tabId) => {
   pendingSaves.delete(tabId);
   clearGesture(tabId);
 });
+
+// ── Arca's bookmark folder: cleanup ─────────────────────────────────────────
+//
+// The mirror is only ephemeral if it actually disappears. A browser that was
+// force-quit, an Arca that crashed, a machine that lost power: in every one of
+// those the folder is still sitting there next time the browser opens, and the
+// whole point of the design is gone.
+//
+// So cleanup runs at STARTUP, before anything asks whether Arca is reachable.
+// Not "clean up if the vault is locked" — clean up first, then let an unlocked
+// Arca put the folder back. The failure that matters is the one where nothing
+// gets to ask.
+const OWNED_ID_KEY = "bookmarkFolderId";
+
+async function cleanupArcaBookmarks(why) {
+  if (!api.bookmarks) return;
+  let ownedId = null;
+  try {
+    const got = await api.storage.local.get(OWNED_ID_KEY);
+    ownedId = got[OWNED_ID_KEY] ?? null;
+  } catch (_e) {
+    /* no record; the sweep below is all we have */
+  }
+  let tree;
+  try {
+    tree = await api.bookmarks.getTree();
+  } catch (_e) {
+    return;
+  }
+  const { remove, notes } = planCleanup({ tree, ownedId });
+  for (const id of remove) {
+    try {
+      await api.bookmarks.removeTree(id);
+    } catch (e) {
+      // Reported, not swallowed: a folder that will not go is the difference
+      // between "ephemeral" and "permanent", and the user deserves to know
+      // which one they have.
+      console.warn(`[Arca] could not remove bookmark folder ${id}:`, e);
+    }
+  }
+  try {
+    await api.storage.local.remove(OWNED_ID_KEY);
+  } catch (_e) {
+    /* nothing to forget */
+  }
+  if (remove.length || notes.length) {
+    console.debug(`[Arca] bookmark cleanup (${why}):`, { remove, notes });
+  }
+}
+
+// Browser start, and extension install/update/reload. Between them these cover
+// every way a session can begin holding a folder from a session that ended
+// badly.
+api.runtime.onStartup?.addListener(() => cleanupArcaBookmarks("browser startup"));
+api.runtime.onInstalled?.addListener(() => cleanupArcaBookmarks("extension loaded"));
+// And now, for the reload that fires neither: a service worker respawning after
+// eviction runs this file again but neither of the events above.
+cleanupArcaBookmarks("worker start");

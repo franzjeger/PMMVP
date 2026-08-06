@@ -8,7 +8,7 @@
 // point of this file, so they are tested against the real module rather than a
 // description of it.
 import assert from "node:assert/strict";
-import { flatten, plan, apply } from "../chromium/bookmarks.js";
+import { flatten, plan, apply, planCleanup, OWNED_FOLDER_TITLE } from "../chromium/bookmarks.js";
 
 let pass = 0;
 const check = (name, got, want) => {
@@ -141,3 +141,63 @@ console.log("\napply() survives a node the browser refuses");
 }
 
 console.log(`\n${pass} checks passed\n`);
+
+
+// ── Cleanup at startup ──────────────────────────────────────────────────────
+//
+// The ephemeral mirror is only private if the bookmarks actually go away. A
+// browser that crashes, or an Arca that dies, must not leave them lying there —
+// so cleanup runs at startup, before anything else, and these decide what it
+// may touch.
+
+const bar = (children) => [{ id: "1", title: "Bookmarks bar", children }];
+
+console.log("\nCleanup removes what we can prove is ours");
+{
+  const tree = bar([
+    { id: "10", title: "Arca", children: [{ id: "11", title: "x", url: "https://x.test" }] },
+    { id: "20", title: "Frank sine", children: [{ id: "21", title: "y", url: "https://y.test" }] },
+  ]);
+  const { remove } = planCleanup({ tree, ownedId: "10" });
+  check("the recorded folder goes, contents and all", remove.join(), "10");
+  check("and nothing else is touched", remove.includes("20"), false);
+}
+
+console.log("\nA folder that only LOOKS like ours");
+{
+  // After a reinstall the recorded id is gone. Sharing a name is not proof of
+  // ownership, and a user may well have made their own "Arca" folder.
+  const tree = bar([
+    { id: "30", title: "Arca", children: [{ id: "31", title: "mine", url: "https://mine.test" }] },
+  ]);
+  const { remove, notes } = planCleanup({ tree, ownedId: null });
+  check("a non-empty lookalike is LEFT ALONE", remove.length, 0);
+  check("and says so", notes.some((n) => n.includes("not provably ours")), true);
+
+  // An empty shell costs nothing to remove and nothing to lose.
+  const empty = bar([{ id: "40", title: "Arca", children: [] }]);
+  check("an empty leftover is swept", planCleanup({ tree: empty, ownedId: null }).remove.join(), "40");
+}
+
+console.log("\nThings cleanup must never remove");
+{
+  // A root removal throws, and one throw aborts the whole batch — so a
+  // policy-managed folder would take the real cleanup down with it.
+  const managed = bar([{ id: "50", title: "Arca", children: [], unmodifiable: "managed" }]);
+  check("policy-managed folders are refused", planCleanup({ tree: managed, ownedId: "50" }).remove.length, 0);
+
+  const roots = [{ id: "1", title: "Arca", children: [] }];
+  check("a root is never removed", planCleanup({ tree: roots, ownedId: "1" }).remove.length, 0);
+
+  const other = bar([{ id: "60", title: "Frank sine", children: [] }]);
+  check("an id that no longer exists removes nothing", planCleanup({ tree: other, ownedId: "99" }).remove.length, 0);
+
+  // Chromium REUSES bookmark ids after a deletion, so an id recorded weeks ago
+  // can come to point at a folder the user made yesterday. Without the title
+  // check this deleted it. The first version of this test asserted the
+  // deletion and called it "never hits a stranger", which is how the hole
+  // survived being written down.
+  const reused = planCleanup({ tree: other, ownedId: "60" });
+  check("a REUSED id is refused", reused.remove.length, 0);
+  check("and names what it found instead", reused.notes.some((n) => n.includes("id reused")), true);
+}
