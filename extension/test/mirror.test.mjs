@@ -5,7 +5,7 @@
 // What appears in someone's bookmarks bar is decided here, so it is decided by
 // code that runs without a browser.
 import assert from "node:assert/strict";
-import { buildTree, fingerprint, MAX_MIRRORED } from "../chromium/mirror.js";
+import { buildTree, fingerprint, mirrorGate, MAX_MIRRORED } from "../chromium/mirror.js";
 
 let pass = 0;
 const check = (name, got, want) => {
@@ -110,6 +110,23 @@ console.log("\nThe fingerprint decides whether to rebuild");
   assert.notEqual(fingerprint(a), fingerprint([a[0]]));
   console.log("  ok  a removed bookmark changes it");
   pass++;
+}
+
+console.log("\nThe browser-sync guard");
+{
+  // If the browser syncs its own bookmarks, everything Arca writes is uploaded
+  // and kept — neither temporary nor private, on a server the user cannot
+  // clean. There is no extension API that reports that setting, so this asks
+  // rather than guesses, and refuses until it has an answer.
+  check("off by default", mirrorGate({ allowed: undefined }).allow, false);
+  check("and a missing setting is not consent", mirrorGate({}).allow, false);
+  check("nor is anything truthy-but-not-true", mirrorGate({ allowed: "yes" }).allow, false);
+  check("only an explicit yes opens it", mirrorGate({ allowed: true }).allow, true);
+  check(
+    "and a refusal says what it is waiting for",
+    mirrorGate({ allowed: false }).reason.includes("sync is off"),
+    true,
+  );
 }
 
 console.log(`\n${pass} checks passed\n`);

@@ -297,6 +297,19 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // the only thing Arca does that can DESTROY something the vault cannot
     // restore — bookmarks live in the browser — so it does not happen while
     // nobody is looking.
+    case "mirrorSetting":
+      (async () => {
+        if (typeof msg.allowed === "boolean") {
+          await api.storage.local.set({ [MIRROR_ALLOWED_KEY]: msg.allowed });
+          // Applied at once: turning it off should take the folder away now,
+          // not at the next tick a minute from now.
+          await reconcileMirror(msg.allowed ? "enabled" : "disabled");
+        }
+        const got = await api.storage.local.get(MIRROR_ALLOWED_KEY);
+        sendResponse({ ok: true, allowed: got[MIRROR_ALLOWED_KEY] === true });
+      })();
+      return true;
+
     case "bookmarksToArca":
       readAll(api)
         .then((items) =>
@@ -374,6 +387,7 @@ api.tabs?.onRemoved?.addListener((tabId) => {
 // gets to ask.
 const OWNED_ID_KEY = "bookmarkFolderId";
 const MIRROR_STAMP_KEY = "bookmarkFingerprint";
+const MIRROR_ALLOWED_KEY = "bookmarkMirrorAllowed";
 
 async function cleanupArcaBookmarks(why) {
   // Nothing to clean where the permission was never granted — and the guard
@@ -439,7 +453,7 @@ cleanupArcaBookmarks("worker start");
 async function reconcileMirror(why) {
   if (!api.bookmarks) return;
   const { planCleanup, OWNED_FOLDER_TITLE } = await import("./bookmarks.js");
-  const { buildTree, fingerprint } = await import("./mirror.js");
+  const { buildTree, fingerprint, mirrorGate } = await import("./mirror.js");
 
   const answer = await sendNative({ type: "list_bookmarks" });
   const items =
@@ -453,6 +467,16 @@ async function reconcileMirror(why) {
   // user looking at their bookmarks bar, so they get the same answer.
   if (items === null) {
     if (store.id != null) await cleanupArcaBookmarks(`no vault (${why})`);
+    return;
+  }
+
+  // The sync guard, checked AFTER the cleanup branch above and BEFORE anything
+  // is written. Turning the guard on while a folder is already on screen must
+  // still take that folder away — a gate that also blocked removal would
+  // strand exactly the bookmarks it exists to keep out of a cloud.
+  const gate = mirrorGate({ allowed: store.allowed });
+  if (!gate.allow) {
+    if (store.id != null) await cleanupArcaBookmarks(`mirroring off (${why})`);
     return;
   }
 
@@ -502,10 +526,16 @@ async function writeNode(node, parentId) {
 
 async function readMirrorState() {
   try {
-    const got = await api.storage.local.get([OWNED_ID_KEY, MIRROR_STAMP_KEY]);
-    return { id: got[OWNED_ID_KEY] ?? null, fingerprint: got[MIRROR_STAMP_KEY] ?? null };
+    const got = await api.storage.local.get([OWNED_ID_KEY, MIRROR_STAMP_KEY, MIRROR_ALLOWED_KEY]);
+    return {
+      id: got[OWNED_ID_KEY] ?? null,
+      fingerprint: got[MIRROR_STAMP_KEY] ?? null,
+      // Absent means NOT allowed. A missing setting must never read as consent.
+      allowed: got[MIRROR_ALLOWED_KEY] === true,
+    };
   } catch (_e) {
-    return { id: null, fingerprint: null };
+    // Unreadable storage is not permission either.
+    return { id: null, fingerprint: null, allowed: false };
   }
 }
 

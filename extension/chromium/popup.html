@@ -147,5 +147,24 @@
       <p class="hint" id="bmStatus"></p>
     </section>
     <script src="popup.js"></script>
-  </body>
+  
+    <section id="mirror">
+      <h2>Bokmerker i nettleseren</h2>
+      <p class="hint">
+        Arca kan vise bokmerkene sine i denne nettleseren mens hvelvet er ulåst,
+        og fjerne dem igjen når det låses.
+      </p>
+      <label class="row">
+        <input type="checkbox" id="mirrorAllowed" />
+        <span>Vis Arcas bokmerker her</span>
+      </label>
+      <p class="warn" id="mirrorWarn">
+        Slå dette PÅ bare hvis nettleserens egen bokmerkesynk er AV. Er den på,
+        lastes alt Arca skriver opp til Google eller Brave og blir liggende der.
+        Da er bokmerkene verken midlertidige eller private, og de kan ikke
+        fjernes herfra. Arca kan ikke lese den innstillingen, så dette må du
+        svare på selv.
+      </p>
+    </section>
+</body>
 </html>

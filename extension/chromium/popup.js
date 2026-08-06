@@ -200,3 +200,30 @@ document.getElementById("bmDown").addEventListener("click", () => {
       .catch((e) => say(`Could not apply: ${e}`));
   run(false);
 });
+
+
+// ── The bookmark mirror ─────────────────────────────────────────────────────
+//
+// Off until the user says the browser's own sync is off, because Arca cannot
+// read that setting and a wrong guess uploads their bookmarks to a server they
+// cannot clean. Asking is not a cop-out here; it is the only honest option.
+
+const mirrorEl = document.getElementById("mirrorAllowed");
+
+api.runtime.sendMessage({ cmd: "mirrorSetting" }).then((r) => {
+  if (r && r.ok) mirrorEl.checked = !!r.allowed;
+});
+
+mirrorEl?.addEventListener("change", async () => {
+  const wanted = mirrorEl.checked;
+  if (wanted && !confirm(
+    "Er nettleserens egen bokmerkesynk slaatt AV?\n\n" +
+    "Er den paa, lastes Arcas bokmerker opp til Google eller Brave og blir " +
+    "liggende der permanent. Arca kan ikke fjerne dem derfra."
+  )) {
+    mirrorEl.checked = false;
+    return;
+  }
+  const r = await api.runtime.sendMessage({ cmd: "mirrorSetting", allowed: wanted });
+  if (r && r.ok) mirrorEl.checked = !!r.allowed;
+});
