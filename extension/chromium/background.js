@@ -6,7 +6,14 @@
 // releases a credential on an explicit "fill" for a matching origin while
 // unlocked; "listLogins" only ever returns metadata.
 
-import { readAll, apply } from "./bookmarks.js";
+// STATIC imports, and they have to be. A service worker forbids dynamic
+// `import()` outright — "import() is disallowed on ServiceWorkerGlobalScope by
+// the HTML specification" — so the one-line trick that kept the passkey suite
+// happy shipped an extension where cleanup and mirroring threw on every call.
+// The manifest declares this worker as a module precisely so these are legal;
+// the test harness is what has to bend, not the code that has to run.
+import { readAll, apply, planCleanup, OWNED_FOLDER_TITLE } from "./bookmarks.js";
+import { buildTree, fingerprint, mirrorGate } from "./mirror.js";
 
 const api = globalThis.browser ?? globalThis.chrome;
 
@@ -394,11 +401,6 @@ async function cleanupArcaBookmarks(why) {
   // comes before the import so a context without `bookmarks` (the test
   // harness, a browser that refused the permission) never loads the module.
   if (!api.bookmarks) return;
-  // Imported HERE rather than at the top of the file. A static `import` makes
-  // this an ES module, and the passkey tests run this exact file in a vm
-  // context as a classic script — so a top-level import turns a real test
-  // suite into a syntax error, which is a poor trade for one line.
-  const { planCleanup } = await import("./bookmarks.js");
   let ownedId = null;
   try {
     const got = await api.storage.local.get(OWNED_ID_KEY);
@@ -452,8 +454,6 @@ cleanupArcaBookmarks("worker start");
 /// back is the whole truth about what should be on screen.
 async function reconcileMirror(why) {
   if (!api.bookmarks) return;
-  const { planCleanup, OWNED_FOLDER_TITLE } = await import("./bookmarks.js");
-  const { buildTree, fingerprint, mirrorGate } = await import("./mirror.js");
 
   const answer = await sendNative({ type: "list_bookmarks" });
   const items =

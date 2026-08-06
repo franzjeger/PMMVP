@@ -24,10 +24,27 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+import * as bookmarksModule from "../chromium/bookmarks.js";
+import * as mirrorModule from "../chromium/mirror.js";
 import assert from "node:assert/strict";
 
 const EXT = fileURLToPath(new URL("../chromium/", import.meta.url));
-const src = (f) => readFileSync(EXT + f, "utf8");
+const raw = (f) => readFileSync(EXT + f, "utf8");
+
+// background.js is a MODULE — the manifest says so, and it has to be: a service
+// worker forbids dynamic `import()`, so its dependencies can only arrive as
+// static imports. This harness runs that file in a vm as a classic script,
+// which cannot parse one.
+//
+// So the imports are stripped here and the real exports are injected into the
+// context instead. The alternative was to keep background.js loading its
+// modules dynamically to suit this file, and that shipped an extension whose
+// bookmark cleanup threw on every single call. The harness bends; the code
+// that has to run in a browser does not.
+const src = (f) =>
+  f === "background.js"
+    ? raw(f).replace(/^import\s+\{[^}]*\}\s+from\s+"\.\/[^"]+";$/gm, "")
+    : raw(f);
 
 const CLAIMED = "app:locked";
 
@@ -119,6 +136,10 @@ const swChrome = {
 const swCtx = vm.createContext({
   globalThis: null,
   chrome: swChrome,
+  // The symbols background.js would have imported. The REAL ones, so the
+  // behaviour under test is the behaviour that ships.
+  ...bookmarksModule,
+  ...mirrorModule,
   console,
   setTimeout,
   queueMicrotask,
@@ -555,6 +576,24 @@ console.log("\nA shim retires itself once the extension moves on without it");
   advance(300);
   await updated.get();
   check("a newer extension retires the old shim", updated.fellBackTo(), "shim_retired");
+}
+
+console.log("\nWhat a service worker is allowed to contain");
+{
+  // `import() is disallowed on ServiceWorkerGlobalScope by the HTML
+  // specification`. This shipped: a dynamic import added to keep THIS harness
+  // happy made every bookmark cleanup and every mirror call throw in the real
+  // extension, and the only symptom a user saw was a checkbox that would not
+  // stay ticked.
+  //
+  // The harness is what adapts to a module (see `src` above). The worker does
+  // not get to.
+  assert.ok(
+    !/\bawait\s+import\s*\(/.test(raw("background.js")),
+    "background.js uses dynamic import(), which a service worker refuses at runtime",
+  );
+  console.log("  ok  background.js has no dynamic import()");
+  pass++;
 }
 
 console.log(`\n${pass} checks passed\n`);
