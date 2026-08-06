@@ -8,8 +8,6 @@
 
 import { readAll, apply } from "./bookmarks.js";
 
-import { planCleanup } from "./bookmarks.js";
-
 const api = globalThis.browser ?? globalThis.chrome;
 
 // Must match the native messaging host manifest `name`.
@@ -377,7 +375,15 @@ api.tabs?.onRemoved?.addListener((tabId) => {
 const OWNED_ID_KEY = "bookmarkFolderId";
 
 async function cleanupArcaBookmarks(why) {
+  // Nothing to clean where the permission was never granted — and the guard
+  // comes before the import so a context without `bookmarks` (the test
+  // harness, a browser that refused the permission) never loads the module.
   if (!api.bookmarks) return;
+  // Imported HERE rather than at the top of the file. A static `import` makes
+  // this an ES module, and the passkey tests run this exact file in a vm
+  // context as a classic script — so a top-level import turns a real test
+  // suite into a syntax error, which is a poor trade for one line.
+  const { planCleanup } = await import("./bookmarks.js");
   let ownedId = null;
   try {
     const got = await api.storage.local.get(OWNED_ID_KEY);
