@@ -504,9 +504,19 @@ async function cleanupArcaBookmarks(why) {
 // badly.
 api.runtime.onStartup?.addListener(() => cleanupArcaBookmarks("browser startup"));
 api.runtime.onInstalled?.addListener(() => cleanupArcaBookmarks("extension loaded"));
-// And now, for the reload that fires neither: a service worker respawning after
-// eviction runs this file again but neither of the events above.
-cleanupArcaBookmarks("worker start");
+// NOT on plain worker start, and this was a real bug.
+//
+// A service worker is evicted whenever it goes idle and woken for the next
+// alarm — many times an hour. Cleaning on every wake meant: wake, delete the
+// folder, forget the recorded id, tick, rebuild all 128, sleep, repeat. The
+// log showed `mirrored 128 bookmarks` once a minute forever, and the
+// fingerprint that exists to prevent exactly that never got a chance, because
+// its stored value was thrown away moments earlier.
+//
+// A worker waking up is not a new session. `onStartup` covers a browser that
+// has actually restarted, `onInstalled` covers install, update and reload, and
+// between them every way a session can begin holding a stale folder is already
+// covered.
 
 /// Write Arca's list into the browser, or take it away. One reconcile, driven
 /// by ONE question.
