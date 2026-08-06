@@ -46,6 +46,23 @@ enum Request {
     },
     /// Liveness check.
     Ping,
+    /// Something the extension wants written down where a human with a
+    /// terminal can read it.
+    ///
+    /// An extension's console lives in the browser's memory and nowhere else:
+    /// no file, no `log show`, nothing a terminal can reach. So a bug in the
+    /// service worker is invisible unless someone is standing in front of that
+    /// browser with DevTools open — which, when the person reporting it and
+    /// the person fixing it are not the same person, means it is invisible.
+    ///
+    /// This is the same trick that settled two arguments today: the AutoFill
+    /// publish log and the passkey request log. Write it down and stop
+    /// guessing.
+    Log {
+        #[serde(default)]
+        level: String,
+        message: String,
+    },
     /// Ask for logins whose site matches `url` (the active tab's URL).
     ListMatchingLogins { url: String },
     /// Fetch the credential for a chosen login id, to fill into `url`.
@@ -189,6 +206,10 @@ fn handle(request: Request) -> Response {
             app_connected: desktop_app_available(),
         },
         Request::Ping => Response::Pong,
+        Request::Log { level, message } => {
+            write_extension_log(&level, &message);
+            Response::Pong
+        }
         Request::ListMatchingLogins { url } => match query_desktop_app(&url) {
             Some(items) => Response::Logins {
                 url,
@@ -704,5 +725,51 @@ mod tests {
         bytes.extend_from_slice(b"{}");
         let mut cur = Cursor::new(bytes);
         assert!(read_message(&mut cur).is_err());
+    }
+}
+
+/// Append one line to the extension's log.
+///
+/// Next to the vault, where every other file of ours already lives, and
+/// written by the HOST rather than the app: the app may be locked or not
+/// running at all, and the moments worth recording are exactly the ones where
+/// something is not working.
+///
+/// Trimmed rather than rotated. This is a debugging aid, not an audit trail,
+/// and a scheme to manage it would be more machinery than the thing itself.
+fn write_extension_log(level: &str, message: &str) {
+    use std::io::Write;
+    let Some(dir) = dirs::data_dir().map(|d| d.join(HOST_NAME)) else {
+        return;
+    };
+    let path = dir.join("extension.log");
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Newlines would turn one entry into several and break line counting; a
+    // stack trace arrives with plenty of them.
+    let flat = message.replace('\n', " ⏎ ");
+    let line = format!("{stamp}\t{level}\t{flat}\n");
+
+    const MAX_LINES: usize = 400;
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        let count = existing.lines().count();
+        if count >= MAX_LINES {
+            let keep: String = existing
+                .lines()
+                .skip(count - MAX_LINES / 2)
+                .map(|l| format!("{l}\n"))
+                .collect();
+            let _ = std::fs::write(&path, keep);
+        }
+    }
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = f.write_all(line.as_bytes());
     }
 }

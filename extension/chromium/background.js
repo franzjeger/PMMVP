@@ -476,6 +476,7 @@ async function reconcileMirror(why) {
   // strand exactly the bookmarks it exists to keep out of a cloud.
   const gate = mirrorGate({ allowed: store.allowed });
   if (!gate.allow) {
+    report("info", `mirror skipped (${why}): ${gate.reason}`);
     if (store.id != null) await cleanupArcaBookmarks(`mirroring off (${why})`);
     return;
   }
@@ -503,13 +504,15 @@ async function reconcileMirror(why) {
     await api.storage.local.set({ [MIRROR_STAMP_KEY]: stamp });
   } catch (e) {
     console.warn("[Arca] could not mirror bookmarks:", e);
+    report("error", `mirror failed (${why}): ${(e && e.stack) || e}`);
     await cleanupArcaBookmarks("mirror failed");
     return;
   }
-  console.debug(
-    `[Arca] mirrored ${used} bookmarks (${why})` +
-      (dropped ? `, ${dropped} not mirrorable` : ""),
-  );
+  const summary =
+    `mirrored ${used} bookmarks (${why})` +
+    (dropped ? `, ${dropped} not mirrorable` : "");
+  console.debug(`[Arca] ${summary}`);
+  report("info", summary);
 }
 
 /// Depth-first creation. Folders before their contents, in the order buildTree
@@ -547,3 +550,35 @@ api.alarms?.create("arca-mirror", { periodInMinutes: 1 });
 api.alarms?.onAlarm.addListener((a) => {
   if (a.name === "arca-mirror") reconcileMirror("tick");
 });
+
+// ── Telling a terminal what went wrong ──────────────────────────────────────
+//
+// A service worker's console lives in the browser's memory and nowhere else.
+// No file, no `log show`, nothing a terminal can reach — so when the person
+// hitting the bug and the person fixing it are not in the same room, an
+// exception here is simply invisible. Both of today's other logs exist for the
+// same reason and both settled arguments that were otherwise guesswork.
+//
+// Fire and forget, and never allowed to throw: a reporter that can fail is a
+// second bug on top of the first one.
+function report(level, message) {
+  try {
+    const p = api.runtime.sendNativeMessage(NATIVE_HOST, {
+      type: "log",
+      level,
+      message: String(message).slice(0, 2000),
+    });
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } catch (_e) {
+    /* the host is unreachable; there is nowhere left to say so */
+  }
+}
+
+// Anything the worker throws, and any promise nobody caught. Between them these
+// cover the failures that would otherwise show up only as "nothing happened".
+self.addEventListener?.("error", (e) =>
+  report("error", `${e.message} @ ${e.filename}:${e.lineno}`),
+);
+self.addEventListener?.("unhandledrejection", (e) =>
+  report("error", `unhandled rejection: ${(e.reason && e.reason.stack) || e.reason}`),
+);
