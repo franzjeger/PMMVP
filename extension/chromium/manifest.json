@@ -8,7 +8,8 @@
     "scripting",
     "nativeMessaging",
     "storage",
-    "bookmarks"
+    "bookmarks",
+    "alarms"
   ],
   "host_permissions": [
     "http://*/*",

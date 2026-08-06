@@ -373,6 +373,7 @@ api.tabs?.onRemoved?.addListener((tabId) => {
 // Arca put the folder back. The failure that matters is the one where nothing
 // gets to ask.
 const OWNED_ID_KEY = "bookmarkFolderId";
+const MIRROR_STAMP_KEY = "bookmarkFingerprint";
 
 async function cleanupArcaBookmarks(why) {
   // Nothing to clean where the permission was never granted — and the guard
@@ -409,7 +410,7 @@ async function cleanupArcaBookmarks(why) {
     }
   }
   try {
-    await api.storage.local.remove(OWNED_ID_KEY);
+    await api.storage.local.remove([OWNED_ID_KEY, MIRROR_STAMP_KEY]);
   } catch (_e) {
     /* nothing to forget */
   }
@@ -426,3 +427,93 @@ api.runtime.onInstalled?.addListener(() => cleanupArcaBookmarks("extension loade
 // And now, for the reload that fires neither: a service worker respawning after
 // eviction runs this file again but neither of the events above.
 cleanupArcaBookmarks("worker start");
+
+/// Write Arca's list into the browser, or take it away. One reconcile, driven
+/// by ONE question.
+///
+/// `list_bookmarks` needs an unlocked vault, so its answer decides both
+/// directions at once: a list means write, a refusal means remove. There is no
+/// separate "is Arca unlocked" call to disagree with it, and no push channel
+/// from the app that could be missed — the extension asks, and what it gets
+/// back is the whole truth about what should be on screen.
+async function reconcileMirror(why) {
+  if (!api.bookmarks) return;
+  const { planCleanup, OWNED_FOLDER_TITLE } = await import("./bookmarks.js");
+  const { buildTree, fingerprint } = await import("./mirror.js");
+
+  const answer = await sendNative({ type: "list_bookmarks" });
+  const items =
+    answer.ok && answer.response && answer.response.type === "bookmarks"
+      ? answer.response.items || []
+      : null;
+
+  const store = await readMirrorState();
+
+  // Locked, quit, or unreachable. Every one of those means the same thing to a
+  // user looking at their bookmarks bar, so they get the same answer.
+  if (items === null) {
+    if (store.id != null) await cleanupArcaBookmarks(`no vault (${why})`);
+    return;
+  }
+
+  const stamp = fingerprint(items);
+  if (store.id != null && store.fingerprint === stamp) return; // already right
+
+  // Rebuild rather than diff. The folder is Arca's own, so throwing it away
+  // costs nothing, and a full rebuild cannot drift the way a patch can.
+  await cleanupArcaBookmarks(`rebuilding (${why})`);
+
+  const { root, used, dropped } = buildTree(items);
+  let folderId;
+  try {
+    const folder = await api.bookmarks.create({
+      parentId: "1",
+      title: OWNED_FOLDER_TITLE,
+    });
+    folderId = folder.id;
+    // Recorded BEFORE the contents go in. If the browser dies halfway through
+    // this, the next startup still knows which folder was ours and can remove
+    // it; recording it afterwards would leave a half-built orphan nothing owns.
+    await api.storage.local.set({ [OWNED_ID_KEY]: folderId });
+    await writeNode(root, folderId);
+    await api.storage.local.set({ [MIRROR_STAMP_KEY]: stamp });
+  } catch (e) {
+    console.warn("[Arca] could not mirror bookmarks:", e);
+    await cleanupArcaBookmarks("mirror failed");
+    return;
+  }
+  console.debug(
+    `[Arca] mirrored ${used} bookmarks (${why})` +
+      (dropped ? `, ${dropped} not mirrorable` : ""),
+  );
+}
+
+/// Depth-first creation. Folders before their contents, in the order buildTree
+/// settled on.
+async function writeNode(node, parentId) {
+  for (const link of node.links) {
+    await api.bookmarks.create({ parentId, title: link.title, url: link.url });
+  }
+  for (const child of node.folders.values()) {
+    const made = await api.bookmarks.create({ parentId, title: child.name });
+    await writeNode(child, made.id);
+  }
+}
+
+async function readMirrorState() {
+  try {
+    const got = await api.storage.local.get([OWNED_ID_KEY, MIRROR_STAMP_KEY]);
+    return { id: got[OWNED_ID_KEY] ?? null, fingerprint: got[MIRROR_STAMP_KEY] ?? null };
+  } catch (_e) {
+    return { id: null, fingerprint: null };
+  }
+}
+
+// A poll, not a subscription, because there is nothing to subscribe to: the app
+// cannot call into the extension. `alarms` rather than setInterval — a service
+// worker is evicted when idle, and an interval dies with it while an alarm
+// wakes it back up.
+api.alarms?.create("arca-mirror", { periodInMinutes: 1 });
+api.alarms?.onAlarm.addListener((a) => {
+  if (a.name === "arca-mirror") reconcileMirror("tick");
+});
