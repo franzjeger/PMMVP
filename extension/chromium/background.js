@@ -122,6 +122,73 @@ api.windows?.onFocusChanged?.addListener((id) => {
 });
 api.tabs?.onActivated?.addListener(() => reconcileMirror("tab switch"));
 
+// ── Bookmarks the USER puts in Arca's folder ────────────────────────────────
+//
+// Dropping them was bad design and worse manners: a bookmark saved into a
+// folder that is visibly Arca's, silently gone at the next rebuild, with no
+// warning and nothing to undo. "It is only a view" is an explanation, not an
+// excuse — the folder looks writable because it IS writable, and a person is
+// entitled to expect that what they put in a folder stays there.
+//
+// So anything created inside it is handed to Arca, which makes it part of the
+// master list, which means the next rebuild puts it back rather than dropping
+// it.
+api.bookmarks?.onCreated?.addListener(async (id, node) => {
+  // Our own rebuild fires this 128 times. Ignoring our own writes is what
+  // separates "the user added something" from "Arca is redrawing".
+  if (applying > 0) return;
+  if (!node || !node.url) return; // a folder; it carries no bookmark to save
+  try {
+    const { id: ownedId } = await readMirrorState();
+    if (!(await insideOwnedFolder(node.parentId, ownedId))) return;
+
+    // The folder path this landed in, relative to Arca's own folder, so it
+    // comes back to the same place it was filed.
+    const folder = await pathWithinOwned(node.parentId, ownedId);
+    const answer = await sendNative({
+      type: "import_bookmarks",
+      items: [{ title: node.title || node.url, url: node.url, folder }],
+    });
+    const added =
+      answer.ok && answer.response && answer.response.type === "imported_bookmarks"
+        ? answer.response.added
+        : null;
+    report(
+      added === null ? "error" : "info",
+      added === null
+        ? `could not save a bookmark added to Arca's folder: ${
+            (answer.response && answer.response.message) || answer.error
+          }`
+        : `saved a bookmark added to Arca's folder (${added} new)`,
+    );
+    // The fingerprint is now stale by construction — Arca holds one more than
+    // the mirror does. Clearing it makes the next reconcile rebuild rather
+    // than decide nothing has changed.
+    await api.storage.local.remove(MIRROR_STAMP_KEY);
+  } catch (e) {
+    report("error", `capture failed: ${(e && e.stack) || e}`);
+  }
+});
+
+/// The `/`-separated path from Arca's folder down to `id`, exclusive.
+async function pathWithinOwned(id, ownedId) {
+  const parts = [];
+  let cursor = id;
+  for (let hop = 0; hop < 32 && cursor; hop++) {
+    if (String(cursor) === String(ownedId)) break;
+    let node;
+    try {
+      [node] = await api.bookmarks.get(String(cursor));
+    } catch (_e) {
+      break;
+    }
+    if (!node) break;
+    parts.unshift(node.title || "");
+    cursor = node.parentId;
+  }
+  return parts.filter(Boolean).join("/");
+}
+
 // Registered HERE, near the top, and not at the end of the file. Anything that
 // throws at module scope stops everything below it — so an alarm declared last
 // is an alarm that never exists on exactly the runs where it is needed most.
@@ -527,7 +594,7 @@ async function cleanupArcaBookmarks(why) {
   const { remove, notes } = planCleanup({ tree, ownedId });
   for (const id of remove) {
     try {
-      await api.bookmarks.removeTree(id);
+      await whileApplying(() => api.bookmarks.removeTree(id));
     } catch (e) {
       // Reported, not swallowed: a folder that will not go is the difference
       // between "ephemeral" and "permanent", and the user deserves to know
@@ -636,16 +703,16 @@ async function reconcileMirror(why) {
     // Resolved from the tree, not assumed. Chromium's bar is "1" and Firefox's
     // is "toolbar_____"; a hardcoded parent is why this wrote nothing at all
     // in Firefox while reporting success.
-    const folder = await api.bookmarks.create({
-      parentId: barRootId(await api.bookmarks.getTree()),
-      title: OWNED_FOLDER_TITLE,
-    });
+    const barId = barRootId(await api.bookmarks.getTree());
+    const folder = await whileApplying(() =>
+      api.bookmarks.create({ parentId: barId, title: OWNED_FOLDER_TITLE }),
+    );
     folderId = folder.id;
     // Recorded BEFORE the contents go in. If the browser dies halfway through
     // this, the next startup still knows which folder was ours and can remove
     // it; recording it afterwards would leave a half-built orphan nothing owns.
     await api.storage.local.set({ [OWNED_ID_KEY]: folderId });
-    await writeNode(root, folderId);
+    await whileApplying(() => writeNode(root, folderId));
     await api.storage.local.set({ [MIRROR_STAMP_KEY]: stamp });
   } catch (e) {
     console.warn("[Arca] could not mirror bookmarks:", e);
@@ -658,6 +725,44 @@ async function reconcileMirror(why) {
     (dropped ? `, ${dropped} not mirrorable` : "");
   console.debug(`[Arca] ${summary}`);
   report("info", summary);
+}
+
+// Are WE the ones changing bookmarks right now?
+//
+// A rebuild deletes and recreates 128 bookmarks, and every one of those fires
+// the same `onCreated` a person firing does. Without this, capturing what the
+// user adds would immediately capture everything Arca itself writes, on every
+// rebuild, forever.
+//
+// A COUNTER, not a boolean: cleanup and a rebuild overlap, and a boolean would
+// be cleared by whichever finished first while the other was still writing.
+let applying = 0;
+async function whileApplying(fn) {
+  applying++;
+  try {
+    return await fn();
+  } finally {
+    applying--;
+  }
+}
+
+/// Is `id` inside Arca's folder? Walks up, because an event carries a parent
+/// id and nothing about how deep it sits.
+async function insideOwnedFolder(id, ownedId) {
+  if (!ownedId) return false;
+  let cursor = id;
+  for (let hop = 0; hop < 32 && cursor; hop++) {
+    if (String(cursor) === String(ownedId)) return true;
+    let node;
+    try {
+      [node] = await api.bookmarks.get(String(cursor));
+    } catch (_e) {
+      return false;
+    }
+    if (!node || !node.parentId) return false;
+    cursor = node.parentId;
+  }
+  return false;
 }
 
 /// Depth-first creation. Folders before their contents, in the order buildTree
