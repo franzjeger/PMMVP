@@ -77,7 +77,16 @@ report("info", "worker start");
 // cannot call into the extension. `alarms` rather than setInterval — a service
 // worker is evicted when idle, and an interval dies with it while an alarm
 // wakes it back up.
-api.alarms?.create("arca-mirror", { periodInMinutes: 1 });
+// Created ONLY IF MISSING. `alarms.create` with an existing name REPLACES it
+// and restarts the countdown — and this runs at module scope, on every worker
+// wake. So any other reason to wake (a message, a tab event, a popup opening)
+// pushed the next fire out another full minute, and a browser being used
+// deferred it forever. The mirror then only caught up when the browser had
+// been left alone for a whole minute, which looked exactly like "locking Arca
+// does nothing".
+api.alarms?.get?.("arca-mirror", (existing) => {
+  if (!existing) api.alarms.create("arca-mirror", { periodInMinutes: 1 });
+});
 api.alarms?.onAlarm.addListener((a) => {
   if (a.name === "arca-mirror") reconcileMirror("tick");
 });
