@@ -57,6 +57,31 @@
   //     user never clicked in — Entra's /common/bridge/fido, which the browser
   //     navigates to and which fires get() on load.
   const GESTURE_WINDOW_MS = 3000;
+
+  /// One-use approvals minted by the gate and spent by the forwarding path.
+  ///
+  /// WHY THIS EXISTS. The shim asks the gate and then, if allowed, posts the
+  /// ceremony itself. Nothing forced those two steps to be related: a page
+  /// script could post `{__sybrPasskey:"request", kind:"create"}` straight at
+  /// this listener and it was forwarded to the desktop app, which raised a
+  /// Touch ID prompt. The gate was enforced only because the honest caller
+  /// chose to consult it.
+  ///
+  /// Approvals live HERE, in the isolated world, and never travel through
+  /// postMessage — so a page cannot forge one, only ask the gate itself, which
+  /// applies the same rules it always did.
+  const APPROVAL_TTL_MS = 15000;
+  let approvals = [];
+  const mintApproval = () => {
+    const now = Date.now();
+    approvals = approvals.filter((t) => now - t <= APPROVAL_TTL_MS).slice(-4);
+    approvals.push(now);
+  };
+  const spendApproval = () => {
+    const now = Date.now();
+    approvals = approvals.filter((t) => now - t <= APPROVAL_TTL_MS);
+    return approvals.shift() !== undefined;
+  };
   const REPORT_THROTTLE_MS = 500;
   let localGesture = 0;
   let sawLocal = false;
@@ -65,7 +90,12 @@
   for (const type of ["pointerdown", "keydown", "touchstart"]) {
     window.addEventListener(
       type,
-      () => {
+      (e) => {
+        // Only input the BROWSER generated. `dispatchEvent` from page script
+        // produces an event with `isTrusted === false`, and without this check
+        // a page could manufacture its own "the user clicked" and satisfy the
+        // gate's gesture rule on its own.
+        if (!e.isTrusted) return;
         localGesture = Date.now();
         sawLocal = true;
         // A burst of keystrokes must not be a burst of worker messages; the
@@ -127,6 +157,7 @@
       } catch (_e) {
         res = null;
       }
+      if (res && res.allow) mintApproval();
       window.postMessage(
         {
           __sybrPasskey: "response",
@@ -141,6 +172,22 @@
         },
         location.origin,
       );
+      return;
+    }
+
+    // Nothing reaches the desktop app without an approval the gate minted
+    // above. Spent here, so one approval carries one ceremony.
+    if (!spendApproval()) {
+      window.postMessage(
+        {
+          __sybrPasskey: "response",
+          id: d.id,
+          ok: false,
+          error: "no_gate_approval",
+        },
+        location.origin,
+      );
+      tell({ cmd: "log", line: `relay refused ungated ${d.kind} on ${location.hostname}` });
       return;
     }
 

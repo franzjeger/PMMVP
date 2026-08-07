@@ -462,6 +462,32 @@ fn passkey_get(
 
 /// Path to the bridge connection-info file the desktop app writes. Uses the
 /// same per-user data dir Tauri's `app_data_dir()` resolves to.
+///
+/// NEVER RESOLVED UNDER TEST, and that is not tidiness — it is the fix for a
+/// bug that tormented the user for days.
+///
+/// The tests below call `handle()` with real `PasskeyCreate`/`PasskeyGet`
+/// requests for github.com. `handle` is production code: it reaches this
+/// function, reads the REAL connection file, authenticates to the REAL running
+/// desktop app, and the app does what it is supposed to do with a passkey
+/// request — it raises a Touch ID prompt.
+///
+/// The old comment on those tests said "without a reachable, unlocked app these
+/// resolve to an error". On a developer's own machine the app IS reachable and
+/// unlocked, so instead every `cargo test` fired a genuine
+/// "Arca is trying to create a NEW passkey for github.com" dialog at whoever
+/// was sitting there. This crate is a workspace default-member and
+/// `scripts/smoke-test.sh` runs `cargo test`, and the smoke test gates every
+/// install — so every build, test and install did it again.
+///
+/// Four fixes went into the browser extension chasing those prompts. None of
+/// them could have worked: the requests never went near a browser.
+#[cfg(test)]
+fn bridge_info_path() -> Option<std::path::PathBuf> {
+    None
+}
+
+#[cfg(not(test))]
 fn bridge_info_path() -> Option<std::path::PathBuf> {
     Some(dirs::data_dir()?.join(HOST_NAME).join("native-bridge.json"))
 }

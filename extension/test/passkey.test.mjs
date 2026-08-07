@@ -291,8 +291,19 @@ function makeDocument({ host, tabId }) {
   vm.runInContext(src("passkey.js"), mainCtx);
 
   return {
+    // `isTrusted: true` is what the BROWSER sets on real input. The relay
+    // checks it, so a harness that omits it is not simulating a user — see
+    // `fakeGesture` below, which deliberately does omit it.
     gesture: () => {
-      for (const { type, fn } of isolated) if (type === "pointerdown") fn({});
+      for (const { type, fn } of isolated) {
+        if (type === "pointerdown") fn({ isTrusted: true });
+      }
+    },
+    /** What a page script can produce: `dispatchEvent` sets isTrusted false. */
+    fakeGesture: () => {
+      for (const { type, fn } of isolated) {
+        if (type === "pointerdown") fn({ isTrusted: false });
+      }
     },
     fellBackTo: () => {
       const m = (logs[logs.length - 1] || "").match(/\(([^)]+)\)/);
@@ -341,6 +352,21 @@ function makeDocument({ host, tabId }) {
           },
         });
         post({ __sybrPasskey: "use", id, credentialId: credentialId || null });
+      }),
+    /// A page script posting a ceremony STRAIGHT at the relay, skipping the
+    /// gate. Any script on the page can do exactly this; nothing about it
+    /// requires our shim's cooperation.
+    rawCeremony: (kind) =>
+      new Promise((resolve) => {
+        const id = "raw1";
+        isolated.push({
+          type: "message",
+          fn: (e) => {
+            const d = e && e.data;
+            if (d && d.__sybrPasskey === "response" && d.id === id) resolve(d);
+          },
+        });
+        post({ __sybrPasskey: "request", id, kind, payload: {} });
       }),
   };
 }
@@ -603,6 +629,48 @@ console.log("\nWhat a service worker is allowed to contain");
   );
   console.log("  ok  background.js has no dynamic import()");
   pass++;
+}
+
+console.log("\nThe gate is enforced, not merely offered");
+{
+  // Until this was closed, the gate ran only because our own shim chose to ask
+  // it. A page could post the ceremony itself and reach the desktop app, which
+  // answered the only way it can: by raising a Touch ID prompt at whoever was
+  // sitting there.
+  const a = makeDocument({ host: "github.com", tabId: 21 });
+  const create = await a.rawCeremony("create");
+  check("an ungated create is refused", create.error, "no_gate_approval");
+  check("and never reaches the app", a.realCreateCalls(), 0);
+
+  const b = makeDocument({ host: "github.com", tabId: 22 });
+  const get = await b.rawCeremony("get");
+  check("an ungated get too", get.error, "no_gate_approval");
+}
+
+console.log("\nA gesture the page made up is not a gesture");
+{
+  // `dispatchEvent` from page script produces an event the browser marks
+  // untrusted. Accepting it would have let a page satisfy the gate's own
+  // gesture rule and then pass through it legitimately.
+  const a = makeDocument({ host: "github.com", tabId: 23 });
+  a.fakeGesture();
+  await tick();
+  await a.create();
+  check(
+    "a synthetic click does not open the gate",
+    a.fellBackTo(),
+    "create_needs_local_gesture",
+  );
+
+  const b = makeDocument({ host: "github.com", tabId: 24 });
+  b.gesture();
+  await tick();
+  await b.create();
+  check(
+    "a real one still does",
+    b.fellBackTo() === "create_needs_local_gesture",
+    false,
+  );
 }
 
 console.log(`\n${pass} checks passed\n`);
