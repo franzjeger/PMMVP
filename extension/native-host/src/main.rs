@@ -46,6 +46,13 @@ enum Request {
     },
     /// Liveness check.
     Ping,
+    /// The user deleted a bookmark, or a folder, out of Arca's folder.
+    DeleteBookmarks {
+        #[serde(default)]
+        url: String,
+        #[serde(default)]
+        folder: String,
+    },
     /// Something the extension wants written down where a human with a
     /// terminal can read it.
     ///
@@ -123,6 +130,10 @@ enum Response {
     /// How many bookmarks an import added.
     ImportedBookmarks {
         added: u64,
+    },
+    /// How many a browser-side deletion retracted.
+    DeletedBookmarks {
+        removed: u64,
     },
     /// Arca's bookmark list, for the extension to apply to this browser.
     Bookmarks {
@@ -206,6 +217,22 @@ fn handle(request: Request) -> Response {
             app_connected: desktop_app_available(),
         },
         Request::Ping => Response::Pong,
+        Request::DeleteBookmarks { url, folder } => {
+            match bridge_request(serde_json::json!({
+                "type": "delete_bookmarks", "url": url, "folder": folder,
+            })) {
+                Some(v)
+                    if v.get("type").and_then(|t| t.as_str()) == Some("deleted_bookmarks") =>
+                {
+                    Response::DeletedBookmarks {
+                        removed: v.get("removed").and_then(|r| r.as_u64()).unwrap_or(0),
+                    }
+                }
+                _ => Response::Error {
+                    message: "Could not delete (app locked or not running).".to_string(),
+                },
+            }
+        }
         Request::Log { level, message } => {
             write_extension_log(&level, &message);
             Response::Pong

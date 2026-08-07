@@ -220,6 +220,22 @@ enum Request {
     DeleteItem {
         id: String,
     },
+    /// Retract bookmarks the user deleted from Arca's folder in a browser.
+    ///
+    /// Matched on URL plus folder — the same key the import deduplicates on —
+    /// because the extension never learns vault ids and should not have to. An
+    /// empty `url` with a `folder` means a whole folder went, so everything at
+    /// or under that path goes with it.
+    ///
+    /// SOFT, like every other delete here: the items move to Deleted and are
+    /// restorable. A browser event is a thin thing to destroy data on, and this
+    /// one can arrive because a rebuild was mid-flight.
+    DeleteBookmarks {
+        #[serde(default)]
+        url: String,
+        #[serde(default)]
+        folder: String,
+    },
     /// The password of one stored login, by id.
     ///
     /// This is a read of a secret, and it is deliberate. It widens nothing:
@@ -251,6 +267,7 @@ impl Request {
             | Request::CreateLogin { .. }
             | Request::ReadPassword { .. }
             | Request::DeleteItem { .. }
+            | Request::DeleteBookmarks { .. }
             | Request::GeneratePassword { .. } => true,
             // NOT activity: the vault is locked, so there is no idle timer to
             // reset, and counting it would let a page keep a future session
@@ -326,6 +343,10 @@ enum Response {
     Deleted {
         id: String,
         title: String,
+    },
+    /// How many bookmarks a browser-side deletion retracted.
+    DeletedBookmarks {
+        removed: usize,
     },
     /// Arca was brought forward and asked the user to unlock. Says nothing
     /// about whether they did — the extension retries and finds out.
@@ -1379,6 +1400,75 @@ fn handle_request(
                 title,
                 password: if reveal { Some(password) } else { None },
             }
+        }
+        Request::DeleteBookmarks { url, folder } => {
+            if url.trim().is_empty() && folder.trim().is_empty() {
+                // Would match the whole collection. Refused rather than
+                // interpreted generously.
+                return Response::Error {
+                    message: "need a url or a folder".into(),
+                };
+            }
+            let mut st = match state.lock() {
+                Ok(s) => s,
+                Err(_) => {
+                    return Response::Error {
+                        message: "internal".into(),
+                    }
+                }
+            };
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let removed = {
+                let AppState { store, vault, .. } = &mut *st;
+                let Some(vault) = vault.as_mut().filter(|v| v.is_unlocked()) else {
+                    return Response::Error {
+                        message: "locked".into(),
+                    };
+                };
+                let mut hits = Vec::new();
+                if let Ok(summaries) = vault.list_items(false) {
+                    for sum in summaries {
+                        let Ok(item) = vault.get_item(sum.id) else {
+                            continue;
+                        };
+                        if let VaultItem::Bookmark {
+                            url: u, folder: f, ..
+                        } = &item.data
+                        {
+                            let matches = if url.trim().is_empty() {
+                                // A folder went: everything at or under it.
+                                f == &folder || f.starts_with(&format!("{folder}/"))
+                            } else {
+                                u == &url && f == &folder
+                            };
+                            if matches {
+                                hits.push(item.id);
+                            }
+                        }
+                    }
+                }
+                if hits.is_empty() {
+                    0
+                } else {
+                    // A bulk retraction is exactly what a rollback point is for.
+                    store.snapshot_now();
+                    let mut n = 0;
+                    for id in hits {
+                        if vault.delete_item(id, now).is_ok() {
+                            n += 1;
+                        }
+                    }
+                    let _ = store.save_synced(vault);
+                    n
+                }
+            };
+            if removed > 0 {
+                crate::sync::mark_dirty();
+            }
+            Response::DeletedBookmarks { removed }
         }
         Request::DeleteItem { id } => {
             let Ok(uuid) = id.parse::<uuid::Uuid>() else {

@@ -170,6 +170,57 @@ api.bookmarks?.onCreated?.addListener(async (id, node) => {
   }
 });
 
+// Deleting inside Arca's folder deletes from Arca.
+//
+// Without this the entry came straight back on the next rebuild, which is its
+// own kind of broken: the folder accepts the gesture, appears to obey, and
+// then undoes it. Half a feature is worse than none, because it teaches people
+// the wrong model.
+//
+// `onRemoved` carries the node that went, so a single bookmark is matched on
+// url plus folder — the key the import already deduplicates on — and a whole
+// folder is matched by path prefix. The vault delete is SOFT and snapshots
+// first: a browser event is a thin thing to destroy data on, and this one can
+// arrive while a rebuild is in flight.
+api.bookmarks?.onRemoved?.addListener(async (id, info) => {
+  // Our own rebuild removes the entire tree. Without this the first rebuild
+  // after a lock would retract all 128 from the vault.
+  if (applying > 0) return;
+  try {
+    const { id: ownedId } = await readMirrorState();
+    if (!ownedId) return;
+    // The node is already gone, so ownership is judged from the parent it was
+    // removed FROM, which still exists.
+    if (String(info.parentId) !== String(ownedId)) {
+      if (!(await insideOwnedFolder(info.parentId, ownedId))) return;
+    }
+    const node = info.node || {};
+    const folder = await pathWithinOwned(info.parentId, ownedId);
+    const payload = node.url
+      ? { url: node.url, folder }
+      : // A folder: everything at or under its path goes.
+        { url: "", folder: folder ? `${folder}/${node.title}` : node.title || "" };
+    if (!payload.url && !payload.folder) return;
+
+    const answer = await sendNative({ type: "delete_bookmarks", ...payload });
+    const removed =
+      answer.ok && answer.response && answer.response.type === "deleted_bookmarks"
+        ? answer.response.removed
+        : null;
+    report(
+      removed === null ? "error" : "info",
+      removed === null
+        ? `could not retract a deleted bookmark: ${
+            (answer.response && answer.response.message) || answer.error
+          }`
+        : `retracted ${removed} from Arca after a deletion in the folder`,
+    );
+    await api.storage.local.remove(MIRROR_STAMP_KEY);
+  } catch (e) {
+    report("error", `retract failed: ${(e && e.stack) || e}`);
+  }
+});
+
 /// The `/`-separated path from Arca's folder down to `id`, exclusive.
 async function pathWithinOwned(id, ownedId) {
   const parts = [];
