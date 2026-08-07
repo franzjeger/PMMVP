@@ -71,7 +71,17 @@ if (typeof globalThis.addEventListener === "function") {
 // between the worker booting and it being ready, reported nothing at all. When
 // the alarm silently stopped firing there was no way to tell a worker that had
 // crashed on boot from one that was never started.
-report("info", "worker start");
+report(
+  "info",
+  "worker start — triggers: " +
+    [
+      api.alarms ? "alarms" : null,
+      api.windows && api.windows.onFocusChanged ? "focus" : null,
+      api.tabs && api.tabs.onActivated ? "tabs" : null,
+    ]
+      .filter(Boolean)
+      .join(", "),
+);
 
 // A poll, not a subscription, because there is nothing to subscribe to: the app
 // cannot call into the extension. `alarms` rather than setInterval — a service
@@ -532,6 +542,17 @@ async function cleanupArcaBookmarks(why) {
   }
   if (remove.length || notes.length) {
     console.debug(`[Arca] bookmark cleanup (${why}):`, { remove, notes });
+    // Reported, not just console.debug'd. This was the last step in the chain
+    // that said nothing: the log could show the lock being detected and the
+    // cleanup being called, and still not answer whether the folder actually
+    // went away — which is the only part the user can see.
+    report(
+      "info",
+      `cleanup (${why}): removed ${remove.length}` +
+        (notes.length ? ` — ${notes.join("; ")}` : ""),
+    );
+  } else {
+    report("info", `cleanup (${why}): nothing to remove`);
   }
 }
 
