@@ -19,7 +19,7 @@ import {
   barRootId,
   OWNED_FOLDER_TITLE,
 } from "./bookmarks.js";
-import { buildTree, fingerprint, mirrorGate } from "./mirror.js";
+import { buildTree, fingerprint, mirrorGate, vaultVerdict } from "./mirror.js";
 
 const api = globalThis.browser ?? globalThis.chrome;
 
@@ -623,6 +623,9 @@ api.tabs?.onRemoved?.addListener((tabId) => {
 const OWNED_ID_KEY = "bookmarkFolderId";
 const MIRROR_STAMP_KEY = "bookmarkFingerprint";
 const MIRROR_ALLOWED_KEY = "bookmarkMirrorAllowed";
+/// When the first of an unbroken run of unreachable reads happened.
+const MIRROR_MISS_KEY = "bookmarkUnreachableSince";
+
 
 async function cleanupArcaBookmarks(why) {
   // Nothing to clean where the permission was never granted — and the guard
@@ -715,6 +718,29 @@ async function reconcileMirror(why) {
   // Locked, quit, or unreachable. Every one of those means the same thing to a
   // user looking at their bookmarks bar, so they get the same answer.
   if (items === null) {
+    const verdict = vaultVerdict({
+      ok: answer.ok,
+      message: answer.response && answer.response.message,
+      error: answer.error,
+      missSince: store.missSince,
+      now: Date.now(),
+    });
+    if (verdict.reason !== "locked") {
+      await api.storage.local.set({ [MIRROR_MISS_KEY]: verdict.since });
+    }
+    if (verdict.action === "wait") {
+      report(
+        "info",
+        `mirror unreachable (${why}) — ${verdict.reason}; leaving the folder alone for now`,
+      );
+      return;
+    }
+    if (verdict.reason !== "locked") {
+      report("info", `mirror gone (${why}): still silent after grace — ${verdict.reason}`);
+      if (store.id != null) await cleanupArcaBookmarks(`no vault (${why})`);
+      return;
+    }
+
     // Logged, and this omission is the whole reason the feature looked broken
     // for an hour. A locked vault is the COMMONEST reason for no bookmarks and
     // it was the one path that returned in silence — so "nothing in the log"
@@ -722,13 +748,16 @@ async function reconcileMirror(why) {
     // there was no way to tell them apart from here.
     report(
       "info",
-      `mirror idle (${why}): Arca is locked or not running — ${
-        answer.ok ? (answer.response && answer.response.message) || "refused" : answer.error
-      }`,
+      `mirror idle (${why}): Arca is locked — taking the folder down`,
     );
     if (store.id != null) await cleanupArcaBookmarks(`no vault (${why})`);
     return;
   }
+
+  // Arca answered, so whatever silence came before it is over. Left set, one
+  // old blip would age past the grace period and delete the folder during a
+  // perfectly healthy run.
+  if (store.missSince != null) await api.storage.local.remove(MIRROR_MISS_KEY);
 
   // The sync guard, checked AFTER the cleanup branch above and BEFORE anything
   // is written. Turning the guard on while a folder is already on screen must
@@ -830,16 +859,22 @@ async function writeNode(node, parentId) {
 
 async function readMirrorState() {
   try {
-    const got = await api.storage.local.get([OWNED_ID_KEY, MIRROR_STAMP_KEY, MIRROR_ALLOWED_KEY]);
+    const got = await api.storage.local.get([
+      OWNED_ID_KEY,
+      MIRROR_STAMP_KEY,
+      MIRROR_ALLOWED_KEY,
+      MIRROR_MISS_KEY,
+    ]);
     return {
       id: got[OWNED_ID_KEY] ?? null,
       fingerprint: got[MIRROR_STAMP_KEY] ?? null,
+      missSince: got[MIRROR_MISS_KEY] ?? null,
       // Absent means NOT allowed. A missing setting must never read as consent.
       allowed: got[MIRROR_ALLOWED_KEY] === true,
     };
   } catch (_e) {
     // Unreadable storage is not permission either.
-    return { id: null, fingerprint: null, allowed: false };
+    return { id: null, fingerprint: null, allowed: false, missSince: null };
   }
 }
 

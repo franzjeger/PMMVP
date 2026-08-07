@@ -5,7 +5,14 @@
 // What appears in someone's bookmarks bar is decided here, so it is decided by
 // code that runs without a browser.
 import assert from "node:assert/strict";
-import { buildTree, fingerprint, mirrorGate, MAX_MIRRORED } from "../chromium/mirror.js";
+import {
+  buildTree,
+  fingerprint,
+  mirrorGate,
+  vaultVerdict,
+  MAX_MIRRORED,
+  UNREACHABLE_GRACE_MS,
+} from "../chromium/mirror.js";
 
 let pass = 0;
 const check = (name, got, want) => {
@@ -126,6 +133,70 @@ console.log("\nThe browser-sync guard");
     "and a refusal says what it is waiting for",
     mirrorGate({ allowed: false }).reason.includes("sync is off"),
     true,
+  );
+}
+
+console.log("\nSilence is not the same as a locked vault");
+{
+  const now = 1_000_000;
+  // The app stating its own condition. Immediate — that IS the feature.
+  check(
+    "locked takes the folder down at once",
+    vaultVerdict({ ok: true, message: "locked", missSince: null, now }).action,
+    "remove",
+  );
+
+  // Everything else is an absence of information. The old code deleted the
+  // folder on any of these, the next tick rebuilt it, and a bookmark saved in
+  // between was lost — which is exactly what "saving doesn't work" was.
+  for (const answer of [
+    { ok: true, message: "unreachable" },
+    { ok: false, error: "native host disconnected" },
+    { ok: true, message: "internal" },
+    { ok: true },
+  ]) {
+    assert.equal(
+      vaultVerdict({ ...answer, missSince: null, now }).action,
+      "wait",
+      `should wait on ${JSON.stringify(answer)}`,
+    );
+  }
+  console.log("  ok  a first silence never deletes anything");
+  pass++;
+
+  // But a genuinely quit app stays silent, so the folder must still go.
+  check(
+    "silence that persists past the grace period does",
+    vaultVerdict({
+      ok: true,
+      message: "unreachable",
+      missSince: now - UNREACHABLE_GRACE_MS - 1,
+      now,
+    }).action,
+    "remove",
+  );
+  check(
+    "and just under it does not",
+    vaultVerdict({
+      ok: true,
+      message: "unreachable",
+      missSince: now - UNREACHABLE_GRACE_MS + 1,
+      now,
+    }).action,
+    "wait",
+  );
+
+  // The run has to be anchored to its FIRST miss, or a burst of triggers in one
+  // second would each restart the clock and the folder would never come down.
+  check(
+    "the clock starts at the first silence, not the latest",
+    vaultVerdict({ ok: true, message: "unreachable", missSince: null, now }).since,
+    now,
+  );
+  check(
+    "and an existing run keeps its start",
+    vaultVerdict({ ok: true, message: "unreachable", missSince: 42, now }).since,
+    42,
   );
 }
 

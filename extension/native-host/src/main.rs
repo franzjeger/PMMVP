@@ -316,8 +316,28 @@ fn handle(request: Request) -> Response {
                             .unwrap_or_default(),
                     }
                 }
-                _ => Response::Error {
-                    message: "Could not read bookmarks (app locked or not running).".to_string(),
+                // The app ANSWERED, and what it said was not a bookmark list —
+                // in practice "locked". A known state, and the caller may act
+                // on it at once: bookmarks vanishing when the vault locks is
+                // the entire point of the feature.
+                Some(v) => Response::Error {
+                    message: v
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("locked")
+                        .to_string(),
+                },
+                // No answer at all. A quit app looks like this — and so does a
+                // blip: a host that failed to spawn, a bridge file being
+                // rewritten, a lost race at browser startup.
+                //
+                // These two used to share one message, "app locked or not
+                // running", and the caller deleted the user's bookmark folder
+                // on either. So a momentary miss destroyed the folder, which is
+                // what "saving bookmarks doesn't work" actually was. Say which
+                // one it is and let the caller decide.
+                None => Response::Error {
+                    message: "unreachable".to_string(),
                 },
             }
         }
