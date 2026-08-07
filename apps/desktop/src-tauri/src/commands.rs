@@ -164,6 +164,7 @@ fn kind_str(kind: ItemKind) -> &'static str {
         ItemKind::Wifi => "wifi",
         ItemKind::SecureNote => "secureNote",
         ItemKind::Bookmark => "bookmark",
+        ItemKind::Unknown => "unknown",
     }
 }
 

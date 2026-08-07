@@ -26,7 +26,12 @@ export type ItemKind =
   | "sshKey"
   | "wifi"
   | "secureNote"
-  | "bookmark";
+  | "bookmark"
+  // An entry written by a NEWER build of Arca than this one. Its contents are
+  // kept byte-for-byte and handed back untouched when this build saves, but
+  // nothing here can read them. Shown rather than hidden: an entry the user
+  // cannot see is an entry they believe they lost.
+  | "unknown";
 
 export interface SyncStatus {
   connected: boolean;

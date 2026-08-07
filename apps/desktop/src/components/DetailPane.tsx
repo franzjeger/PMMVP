@@ -363,6 +363,16 @@ export function DetailPane({
           </Row>
         )}
 
+        {detail.kind === "unknown" && (
+          <Row label="Not readable here">
+            <p className="min-w-0 whitespace-pre-wrap break-words text-neutral-400">
+              This entry was created by a newer version of Arca. It is stored
+              safely and left exactly as it was — updating this device will show
+              it.
+            </p>
+          </Row>
+        )}
+
         {detail.kind !== "login" &&
           detail.kind !== "wifi" &&
           detail.kind !== "sshKey" &&

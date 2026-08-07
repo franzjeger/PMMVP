@@ -19,6 +19,10 @@ pub enum ItemKind {
     Wifi,
     SecureNote,
     Bookmark,
+    /// An entry written by a NEWER build than this one. See
+    /// [`VaultItem::Unknown`]. Computed at runtime and never written to disk,
+    /// so adding it here costs older clients nothing.
+    Unknown,
 }
 
 /// The secret-bearing payload of a vault entry.
@@ -154,6 +158,71 @@ pub enum VaultItem {
         #[serde(default)]
         body: String,
     },
+
+    /// An item this build does not understand, kept byte-for-byte.
+    ///
+    /// WHY THIS EXISTS. The payload is CBOR tagged by variant NAME, which makes
+    /// adding a kind safe for a new client reading old data. It said nothing
+    /// about the other direction — and the other direction is the one that
+    /// ships. A phone updates through review, a desktop updates from a script,
+    /// and for days the fleet is not one build. Before this variant, a single
+    /// entry of an unrecognised kind failed the decode of the WHOLE vault: not
+    /// that one entry, every entry. Adding `Bookmark` did exactly that to the
+    /// Linux and Windows machines.
+    ///
+    /// Tolerating it is only half the job. A client that read the vault, quietly
+    /// dropped what it could not name, and saved would DELETE the newer
+    /// entries — data loss dressed up as compatibility. So the original bytes
+    /// are kept and written back untouched.
+    ///
+    /// `#[serde(untagged)]` makes this the fallback: serde tries the named
+    /// variants first and only lands here when none of them matched.
+    #[serde(untagged)]
+    Unknown(UnknownItem),
+}
+
+/// The verbatim CBOR of an entry from a newer build, with its kind name.
+///
+/// `raw` is the entire encoded item — tag included — so re-serialising it
+/// reproduces what the newer client wrote. Held as bytes rather than a parsed
+/// value for one reason beyond fidelity: `Vec<u8>` zeroizes, and an unknown
+/// item from a password manager must be assumed to hold secrets.
+#[derive(Clone, Default, Zeroize, ZeroizeOnDrop)]
+pub struct UnknownItem {
+    /// The `type` tag the newer build wrote, for display and diagnostics.
+    pub kind: String,
+    /// The whole item as CBOR, exactly as it arrived.
+    pub raw: Vec<u8>,
+}
+
+impl std::fmt::Debug for UnknownItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The bytes may hold someone's secrets; only the kind is safe to print.
+        write!(f, "UnknownItem {{ kind: {:?}, raw: <{} bytes> }}", self.kind, self.raw.len())
+    }
+}
+
+impl<'de> Deserialize<'de> for UnknownItem {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let value = ciborium::value::Value::deserialize(d)?;
+        let kind = value
+            .as_map()
+            .and_then(|m| m.iter().find(|(k, _)| k.as_text() == Some("type")))
+            .and_then(|(_, v)| v.as_text())
+            .unwrap_or_default()
+            .to_string();
+        let mut raw = Vec::new();
+        ciborium::into_writer(&value, &mut raw).map_err(serde::de::Error::custom)?;
+        Ok(UnknownItem { kind, raw })
+    }
+}
+
+impl Serialize for UnknownItem {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let value: ciborium::value::Value =
+            ciborium::from_reader(&self.raw[..]).map_err(serde::ser::Error::custom)?;
+        value.serialize(s)
+    }
 }
 
 /// Build the standard Wi-Fi join string that network QR codes encode
@@ -198,6 +267,7 @@ impl VaultItem {
             VaultItem::Wifi { .. } => ItemKind::Wifi,
             VaultItem::SecureNote { .. } => ItemKind::SecureNote,
             VaultItem::Bookmark { .. } => ItemKind::Bookmark,
+            VaultItem::Unknown(_) => ItemKind::Unknown,
         }
     }
 
@@ -210,6 +280,10 @@ impl VaultItem {
             | VaultItem::Wifi { title, .. }
             | VaultItem::SecureNote { title, .. }
             | VaultItem::Bookmark { title, .. } => title,
+            // Named by its kind rather than blank: the user should be able to
+            // SEE that a newer device wrote something here, not wonder why an
+            // entry is missing.
+            VaultItem::Unknown(u) => &u.kind,
         }
     }
 
@@ -225,6 +299,8 @@ impl VaultItem {
             VaultItem::SecureNote { .. } => "",
             // The folder is what tells two bookmarks with the same title apart.
             VaultItem::Bookmark { folder, .. } => folder,
+            // Nothing this build can read out of it.
+            VaultItem::Unknown(_) => "",
         }
     }
 
@@ -248,6 +324,7 @@ impl VaultItem {
             // Deliberately the real URL: a bookmark then groups in the list
             // next to the login and passkey for the same site.
             VaultItem::Bookmark { url, .. } => url,
+            VaultItem::Unknown(_) => "",
         }
     }
 }
@@ -259,6 +336,7 @@ impl std::fmt::Debug for VaultItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         const REDACTED: &str = "<redacted>";
         match self {
+            VaultItem::Unknown(u) => return write!(f, "{u:?}"),
             VaultItem::Login {
                 title,
                 username,

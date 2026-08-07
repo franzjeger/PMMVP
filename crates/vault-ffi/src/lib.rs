@@ -324,6 +324,9 @@ fn kind_name(kind: ItemKind) -> &'static str {
         ItemKind::Wifi => "wifi",
         ItemKind::SecureNote => "secure_note",
         ItemKind::Bookmark => "bookmark",
+        // Written by a newer build than this one. Shown rather than hidden: an
+        // entry the user cannot see is an entry they think they lost.
+        ItemKind::Unknown => "unknown",
     }
 }
 
@@ -385,6 +388,12 @@ enum ItemDetail {
     SecureNote {
         title: String,
         body: String,
+    },
+    /// An entry from a newer build. Nothing of it can be read here, so the UI
+    /// is told exactly that rather than being handed empty fields.
+    Unknown {
+        title: String,
+        stored_kind: String,
     },
     Bookmark {
         title: String,
@@ -479,6 +488,10 @@ fn item_detail_json(vault: &Vault, id_str: &str) -> vault_core::Result<String> {
             url: url.clone(),
             folder: folder.clone(),
             notes: notes.clone(),
+        },
+        VaultItem::Unknown(u) => ItemDetail::Unknown {
+            title: u.kind.clone(),
+            stored_kind: u.kind.clone(),
         },
     };
     serde_json::to_string(&detail).map_err(|_| Error::Serialization)
