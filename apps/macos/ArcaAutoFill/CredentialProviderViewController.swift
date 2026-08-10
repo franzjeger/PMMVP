@@ -89,6 +89,21 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
         do {
             let session = try await VaultSession.openWithDeviceKey(reason: unlockReason)
             let password = try await session.password(forID: recordID)
+            // The SHAPE of what we hand over, never the value.
+            //
+            // Without this there was no way to tell a fill that delivered the
+            // wrong thing from a page that mangled the right thing: the whole
+            // path from "Safari asked" to "the field has the wrong contents"
+            // was unobserved, and every explanation for a bad fill was equally
+            // consistent with the evidence. A length and a character count are
+            // enough to settle it and reveal nothing.
+            log.info(
+                """
+                fill user=\(user.count, privacy: .public)ch \
+                password=\(password.count, privacy: .public)ch \
+                ascii=\(password.allSatisfy(\.isASCII), privacy: .public) \
+                record=\(recordID, privacy: .public)
+                """)
             extensionContext.completeRequest(
                 withSelectedCredential: ASPasswordCredential(user: user, password: password))
         } catch {
@@ -147,6 +162,9 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
             log.error("list open failed: \(vaultLogMessage(for: error), privacy: .public)")
         }
 
+        let asked = domains.sorted().joined(separator: ",")
+        log.info(
+            "list domains=\(asked, privacy: .public) matches=\(identities.count, privacy: .public)")
         show(CredentialListView(
             identities: identities,
             failure: failure,
