@@ -1,6 +1,6 @@
 /* vault-ffi — C ABI over vault-core for native platform integrations.
  *
- * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 13). All
+ * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 14). All
  * out-buffers are heap-allocated by the library and must be released with
  * vault_ffi_free(ptr, len), which also zeroes them.
  *
@@ -345,6 +345,16 @@ int32_t vault_ffi_passkey_create(const char *rp_id, bool user_verified,
  * splitting create from store would risk handing a site a credential whose key
  * never reached the vault. user_handle is opaque bytes (may be null/empty).
  * A passkey for the same rp_id and same non-empty user_handle is replaced. */
+/* ---- Cross-process lost-update guard (ABI v14) --------------------------
+ *
+ * vault_ffi_merge_remote: fold another copy of THIS vault (read from the shared
+ * file) into the in-memory handle before a write, so the app and the AutoFill
+ * extension — separate processes over one file — stop clobbering each other's
+ * committed writes. Same union/newest-wins merge as sync. ERR_DECRYPT if the
+ * bytes are a different vault; OK no-op for null/empty. */
+int32_t vault_ffi_merge_remote(VaultHandle *handle, const uint8_t *remote_bytes,
+                               size_t remote_len);
+
 int32_t vault_ffi_passkey_register(VaultHandle *handle, const char *rp_id,
                                    const char *user_name,
                                    const uint8_t *user_handle,

@@ -34,7 +34,8 @@ final class AutoFillModel {
         /// and hand back the attestation. `clientDataHash` is over the
         /// clientDataJSON the OS built for this ceremony.
         case registerPasskey(
-            rpID: String, userName: String, userHandle: Data, clientDataHash: Data)
+            rpID: String, userName: String, userHandle: Data, clientDataHash: Data,
+            excludedCredentialIDs: [Data])
     }
 
     private(set) var phase: Phase = .locked
@@ -56,6 +57,9 @@ final class AutoFillModel {
     private let onFill: @MainActor (ASPasswordCredential) -> Void
     private let onFillPasskey: @MainActor (ASPasskeyAssertionCredential) -> Void
     private let onRegisterPasskey: @MainActor (ASPasskeyRegistrationCredential) -> Void
+    /// The RP's excludeCredentials named a passkey we already hold: decline with
+    /// the dedicated WebAuthn code rather than minting a duplicate.
+    private let onDeclineExcluded: @MainActor () -> Void
     private let onCancel: @MainActor () -> Void
 
     private var session: VaultSession?
@@ -66,6 +70,7 @@ final class AutoFillModel {
         onFill: @escaping @MainActor (ASPasswordCredential) -> Void,
         onFillPasskey: @escaping @MainActor (ASPasskeyAssertionCredential) -> Void = { _ in },
         onRegisterPasskey: @escaping @MainActor (ASPasskeyRegistrationCredential) -> Void = { _ in },
+        onDeclineExcluded: @escaping @MainActor () -> Void = {},
         onCancel: @escaping @MainActor () -> Void
     ) {
         self.domains = domains
@@ -73,6 +78,7 @@ final class AutoFillModel {
         self.onFill = onFill
         self.onFillPasskey = onFillPasskey
         self.onRegisterPasskey = onRegisterPasskey
+        self.onDeclineExcluded = onDeclineExcluded
         self.onCancel = onCancel
     }
 
@@ -159,10 +165,10 @@ final class AutoFillModel {
                 await assertPasskey(
                     recordID: recordID, clientDataHash: clientDataHash, rpID: rpID)
                 return
-            case let .registerPasskey(rpID, userName, userHandle, clientDataHash):
+            case let .registerPasskey(rpID, userName, userHandle, clientDataHash, excluded):
                 await registerPasskey(
-                    rpID: rpID, userName: userName,
-                    userHandle: userHandle, clientDataHash: clientDataHash)
+                    rpID: rpID, userName: userName, userHandle: userHandle,
+                    clientDataHash: clientDataHash, excludedCredentialIDs: excluded)
                 return
             case nil:
                 break
@@ -236,13 +242,50 @@ final class AutoFillModel {
     /// password. The persist happens inside `registerPasskey` BEFORE it returns,
     /// so the site never gets a credential whose private key is not on disk.
     private func registerPasskey(
-        rpID: String, userName: String, userHandle: Data, clientDataHash: Data
+        rpID: String, userName: String, userHandle: Data, clientDataHash: Data,
+        excludedCredentialIDs: [Data]
     ) async {
         guard let session else { return }
         do {
+            // WebAuthn excludeCredentials: if the site named a passkey we
+            // already hold for this RP, the spec says decline rather than mint a
+            // second one — and here minting would REPLACE the existing key
+            // (dedup is by rp_id + user_handle), quietly breaking the passkey
+            // the site was trying to protect. Only runs when the RP sent a
+            // non-empty list, so ordinary first-time registration is untouched.
+            if !excludedCredentialIDs.isEmpty {
+                let excluded = Set(excludedCredentialIDs)
+                let mine = (try? await session.passkeyIdentities()) ?? []
+                if mine.contains(where: { $0.rpID == rpID && excluded.contains($0.credentialID) }) {
+                    log.info("excludeCredentials matched a stored passkey; declining")
+                    onDeclineExcluded()
+                    return
+                }
+            }
             let reg = try await session.registerPasskey(
                 rpID: rpID, userName: userName,
                 userHandle: userHandle, userVerified: true)
+
+            // Publish the new passkey to the OS BEFORE completing, or it saves
+            // to the vault but is never offered for sign-in until the main app
+            // is next opened — iOS only routes an assertion to Arca for relying
+            // parties the credential-identity store has been told about. Re-read
+            // and republish the WHOLE set (logins + passkeys): the store does a
+            // full replace, so passing only the new passkey would wipe the
+            // logins. Failure here is not fatal — the credential is safely
+            // stored; the next app unlock republishes — so it must not block
+            // handing the attestation back to the site.
+            // Publish ONLY when both reads succeed. replace() does a full-set
+            // replaceCredentialIdentities, so publishing a partial or empty set
+            // on a read failure would WIPE the store instead of leaving it for
+            // the next app unlock to republish.
+            if let logins = try? await session.identities(),
+               let passkeys = try? await session.passkeyIdentities() {
+                await CredentialIdentities.replace(with: logins, passkeys: passkeys)
+            } else {
+                log.error("could not read identities to publish the new passkey; next app unlock will")
+            }
+
             onRegisterPasskey(
                 ASPasskeyRegistrationCredential(
                     relyingParty: rpID,

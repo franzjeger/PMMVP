@@ -134,6 +134,14 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
             onRegisterPasskey: { [weak self] registration in
                 self?.extensionContext.completeRegistrationRequest(using: registration)
             },
+            onDeclineExcluded: { [weak self] in
+                // The dedicated WebAuthn "you already have this one" decline.
+                if #available(iOS 18.0, *) {
+                    self?.cancel(.matchedExcludedCredential)
+                } else {
+                    self?.cancel(.failed)
+                }
+            },
             onCancel: { [weak self] in self?.cancel(.userCanceled) })
 
         let root = UnlockPickerView(model: model)
@@ -187,29 +195,28 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
         extensionContext.completeExtensionConfigurationRequest()
     }
 
-    /// The door the system knocks on FIRST when a site offers to save a passkey.
+    /// CONDITIONAL (background) passkey registration. Dormant today.
     ///
-    /// iOS 18 tries the no-UI path before presenting anything. Leaving it
-    /// unanswered is why "save passkey -> choose Arca" still hung after the
-    /// UI-side registration entry point was answered: the request never got
-    /// that far. One door was fixed and the one in front of it was not.
+    /// This is delivered ONLY for conditional registration, and ONLY when the
+    /// extension declares `SupportsConditionalPasskeyRegistration` in Info.plist
+    /// — which Arca does not, so the system never calls this. It is NOT the door
+    /// an explicit "save passkey -> choose Arca" takes: that flow goes straight
+    /// to `prepareInterface(forPasskeyRegistration:)` below, which does the
+    /// real work.
     ///
-    /// Refused outright rather than with `.userInteractionRequired`. Asking the
-    /// system to present UI only to decline in the next breath costs the user a
-    /// sheet to dismiss and tells them nothing extra — registration is not
-    /// implemented here at all, so say so now and let the system fall back to
-    /// its own passkey handling.
+    /// An earlier comment here claimed this fires first for the explicit flow
+    /// and that returning `.userInteractionRequired` escalates to the UI path.
+    /// Both are wrong: per Apple's header this method's error is treated like
+    /// any other with no UI shown — `.userInteractionRequired` does NOT escalate
+    /// here. So if the capability is ever enabled, registering conditionally
+    /// (silently) is impossible for Arca — it needs Face ID to open the vault —
+    /// and `.failed` is the honest answer.
     @available(iOS 18.0, *)
     override func performWithoutUserInteractionIfPossible(
         passkeyRegistration registrationRequest: ASPasskeyCredentialRequest
     ) {
-        // Registration is implemented now, but storing the new credential means
-        // opening the vault, which needs Face ID or the master password. That is
-        // user interaction by definition, so ask the OS for the UI path — where
-        // `prepareInterface(forPasskeyRegistration:)` does the work — rather
-        // than filling silently, which we cannot.
-        log.info("passkey registration needs the vault open -> userInteractionRequired")
-        cancel(.userInteractionRequired)
+        log.error("conditional passkey registration is not supported (needs the vault open)")
+        cancel(.failed)
     }
 
     /// Registering a new passkey from the system UI.
@@ -227,13 +234,31 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
             cancel(.failed)
             return
         }
+        // Arca only mints ES256 (P-256). If the relying party's pubKeyCredParams
+        // exclude it, minting one anyway would "save" locally and then be
+        // rejected server-side — a passkey that looks created and cannot sign
+        // in. Decline now so the failure is visible at registration. An empty
+        // list means "no constraint stated", so it is allowed through.
+        if !request.supportedAlgorithms.isEmpty,
+           !request.supportedAlgorithms.contains(.ES256) {
+            log.error("RP did not offer ES256; Arca only mints ES256")
+            cancel(.failed)
+            return
+        }
+        // excludeCredentials, iOS 18+. On 17 the property does not exist, so the
+        // list is empty and the model's check is simply skipped.
+        var excluded: [Data] = []
+        if #available(iOS 18.0, *) {
+            excluded = (request.excludedCredentials ?? []).map(\.credentialID)
+        }
         present(
             domains: [],
             direct: .registerPasskey(
                 rpID: identity.relyingPartyIdentifier,
                 userName: identity.userName,
                 userHandle: identity.userHandle,
-                clientDataHash: request.clientDataHash))
+                clientDataHash: request.clientDataHash,
+                excludedCredentialIDs: excluded))
     }
 
     /// One-time codes. `ProvidesOneTimeCodes` is NOT declared in Info.plist, so

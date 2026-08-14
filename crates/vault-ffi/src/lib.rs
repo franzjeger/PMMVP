@@ -71,7 +71,7 @@ pub mod sync;
 ///   (the restriction on `vault_ffi_vault_free` is unchanged);
 /// * a handle's contents can now change underneath the caller, because a sync
 ///   merges a peer's items into the very vault the handle exposes.
-pub const ABI_VERSION: i32 = 13;
+pub const ABI_VERSION: i32 = 14;
 
 // Return codes.
 pub(crate) const OK: i32 = 0;
@@ -351,6 +351,52 @@ pub unsafe extern "C" fn vault_ffi_passkey_register(
             }
             code
         }
+    }
+}
+
+/// Fold another copy of THIS vault (from disk) into the in-memory handle.
+///
+/// WHY THIS EXISTS. The app and the AutoFill extension are separate processes
+/// that both write the one shared vault file, each from its own decrypted
+/// in-memory copy. Whoever writes second used to serialize its stale copy over
+/// the first's committed change and silently lose it — a login the app just
+/// saved, or a passkey the extension just registered. Calling this before a
+/// write folds the on-disk state in first, so a write ADDS to the other side's
+/// work instead of erasing it.
+///
+/// It is the SAME union/newest-wins merge sync uses (`Vault::merge_remote`), so
+/// a passkey and a login committed on either side both survive. A remote that
+/// is a DIFFERENT vault fails to decrypt and returns `ERR_DECRYPT` rather than
+/// importing anything — the caller must then refuse the write, not clobber.
+///
+/// A null/empty remote is "nothing on disk yet" and succeeds as a no-op.
+///
+/// # Safety
+/// `handle` must be a valid, unlocked handle; `remote_bytes` a buffer of
+/// `remote_len` bytes (or null with len 0).
+#[no_mangle]
+pub unsafe extern "C" fn vault_ffi_merge_remote(
+    handle: *mut VaultHandle,
+    remote_bytes: *const u8,
+    remote_len: usize,
+) -> i32 {
+    if handle.is_null() {
+        return ERR_NULL_ARG;
+    }
+    if remote_bytes.is_null() || remote_len == 0 {
+        return OK; // nothing on disk to fold in
+    }
+    let remote = std::slice::from_raw_parts(remote_bytes, remote_len);
+    let mut vault = match lock_vault(&(*handle).vault) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    if !vault.is_unlocked() {
+        return ERR_LOCKED;
+    }
+    match guard_result(|| vault.merge_remote(remote)) {
+        Ok(()) => OK,
+        Err(code) => code,
     }
 }
 
@@ -2132,8 +2178,8 @@ mod tests {
     // Pinned deliberately: clients gate features on this number, so a bump has
     // to be a conscious edit here, not a side effect.
     #[test]
-    fn abi_version_is_13() {
-        assert_eq!(vault_ffi_abi_version(), 13);
+    fn abi_version_is_14() {
+        assert_eq!(vault_ffi_abi_version(), 14);
     }
 
     // ---- every-kind surface (ABI v7) -------------------------------------
@@ -3295,6 +3341,146 @@ mod tests {
             ERR_NULL_ARG
         );
         unsafe { vault_ffi_vault_free(ptr::null_mut()) }; // no-op, no crash
+    }
+
+    #[test]
+    fn merging_identical_bytes_is_a_no_op() {
+        // foldInDiskState runs on EVERY write, and the common case is disk ==
+        // memory. A merge that duplicated, reordered, or soft-deleted items on
+        // that path would corrupt every single save. Prove it is inert.
+        use vault_core::{Item, KdfAlgorithm, KdfParams, VaultItem};
+        let params = KdfParams {
+            algorithm: KdfAlgorithm::Argon2id, m_cost_kib: 256, t_cost: 1, p_cost: 1,
+            salt: vec![7u8; KdfParams::SALT_LEN],
+        };
+        let mut v = Vault::create("pw", params).unwrap();
+        for (i, t) in ["one", "two", "three"].iter().enumerate() {
+            v.upsert_item(Item::new(
+                VaultItem::Login {
+                    title: (*t).into(), username: "u".into(), password: "p".into(),
+                    url: format!("https://{t}.test"), totp_secret: None, notes: String::new(),
+                },
+                i as i64 + 1,
+            )).unwrap();
+        }
+        let bytes = v.to_bytes().unwrap();
+
+        let mut handle: *mut VaultHandle = ptr::null_mut();
+        let pw = CString::new("pw").unwrap();
+        assert_eq!(
+            unsafe { vault_ffi_vault_open_password(bytes.as_ptr(), bytes.len(), pw.as_ptr(), &mut handle) },
+            OK
+        );
+        let read_titles = |h: *mut VaultHandle| -> Vec<String> {
+            let (mut j, mut jl) = (ptr::null_mut(), 0usize);
+            assert_eq!(unsafe { vault_ffi_items(h, &mut j, &mut jl) }, OK);
+            let v: serde_json::Value = serde_json::from_slice(unsafe { slice::from_raw_parts(j, jl) }).unwrap();
+            unsafe { vault_ffi_free(j, jl); }
+            let mut t: Vec<String> = v.as_array().unwrap().iter()
+                .filter_map(|i| i["title"].as_str().map(String::from)).collect();
+            t.sort(); t
+        };
+        let before = read_titles(handle);
+        // Merge the vault's OWN serialized bytes in — the disk==memory no-op.
+        assert_eq!(unsafe { vault_ffi_merge_remote(handle, bytes.as_ptr(), bytes.len()) }, OK);
+        let after = read_titles(handle);
+        assert_eq!(before, after, "an identical-bytes merge must not change the item set");
+        assert_eq!(after.len(), 3, "no item was duplicated or dropped");
+        unsafe { vault_ffi_vault_free(handle); }
+    }
+
+    #[test]
+    fn merge_before_write_does_not_lose_the_other_process_write() {
+        // The lost-update the review found: two processes share one vault file,
+        // each with its own in-memory copy. Here process A holds V0, process B
+        // adds a login and writes V1, then A registers a passkey. Without the
+        // pre-write merge, A's write would serialize V0+passkey and DROP B's
+        // login. With it, both survive.
+        use vault_core::{Item, KdfAlgorithm, KdfParams, VaultItem};
+        let params = KdfParams {
+            algorithm: KdfAlgorithm::Argon2id,
+            m_cost_kib: 256,
+            t_cost: 1,
+            p_cost: 1,
+            salt: vec![7u8; KdfParams::SALT_LEN],
+        };
+        // V0: one login, shared starting point.
+        let mut v0 = Vault::create("pw", params).unwrap();
+        v0.upsert_item(Item::new(
+            VaultItem::Login {
+                title: "A".into(), username: "a".into(), password: "p".into(),
+                url: "https://a.test".into(), totp_secret: None, notes: String::new(),
+            },
+            1,
+        )).unwrap();
+        let v0_bytes = v0.to_bytes().unwrap();
+
+        // Process B: open V0, add login B, write V1 to "disk".
+        let mut b_handle: *mut VaultHandle = ptr::null_mut();
+        let pw = CString::new("pw").unwrap();
+        assert_eq!(
+            unsafe { vault_ffi_vault_open_password(v0_bytes.as_ptr(), v0_bytes.len(), pw.as_ptr(), &mut b_handle) },
+            OK
+        );
+        let (title, user, pass, url, notes) = (
+            CString::new("B").unwrap(), CString::new("b").unwrap(),
+            CString::new("p").unwrap(), CString::new("https://b.test").unwrap(),
+            CString::new("").unwrap());
+        let (mut vb, mut vbl, mut ib, mut ibl) = (ptr::null_mut(), 0usize, ptr::null_mut(), 0usize);
+        assert_eq!(
+            unsafe {
+                vault_ffi_upsert_login(
+                    b_handle, ptr::null(), title.as_ptr(), user.as_ptr(), pass.as_ptr(),
+                    url.as_ptr(), ptr::null(), notes.as_ptr(), 2, &mut vb, &mut vbl, &mut ib, &mut ibl)
+            },
+            OK
+        );
+        let v1_bytes = unsafe { slice::from_raw_parts(vb, vbl) }.to_vec();
+        unsafe { vault_ffi_free(vb, vbl); vault_ffi_free(ib, ibl); vault_ffi_vault_free(b_handle); }
+
+        // Process A: still on V0. Fold in V1 (what is now on disk), THEN register.
+        let mut a_handle: *mut VaultHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { vault_ffi_vault_open_password(v0_bytes.as_ptr(), v0_bytes.len(), pw.as_ptr(), &mut a_handle) },
+            OK
+        );
+        assert_eq!(
+            unsafe { vault_ffi_merge_remote(a_handle, v1_bytes.as_ptr(), v1_bytes.len()) },
+            OK
+        );
+        let rp = CString::new("github.com").unwrap();
+        let un = CString::new("frank").unwrap();
+        let (mut va, mut val, mut cid, mut cidl, mut ao, mut aol) =
+            (ptr::null_mut(), 0usize, ptr::null_mut(), 0usize, ptr::null_mut(), 0usize);
+        assert_eq!(
+            unsafe {
+                vault_ffi_passkey_register(
+                    a_handle, rp.as_ptr(), un.as_ptr(), ptr::null(), 0, true, 3,
+                    &mut va, &mut val, &mut cid, &mut cidl, &mut ao, &mut aol)
+            },
+            OK
+        );
+        let final_bytes = unsafe { slice::from_raw_parts(va, val) }.to_vec();
+        unsafe { vault_ffi_free(va, val); vault_ffi_free(cid, cidl); vault_ffi_free(ao, aol); vault_ffi_vault_free(a_handle); }
+
+        // Reopen the final vault: A's login, B's login, AND the passkey.
+        let mut fin: *mut VaultHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe { vault_ffi_vault_open_password(final_bytes.as_ptr(), final_bytes.len(), pw.as_ptr(), &mut fin) },
+            OK
+        );
+        let (mut j, mut jl) = (ptr::null_mut(), 0usize);
+        assert_eq!(unsafe { vault_ffi_items(fin, &mut j, &mut jl) }, OK);
+        let items: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(j, jl) }).unwrap();
+        unsafe { vault_ffi_free(j, jl); }
+        let titles: Vec<String> = items.as_array().unwrap().iter()
+            .filter_map(|i| i["title"].as_str().map(String::from)).collect();
+        assert!(titles.iter().any(|t| t == "A"), "A's login must survive: {titles:?}");
+        assert!(titles.iter().any(|t| t == "B"), "B's login (the other process) must NOT be lost: {titles:?}");
+        // The passkey has title == rp_id.
+        assert!(titles.iter().any(|t| t == "github.com"), "the registered passkey must be present: {titles:?}");
+        unsafe { vault_ffi_vault_free(fin); }
     }
 
     #[test]

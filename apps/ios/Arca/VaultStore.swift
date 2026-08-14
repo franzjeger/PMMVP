@@ -457,6 +457,19 @@ final class VaultStore {
         syncing = true
         defer { syncing = false }
         do {
+            // Fold the on-disk vault into the shared handle BEFORE the sync
+            // write-back. syncNow serializes and writes the vault, and its
+            // engine shares this session's vault — so without this a cycle that
+            // integrates a Drive change writes the app's in-memory copy over a
+            // passkey the AutoFill extension just committed to the file. If the
+            // merge itself fails, skip the cycle rather than risk clobbering.
+            if let session {
+                do { try await session.foldDiskState() }
+                catch {
+                    log.error("pre-sync merge failed; skipping to avoid clobbering: \(vaultLogMessage(for: error), privacy: .public)")
+                    return
+                }
+            }
             let status = try await sync.syncNow()
             syncStatus = status
             // A merge rewrote the vault file AND the shared in-memory vault, so

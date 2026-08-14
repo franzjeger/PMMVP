@@ -83,7 +83,7 @@ enum VaultShared {
     /// Bump this in the SAME commit that bumps `ABI_VERSION`: nothing compiles
     /// against it, so a stale value is only ever caught at runtime, by this
     /// guard, on a device.
-    static let requiredAbiVersion: Int32 = 13
+    static let requiredAbiVersion: Int32 = 14
 
     // MARK: Password generation
 
@@ -816,6 +816,46 @@ final class VaultSession: @unchecked Sendable {
     }
 
     // MARK: Quick unlock
+    /// Fold the current on-disk vault into this handle before a write.
+    ///
+    /// The Swift half of the cross-process lost-update guard (see
+    /// vault_ffi_merge_remote). The app and the AutoFill extension each hold
+    /// their own decrypted copy of the one shared file; without this, whichever
+    /// writes second serializes its stale copy over the first's committed
+    /// change and silently loses it — a login the app just saved, or a passkey
+    /// the extension just registered. Reads the file and merges it in (union,
+    /// newest-wins) so a write ADDS to the other side's work instead of erasing
+    /// it. Called inside `run`, so it is already on the vault queue.
+    ///
+    /// A missing or empty file is the first write ever — nothing to fold.
+    private static func foldInDiskState(_ handle: OpaquePointer) throws {
+        let disk: Data
+        do {
+            disk = try VaultShared.loadVault()
+        } catch VaultError.noVaultFile, VaultError.emptyVaultFile {
+            return
+        }
+        let code = disk.withUnsafeBytes { buf in
+            vault_ffi_merge_remote(
+                handle, buf.bindMemory(to: UInt8.self).baseAddress, buf.count)
+        }
+        // A different vault on disk (ERR_DECRYPT) must ABORT the write, not be
+        // written over: throwing here leaves the file exactly as the other
+        // process wrote it.
+        guard code == VaultFFICode.ok else {
+            throw VaultError.ffi(code: code, operation: "merge_remote")
+        }
+    }
+
+    /// Public entry to the pre-write disk merge, for the ONE writer that does
+    /// not go through the methods above: the sync engine. `syncNow` serializes
+    /// and writes the vault, and its handle shares this session's vault, so
+    /// folding disk in here — before a sync cycle — is what stops a sync
+    /// write-back from clobbering a passkey the AutoFill extension just wrote.
+    func foldDiskState() async throws {
+        try await Self.run { try Self.foldInDiskState(self.handle) }
+    }
+
 
     /// Turn on quick unlock: mint a device key, re-seal the vault with it, and
     /// put the key in the shared keychain behind Face ID / Touch ID.
@@ -828,6 +868,7 @@ final class VaultSession: @unchecked Sendable {
     /// after it would prompt for a biometric and then fail.
     func enableDeviceUnlock() async throws {
         try await Self.run {
+            try Self.foldInDiskState(self.handle)
             var key: UnsafeMutablePointer<UInt8>?
             var keyLength = 0
             var vault: UnsafeMutablePointer<UInt8>?
@@ -888,6 +929,7 @@ final class VaultSession: @unchecked Sendable {
         notes: String = ""
     ) async throws -> String {
         try await Self.run {
+            try Self.foldInDiskState(self.handle)
             var vault: UnsafeMutablePointer<UInt8>?
             var vaultLength = 0
             var idOut: UnsafeMutablePointer<UInt8>?
@@ -945,6 +987,7 @@ final class VaultSession: @unchecked Sendable {
         notes: String = ""
     ) async throws -> String {
         try await Self.run {
+            try Self.foldInDiskState(self.handle)
             var vault: UnsafeMutablePointer<UInt8>?
             var vaultLength = 0
             var idOut: UnsafeMutablePointer<UInt8>?
@@ -985,6 +1028,7 @@ final class VaultSession: @unchecked Sendable {
         body: String
     ) async throws -> String {
         try await Self.run {
+            try Self.foldInDiskState(self.handle)
             var vault: UnsafeMutablePointer<UInt8>?
             var vaultLength = 0
             var idOut: UnsafeMutablePointer<UInt8>?
@@ -1029,6 +1073,7 @@ final class VaultSession: @unchecked Sendable {
         rpID: String, userName: String, userHandle: Data, userVerified: Bool
     ) async throws -> VaultPasskeyRegistration {
         try await Self.run {
+            try Self.foldInDiskState(self.handle)
             var vault: UnsafeMutablePointer<UInt8>?
             var vaultLength = 0
             var credID: UnsafeMutablePointer<UInt8>?
@@ -1070,6 +1115,7 @@ final class VaultSession: @unchecked Sendable {
     /// persisting the vault file.
     func deleteItem(id: String) async throws {
         try await Self.run {
+            try Self.foldInDiskState(self.handle)
             var vault: UnsafeMutablePointer<UInt8>?
             var vaultLength = 0
             let now = Int64(Date().timeIntervalSince1970 * 1000)
@@ -1092,6 +1138,7 @@ final class VaultSession: @unchecked Sendable {
     /// every device the vault syncs to.
     func disableDeviceUnlock() async throws {
         try await Self.run {
+            try Self.foldInDiskState(self.handle)
             Self.deleteDeviceKey()
 
             var vault: UnsafeMutablePointer<UInt8>?

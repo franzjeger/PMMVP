@@ -113,6 +113,12 @@ targets:
       - ArcaAutoFill
       - path: ../apple-shared/VaultBridge.swift
         group: Shared
+      # Also compiled into the app target (via the Arca dir). The extension
+      # needs it to publish a freshly REGISTERED passkey to the credential
+      # store — without it a passkey saves but iOS never offers it for sign-in
+      # until the app is next opened.
+      - path: Arca/CredentialIdentities.swift
+        group: Shared
     settings:
       base:
         PRODUCT_NAME: ArcaAutoFill
