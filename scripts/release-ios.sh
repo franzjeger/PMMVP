@@ -188,9 +188,17 @@ if [ "$UPLOAD" = "0" ]; then
   exit 0
 fi
 
-step "Validating with App Store Connect"
-xcrun altool --validate-app -f "$IPA" -t ios \
-  --apiKey "$KEY_ID" --apiIssuer "$ISSUER_ID"
+# Validation is best-effort, and deliberately NOT a gate. altool's --validate-app
+# wraps Apple's Transporter, which intermittently dies with an internal
+# "Defaults.properties couldn't be opened" (a Transporter resource quirk, not a
+# problem with the build). The upload runs its own server-side validation, so a
+# failed pre-check must warn, not abort a good archive.
+step "Validating with App Store Connect (best-effort)"
+if ! xcrun altool --validate-app -f "$IPA" -t ios \
+     --apiKey "$KEY_ID" --apiIssuer "$ISSUER_ID"; then
+  echo "   validation pre-check failed (often Transporter's Defaults.properties"
+  echo "   quirk); continuing to upload, which validates server-side."
+fi
 
 step "Uploading"
 xcrun altool --upload-app -f "$IPA" -t ios \
