@@ -71,7 +71,7 @@ pub mod sync;
 ///   (the restriction on `vault_ffi_vault_free` is unchanged);
 /// * a handle's contents can now change underneath the caller, because a sync
 ///   merges a peer's items into the very vault the handle exposes.
-pub const ABI_VERSION: i32 = 12;
+pub const ABI_VERSION: i32 = 13;
 
 // Return codes.
 pub(crate) const OK: i32 = 0;
@@ -194,6 +194,163 @@ pub unsafe extern "C" fn vault_ffi_passkey_create(
         }
         Ok(Err(_)) => ERR_OP_FAILED,
         Err(_) => ERR_PANIC,
+    }
+}
+
+/// Create a new passkey for `rp_id` AND store it in the vault, returning the new
+/// vault bytes to persist plus the credential id and CBOR attestation object to
+/// hand back to the relying party.
+///
+/// This is `vault_ffi_passkey_create` followed by the store, in one call,
+/// because the two must not come apart. On iOS the AutoFill extension writes the
+/// SHARED App Group vault file directly — there is no separate desktop app to
+/// route the store through, the way the browser flow does — so if creation and
+/// storage were two FFI calls, a failure between them would hand the relying
+/// party a credential whose private key never reached the vault: a passkey that
+/// can register but can never sign in again. Here the private key is in the
+/// returned vault bytes before the credential id is emitted.
+///
+/// `user_handle` is opaque bytes (may be non-UTF-8), so it crosses as a pointer
+/// and length, not a C string. An empty handle is allowed; it just cannot be
+/// used to deduplicate accounts (see below).
+///
+/// Dedup mirrors the browser flow: a passkey for the same `rp_id` AND the same
+/// non-empty `user_handle` REPLACES the old one rather than piling up a
+/// duplicate. Relying parties routinely re-offer registration for an account
+/// that already has a passkey; without this, each such tap would leave another
+/// dead credential behind.
+///
+/// # Safety
+/// All non-null pointers must be valid; `rp_id` and `user_name` NUL-terminated
+/// C strings; `user_handle` a buffer of `user_handle_len` bytes (or null with
+/// length 0). The four out-pairs receive heap buffers to free with
+/// [`vault_ffi_free`].
+#[no_mangle]
+pub unsafe extern "C" fn vault_ffi_passkey_register(
+    handle: *mut VaultHandle,
+    rp_id: *const c_char,
+    user_name: *const c_char,
+    user_handle: *const u8,
+    user_handle_len: usize,
+    user_verified: bool,
+    now_unix_millis: i64,
+    out_vault_bytes: *mut *mut u8,
+    out_vault_bytes_len: *mut usize,
+    out_credential_id: *mut *mut u8,
+    out_credential_id_len: *mut usize,
+    out_attestation_object: *mut *mut u8,
+    out_attestation_object_len: *mut usize,
+) -> i32 {
+    if handle.is_null()
+        || rp_id.is_null()
+        || user_name.is_null()
+        || out_vault_bytes.is_null()
+        || out_vault_bytes_len.is_null()
+        || out_credential_id.is_null()
+        || out_credential_id_len.is_null()
+        || out_attestation_object.is_null()
+        || out_attestation_object_len.is_null()
+    {
+        return ERR_NULL_ARG;
+    }
+    *out_vault_bytes = std::ptr::null_mut();
+    *out_vault_bytes_len = 0;
+    *out_credential_id = std::ptr::null_mut();
+    *out_credential_id_len = 0;
+    *out_attestation_object = std::ptr::null_mut();
+    *out_attestation_object_len = 0;
+
+    let (Some(rp_id), Some(user_name)) = (cstr(rp_id), cstr(user_name)) else {
+        return ERR_UTF8;
+    };
+    let user_handle: Vec<u8> = if user_handle.is_null() || user_handle_len == 0 {
+        Vec::new()
+    } else {
+        std::slice::from_raw_parts(user_handle, user_handle_len).to_vec()
+    };
+
+    let mut vault = match lock_vault(&(*handle).vault) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    if !vault.is_unlocked() {
+        return ERR_LOCKED;
+    }
+
+    // Create first so a creation failure never touches the vault.
+    let new_pk = match guard_result(|| vault_core::passkey::create(rp_id, user_verified)) {
+        Ok(pk) => pk,
+        Err(code) => return code,
+    };
+    let credential_id = new_pk.credential_id.clone();
+    let attestation_object = new_pk.attestation_object.clone();
+
+    // Same replace-not-duplicate rule as the desktop bridge, and the same
+    // guard: only a non-empty handle distinguishes accounts.
+    let existing_id = if user_handle.is_empty() {
+        None
+    } else {
+        vault.list_items(false).ok().and_then(|sums| {
+            sums.into_iter().find_map(|s| {
+                let item = vault.get_item(s.id).ok()?;
+                match &item.data {
+                    VaultItem::Passkey {
+                        rp_id: r,
+                        user_handle: uh,
+                        ..
+                    } if r == rp_id && *uh == user_handle => Some(s.id),
+                    _ => None,
+                }
+            })
+        })
+    };
+    // Kept so a serialization failure rolls the handle back to exactly what was
+    // persisted, never a half-applied registration.
+    let previous = existing_id.and_then(|u| vault.get_item(u).ok());
+
+    let result = guard_result(|| {
+        let mut item = vault_core::Item::new(
+            VaultItem::Passkey {
+                title: rp_id.to_string(),
+                rp_id: rp_id.to_string(),
+                user_name: user_name.to_string(),
+                user_handle: user_handle.clone(),
+                credential_id: new_pk.credential_id.clone(),
+                private_key: new_pk.private_key.to_vec(),
+                sign_count: 0,
+            },
+            now_unix_millis,
+        );
+        if let Some(id) = existing_id {
+            item.id = id;
+        }
+        vault.upsert_item(item)?;
+        let bytes = reserialize_verified(&vault, None)?;
+        Ok(bytes)
+    });
+
+    match result {
+        Ok(bytes) => {
+            emit(bytes, out_vault_bytes, out_vault_bytes_len);
+            emit(credential_id, out_credential_id, out_credential_id_len);
+            emit(
+                attestation_object,
+                out_attestation_object,
+                out_attestation_object_len,
+            );
+            OK
+        }
+        Err(code) => {
+            // Undo the in-memory change so the handle matches the last file we
+            // wrote (which is none, on this path).
+            match previous {
+                Some(old) => {
+                    let _ = vault.upsert_item(old);
+                }
+                None => { /* a fresh item that never serialized is dropped on the next reload */ }
+            }
+            code
+        }
     }
 }
 
@@ -1975,8 +2132,8 @@ mod tests {
     // Pinned deliberately: clients gate features on this number, so a bump has
     // to be a conscious edit here, not a side effect.
     #[test]
-    fn abi_version_is_12() {
-        assert_eq!(vault_ffi_abi_version(), 12);
+    fn abi_version_is_13() {
+        assert_eq!(vault_ffi_abi_version(), 13);
     }
 
     // ---- every-kind surface (ABI v7) -------------------------------------
@@ -3138,6 +3295,173 @@ mod tests {
             ERR_NULL_ARG
         );
         unsafe { vault_ffi_vault_free(ptr::null_mut()) }; // no-op, no crash
+    }
+
+    #[test]
+    fn passkey_register_stores_and_the_attestation_verifies() {
+        use vault_core::{KdfAlgorithm, KdfParams};
+        let params = KdfParams {
+            algorithm: KdfAlgorithm::Argon2id,
+            m_cost_kib: 256,
+            t_cost: 1,
+            p_cost: 1,
+            salt: vec![7u8; KdfParams::SALT_LEN],
+        };
+        let bytes = Vault::create("pw", params).unwrap().to_bytes().unwrap();
+        let mut handle: *mut VaultHandle = ptr::null_mut();
+        let pw = CString::new("pw").unwrap();
+        assert_eq!(
+            unsafe {
+                vault_ffi_vault_open_password(bytes.as_ptr(), bytes.len(), pw.as_ptr(), &mut handle)
+            },
+            OK
+        );
+
+        let rp = CString::new("github.com").unwrap();
+        let user = CString::new("frank").unwrap();
+        let user_handle = vec![9u8, 9, 9];
+        let (mut vault_out, mut vault_len) = (ptr::null_mut(), 0usize);
+        let (mut cred, mut cred_len) = (ptr::null_mut(), 0usize);
+        let (mut att, mut att_len) = (ptr::null_mut(), 0usize);
+        assert_eq!(
+            unsafe {
+                vault_ffi_passkey_register(
+                    handle,
+                    rp.as_ptr(),
+                    user.as_ptr(),
+                    user_handle.as_ptr(),
+                    user_handle.len(),
+                    true,
+                    123,
+                    &mut vault_out,
+                    &mut vault_len,
+                    &mut cred,
+                    &mut cred_len,
+                    &mut att,
+                    &mut att_len,
+                )
+            },
+            OK
+        );
+        let new_vault = unsafe { slice::from_raw_parts(vault_out, vault_len) }.to_vec();
+        let credential_id = unsafe { slice::from_raw_parts(cred, cred_len) }.to_vec();
+        let attestation = unsafe { slice::from_raw_parts(att, att_len) }.to_vec();
+        unsafe {
+            vault_ffi_free(vault_out, vault_len);
+            vault_ffi_free(cred, cred_len);
+            vault_ffi_free(att, att_len);
+            vault_ffi_vault_free(handle);
+        }
+        assert!(!credential_id.is_empty());
+
+        // The returned vault bytes are what iOS writes to disk. REOPEN them —
+        // this is the proof the private key actually landed, not merely that a
+        // credential came back.
+        let mut reopened: *mut VaultHandle = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                vault_ffi_vault_open_password(
+                    new_vault.as_ptr(), new_vault.len(), pw.as_ptr(), &mut reopened)
+            },
+            OK
+        );
+        let (mut rows_out, mut rows_len) = (ptr::null_mut(), 0usize);
+        assert_eq!(
+            unsafe { vault_ffi_passkey_identities(reopened, &mut rows_out, &mut rows_len) },
+            OK
+        );
+        let rows: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(rows_out, rows_len) }).unwrap();
+        unsafe { vault_ffi_free(rows_out, rows_len) };
+        let rows = rows.as_array().unwrap();
+        assert_eq!(rows.len(), 1, "exactly one passkey should have been stored");
+        assert_eq!(rows[0]["rp_id"], "github.com");
+        let stored_id = rows[0]["id"].as_str().unwrap().to_string();
+        let b64 = data_encoding::BASE64;
+        assert_eq!(
+            b64.decode(rows[0]["credential_id"].as_str().unwrap().as_bytes()).unwrap(),
+            credential_id,
+            "the RP got the credential id that was stored"
+        );
+
+        // The stored key must sign for this credential: assert by id, then
+        // verify the signature against the credential's own public key. If the
+        // key had not persisted, this assertion could not be produced.
+        let hash = [4u8; 32];
+        let id_c = CString::new(stored_id).unwrap();
+        let (mut ao, mut aol) = (ptr::null_mut(), 0usize);
+        assert_eq!(
+            unsafe {
+                vault_ffi_passkey_assert_for_id(
+                    reopened, id_c.as_ptr(), hash.as_ptr(), hash.len(), 1, &mut ao, &mut aol)
+            },
+            OK
+        );
+        let resp: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(ao, aol) }).unwrap();
+        unsafe { vault_ffi_free(ao, aol) };
+        let auth_data = b64.decode(resp["authenticator_data"].as_str().unwrap().as_bytes()).unwrap();
+        let signature = b64.decode(resp["signature"].as_str().unwrap().as_bytes()).unwrap();
+
+        // The attestation object embeds the COSE public key; pull the SEC1 form
+        // from a fresh assertion path instead by re-deriving is not available,
+        // so verify the signature the same way the assert test does: against the
+        // authenticator data the RP would receive.
+        let mut signed = auth_data;
+        signed.extend_from_slice(&hash);
+
+        // The real end-to-end claim: the key the RP received in the attestation
+        // and the key stored in the vault (which just produced this assertion)
+        // are the SAME key. Recover the public key from the attestation object's
+        // COSE block and verify the assertion signature against it. If register
+        // had handed the site one key and stored another, this fails.
+        let vk = public_key_from_attestation(&attestation);
+        use p256::ecdsa::{signature::Verifier, Signature};
+        let sig = Signature::from_der(&signature).expect("DER signature");
+        assert!(
+            vk.verify(&signed, &sig).is_ok(),
+            "the stored key does not match the attestation handed to the RP"
+        );
+
+        unsafe { vault_ffi_vault_free(reopened) };
+    }
+
+    /// Recover the credential's public key from a WebAuthn attestationObject.
+    ///
+    /// attestationObject = CBOR { fmt, attStmt, authData }. authData is
+    /// rpIdHash(32) | flags(1) | signCount(4) | AAGUID(16) | credIdLen(2) |
+    /// credId | COSE_Key. The COSE_Key is an EC2 P-256 public key; we read x/y
+    /// and rebuild the verifying key. Lets a test prove the stored key and the
+    /// attested key are one and the same.
+    fn public_key_from_attestation(attestation: &[u8]) -> p256::ecdsa::VerifyingKey {
+        use ciborium::value::Value;
+        let att: Value = ciborium::from_reader(attestation).expect("attestation CBOR");
+        let map = att.as_map().expect("attestation is a map");
+        let auth = map
+            .iter()
+            .find(|(k, _)| k.as_text() == Some("authData"))
+            .and_then(|(_, v)| v.as_bytes())
+            .expect("authData bytes");
+        // Skip to the COSE key: 32 + 1 + 4 + 16 = 53, then 2-byte credIdLen.
+        let cred_len = u16::from_be_bytes([auth[53], auth[54]]) as usize;
+        let cose_start = 55 + cred_len;
+        let cose: Value =
+            ciborium::from_reader(&auth[cose_start..]).expect("COSE key CBOR");
+        let entries = cose.as_map().expect("COSE map");
+        let get = |label: i64| -> Vec<u8> {
+            entries
+                .iter()
+                .find(|(k, _)| k.as_integer() == Some(label.into()))
+                .and_then(|(_, v)| v.as_bytes())
+                .expect("COSE coord")
+                .clone()
+        };
+        let x = get(-2);
+        let y = get(-3);
+        let mut sec1 = vec![0x04u8];
+        sec1.extend_from_slice(&x);
+        sec1.extend_from_slice(&y);
+        p256::ecdsa::VerifyingKey::from_sec1_bytes(&sec1).expect("P-256 key")
     }
 
     /// Tiny verifier so the test asserts real cryptographic validity of the

@@ -5636,6 +5636,7 @@ dependencies = [
 name = "vault-ffi"
 version = "0.3.0"
 dependencies = [
+ "ciborium",
  "data-encoding",
  "p256",
  "serde",

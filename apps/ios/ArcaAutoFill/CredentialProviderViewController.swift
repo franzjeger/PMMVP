@@ -131,6 +131,9 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
             onFillPasskey: { [weak self] assertion in
                 self?.extensionContext.completeAssertionRequest(using: assertion)
             },
+            onRegisterPasskey: { [weak self] registration in
+                self?.extensionContext.completeRegistrationRequest(using: registration)
+            },
             onCancel: { [weak self] in self?.cancel(.userCanceled) })
 
         let root = UnlockPickerView(model: model)
@@ -200,16 +203,37 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
     override func performWithoutUserInteractionIfPossible(
         passkeyRegistration registrationRequest: ASPasskeyCredentialRequest
     ) {
-        log.error("no-UI passkey registration is not implemented in this extension")
-        cancel(.failed)
+        // Registration is implemented now, but storing the new credential means
+        // opening the vault, which needs Face ID or the master password. That is
+        // user interaction by definition, so ask the OS for the UI path — where
+        // `prepareInterface(forPasskeyRegistration:)` does the work — rather
+        // than filling silently, which we cannot.
+        log.info("passkey registration needs the vault open -> userInteractionRequired")
+        cancel(.userInteractionRequired)
     }
 
-    /// Registering a new passkey from the system UI. Arca stores passkeys, but
-    /// this extension has no registration path yet, and the browser extension
-    /// is the route on every platform today.
+    /// Registering a new passkey from the system UI.
+    ///
+    /// The vault is opened here (Face ID or the master password), the credential
+    /// is minted and stored, and the attestation goes back to the site — all in
+    /// the UI path, because the store needs the vault open. `userHandle` and
+    /// `userName` come from the request's identity; the OS built the
+    /// clientDataHash for this ceremony.
     override func prepareInterface(forPasskeyRegistration registrationRequest: ASCredentialRequest) {
-        log.error("passkey registration is not implemented in this extension")
-        cancel(.failed)
+        guard let request = registrationRequest as? ASPasskeyCredentialRequest,
+              let identity = request.credentialIdentity as? ASPasskeyCredentialIdentity
+        else {
+            log.error("passkey registration request was not a passkey request")
+            cancel(.failed)
+            return
+        }
+        present(
+            domains: [],
+            direct: .registerPasskey(
+                rpID: identity.relyingPartyIdentifier,
+                userName: identity.userName,
+                userHandle: identity.userHandle,
+                clientDataHash: request.clientDataHash))
     }
 
     /// One-time codes. `ProvidesOneTimeCodes` is NOT declared in Info.plist, so

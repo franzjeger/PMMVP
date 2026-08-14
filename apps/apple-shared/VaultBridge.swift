@@ -83,7 +83,7 @@ enum VaultShared {
     /// Bump this in the SAME commit that bumps `ABI_VERSION`: nothing compiles
     /// against it, so a stale value is only ever caught at runtime, by this
     /// guard, on a device.
-    static let requiredAbiVersion: Int32 = 12
+    static let requiredAbiVersion: Int32 = 13
 
     // MARK: Password generation
 
@@ -707,6 +707,12 @@ final class VaultSession: @unchecked Sendable {
     }
 
     /// A WebAuthn assertion, ready for `ASPasskeyAssertionCredential`.
+    /// What a registration hands back to the relying party.
+    struct VaultPasskeyRegistration: Sendable {
+        let credentialID: Data
+        let attestationObject: Data
+    }
+
     struct VaultPasskeyAssertion: Decodable, Sendable {
         let credentialID: Data
         let userHandle: Data
@@ -1002,6 +1008,61 @@ final class VaultSession: @unchecked Sendable {
             }
             try VaultShared.writeVault(Data(bytes: vault, count: vaultLength))
             return String(decoding: Data(bytes: idOut, count: idLength), as: UTF8.self)
+        }
+    }
+
+    /// Register a NEW passkey and persist it, returning what the relying party
+    /// needs back.
+    ///
+    /// One call, not create-then-store, and the reason is the same one that
+    /// governs every write in this file: this is the user's only copy. The Rust
+    /// side puts the private key into the returned vault bytes before it hands
+    /// back the credential id, and we write those bytes BEFORE reporting
+    /// success — so the site never receives a credential whose key never reached
+    /// the vault, which would be a passkey that registers once and can never
+    /// sign in again.
+    ///
+    /// `userVerified` must reflect what actually gated this — Face ID or the
+    /// master password — because it is written into the attestation the site
+    /// trusts.
+    func registerPasskey(
+        rpID: String, userName: String, userHandle: Data, userVerified: Bool
+    ) async throws -> VaultPasskeyRegistration {
+        try await Self.run {
+            var vault: UnsafeMutablePointer<UInt8>?
+            var vaultLength = 0
+            var credID: UnsafeMutablePointer<UInt8>?
+            var credLength = 0
+            var attObj: UnsafeMutablePointer<UInt8>?
+            var attLength = 0
+            let now = Int64(Date().timeIntervalSince1970 * 1000)
+
+            let code: Int32 = rpID.withCString { rpPtr in
+                userName.withCString { userPtr in
+                    userHandle.withUnsafeBytes { handleBuf in
+                        vault_ffi_passkey_register(
+                            self.handle, rpPtr, userPtr,
+                            handleBuf.bindMemory(to: UInt8.self).baseAddress,
+                            handleBuf.count, userVerified, now,
+                            &vault, &vaultLength,
+                            &credID, &credLength,
+                            &attObj, &attLength)
+                    }
+                }
+            }
+            guard code == VaultFFICode.ok, let vault, let credID, let attObj else {
+                throw VaultError.ffi(code: code, operation: "passkey_register")
+            }
+            defer {
+                vault_ffi_free(vault, vaultLength)
+                vault_ffi_free(credID, credLength)
+                vault_ffi_free(attObj, attLength)
+            }
+            // Persist BEFORE returning the credential — see the doc comment.
+            try VaultShared.writeVault(Data(bytes: vault, count: vaultLength))
+            return VaultPasskeyRegistration(
+                credentialID: Data(bytes: credID, count: credLength),
+                attestationObject: Data(bytes: attObj, count: attLength))
         }
     }
 

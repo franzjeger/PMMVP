@@ -30,6 +30,11 @@ final class AutoFillModel {
         /// A passkey assertion. The hash is of the clientDataJSON the OS built;
         /// signing it is the whole ceremony.
         case passkey(recordID: String, clientDataHash: Data, rpID: String)
+        /// A passkey REGISTRATION: mint a new credential for the site, store it,
+        /// and hand back the attestation. `clientDataHash` is over the
+        /// clientDataJSON the OS built for this ceremony.
+        case registerPasskey(
+            rpID: String, userName: String, userHandle: Data, clientDataHash: Data)
     }
 
     private(set) var phase: Phase = .locked
@@ -50,6 +55,7 @@ final class AutoFillModel {
     private let direct: DirectRequest?
     private let onFill: @MainActor (ASPasswordCredential) -> Void
     private let onFillPasskey: @MainActor (ASPasskeyAssertionCredential) -> Void
+    private let onRegisterPasskey: @MainActor (ASPasskeyRegistrationCredential) -> Void
     private let onCancel: @MainActor () -> Void
 
     private var session: VaultSession?
@@ -59,12 +65,14 @@ final class AutoFillModel {
         direct: DirectRequest?,
         onFill: @escaping @MainActor (ASPasswordCredential) -> Void,
         onFillPasskey: @escaping @MainActor (ASPasskeyAssertionCredential) -> Void = { _ in },
+        onRegisterPasskey: @escaping @MainActor (ASPasskeyRegistrationCredential) -> Void = { _ in },
         onCancel: @escaping @MainActor () -> Void
     ) {
         self.domains = domains
         self.direct = direct
         self.onFill = onFill
         self.onFillPasskey = onFillPasskey
+        self.onRegisterPasskey = onRegisterPasskey
         self.onCancel = onCancel
     }
 
@@ -151,6 +159,11 @@ final class AutoFillModel {
                 await assertPasskey(
                     recordID: recordID, clientDataHash: clientDataHash, rpID: rpID)
                 return
+            case let .registerPasskey(rpID, userName, userHandle, clientDataHash):
+                await registerPasskey(
+                    rpID: rpID, userName: userName,
+                    userHandle: userHandle, clientDataHash: clientDataHash)
+                return
             case nil:
                 break
             }
@@ -211,6 +224,34 @@ final class AutoFillModel {
         } catch {
             log.error("passkey assert failed: \(vaultLogMessage(for: error), privacy: .public)")
             failure = Self.message(error, fallback: "Couldn't sign in with that passkey.")
+            phase = .locked
+        }
+    }
+
+    /// Mint a new passkey for the site, store it in the vault, and hand back the
+    /// attestation.
+    ///
+    /// `userVerified: true` is earned the same way as the assertion above: this
+    /// is only reached after `open` succeeded, which took Face ID or the master
+    /// password. The persist happens inside `registerPasskey` BEFORE it returns,
+    /// so the site never gets a credential whose private key is not on disk.
+    private func registerPasskey(
+        rpID: String, userName: String, userHandle: Data, clientDataHash: Data
+    ) async {
+        guard let session else { return }
+        do {
+            let reg = try await session.registerPasskey(
+                rpID: rpID, userName: userName,
+                userHandle: userHandle, userVerified: true)
+            onRegisterPasskey(
+                ASPasskeyRegistrationCredential(
+                    relyingParty: rpID,
+                    clientDataHash: clientDataHash,
+                    credentialID: reg.credentialID,
+                    attestationObject: reg.attestationObject))
+        } catch {
+            log.error("passkey register failed: \(vaultLogMessage(for: error), privacy: .public)")
+            failure = Self.message(error, fallback: "Couldn't create that passkey.")
             phase = .locked
         }
     }

@@ -1,6 +1,6 @@
 /* vault-ffi — C ABI over vault-core for native platform integrations.
  *
- * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 12). All
+ * Hand-maintained to match crates/vault-ffi/src/lib.rs (ABI version 13). All
  * out-buffers are heap-allocated by the library and must be released with
  * vault_ffi_free(ptr, len), which also zeroes them.
  *
@@ -335,6 +335,27 @@ int32_t vault_ffi_passkey_create(const char *rp_id, bool user_verified,
                                  size_t *out_private_key_len,
                                  uint8_t **out_attestation_object,
                                  size_t *out_attestation_object_len);
+
+/* ---- Passkey registration into the vault (ABI v13) ----------------------
+ *
+ * vault_ffi_passkey_register: create a passkey for rp_id AND store it in the
+ * vault in one call, returning the new vault bytes to persist plus the
+ * credential id and CBOR attestation object for the relying party. Used by the
+ * iOS AutoFill extension, which writes the shared App Group vault file itself;
+ * splitting create from store would risk handing a site a credential whose key
+ * never reached the vault. user_handle is opaque bytes (may be null/empty).
+ * A passkey for the same rp_id and same non-empty user_handle is replaced. */
+int32_t vault_ffi_passkey_register(VaultHandle *handle, const char *rp_id,
+                                   const char *user_name,
+                                   const uint8_t *user_handle,
+                                   size_t user_handle_len, bool user_verified,
+                                   int64_t now_unix_millis,
+                                   uint8_t **out_vault_bytes,
+                                   size_t *out_vault_bytes_len,
+                                   uint8_t **out_credential_id,
+                                   size_t *out_credential_id_len,
+                                   uint8_t **out_attestation_object,
+                                   size_t *out_attestation_object_len);
 
 /* Produce an assertion. Signature is DER ES256 over
  * (authenticatorData || client_data_hash). The signature counter is always 0

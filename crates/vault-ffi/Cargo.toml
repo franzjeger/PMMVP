@@ -32,3 +32,5 @@ zeroize.workspace = true
 [dev-dependencies]
 # Only to verify the FFI's assertion signatures in tests.
 p256 = { workspace = true }
+# Only to decode the attestation object in the registration test.
+ciborium = { workspace = true }
