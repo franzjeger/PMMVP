@@ -113,6 +113,26 @@ for suffix in "" ".autofill" ".widgets"; do
 done
 echo "   Apple Distribution + 3 App Store profiles"
 
+# Unlock the dedicated signing keychain non-interactively and re-authorize
+# codesign, or the export pops a GUI password prompt for a 32-char random
+# password nobody has memorized — and a wrong guess there (a login password,
+# say) just fails. setup-ios-signing.sh sets no auto-lock, but a reboot relocks
+# every keychain, so do it here every run.
+KC_NAME="arca-signing.keychain"
+KC_PW_FILE="$HOME/.arca/signing/keychain-password"
+if [ -s "$KC_PW_FILE" ] && security list-keychains -d user | grep -q "$KC_NAME"; then
+  KC_PW="$(cat "$KC_PW_FILE")"
+  if security unlock-keychain -p "$KC_PW" "$KC_NAME" 2>/dev/null; then
+    security set-key-partition-list -S apple-tool:,apple:,codesign: \
+      -s -k "$KC_PW" "$KC_NAME" >/dev/null 2>&1 || true
+    echo "   signing keychain unlocked"
+  else
+    die "could not unlock $KC_NAME with the stored password.
+     The keychain and ~/.arca/signing/keychain-password are out of sync.
+     Fix: scripts/setup-ios-signing.sh (reuses dist.key, recreates the keychain)."
+  fi
+fi
+
 step "Exporting for the App Store"
 rm -rf "$EXPORT_DIR"
 cat > "$REPO/target/ios/ExportOptions.plist" <<PLIST
